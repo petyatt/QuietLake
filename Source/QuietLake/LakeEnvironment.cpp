@@ -11,8 +11,11 @@
 #include "Engine/DirectionalLight.h"
 #include "Engine/SkyLight.h"
 #include "Engine/ExponentialHeightFog.h"
+#include "Components/VolumetricCloudComponent.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/HUD.h"
 #include "Materials/MaterialInterface.h"
 #include "Sound/SoundWave.h"
 #include "Sound/SoundAttenuation.h"
@@ -91,7 +94,8 @@ void ALakeEnvironment::BeginPlay()
             UVs.Add(FVector2D(PX / 250, PY / 250));
             const float R = LakeRadius(PX, PY);
             const float Green = FMath::Clamp((R - 1.05f) * 5, 0.0f, 1.0f);
-            Colors.Add(FMath::Lerp(FLinearColor(0.38f, 0.29f, 0.15f), FLinearColor(0.09f, 0.18f, 0.045f), Green));
+            // Damp sandy loam at the shore, meadow further out (linear albedo, realistic range).
+            Colors.Add(FMath::Lerp(FLinearColor(0.21f, 0.165f, 0.105f), FLinearColor(0.07f, 0.12f, 0.035f), Green));
             if (X < Cells && Y < Cells)
             {
                 const int32 A = Y * (Cells + 1) + X;
@@ -193,39 +197,73 @@ void ALakeEnvironment::BeginPlay()
 
     if (GetNetMode() != NM_DedicatedServer)
     {
-        auto* Sun = GetWorld()->SpawnActor<ADirectionalLight>(FVector(0,0,3000), FRotator(-24,-35,0));
+        // Early morning. The sun is low and ahead of the starting view, just above the
+        // far tree line, so the mist and foliage are backlit and light shafts form.
+        auto* Sun = GetWorld()->SpawnActor<ADirectionalLight>(FVector(0,0,3000), FRotator(-6,205,0));
         Sun->SetMobility(EComponentMobility::Movable);
         auto* SunComponent = Cast<UDirectionalLightComponent>(Sun->GetLightComponent());
         SunComponent->SetAtmosphereSunLight(true);
-        SunComponent->SetIntensity(50000.0f);
-        SunComponent->SetLightColor(FLinearColor(1,0.96f,0.88f));
-        SunComponent->DynamicShadowDistanceMovableLight = 18000;
+        SunComponent->SetIntensity(10.0f);
+        SunComponent->SetUseTemperature(true);
+        SunComponent->SetTemperature(5500.0f);
+        SunComponent->SetLightSourceAngle(0.8f);
+        SunComponent->SetEnableLightShaftBloom(true);
+        SunComponent->SetBloomScale(0.08f);
         auto* Atmosphere = GetWorld()->SpawnActor<ASkyAtmosphere>();
-        Atmosphere->GetComponent()->SetRayleighScatteringScale(0.0331f);
+        Atmosphere->GetComponent()->SetMieScatteringScale(0.008f); // humid morning haze
+        GetWorld()->SpawnActor<AVolumetricCloud>();
         auto* Sky = GetWorld()->SpawnActor<ASkyLight>();
         Sky->GetLightComponent()->SetMobility(EComponentMobility::Movable);
-        Sky->GetLightComponent()->SetIntensity(1.2f);
+        Sky->GetLightComponent()->SetIntensity(1.0f);
         Sky->GetLightComponent()->SetRealTimeCapture(true);
-        auto* Fog = GetWorld()->SpawnActor<AExponentialHeightFog>();
-        Fog->GetComponent()->SetFogDensity(0.006f);
-        Fog->GetComponent()->SetFogHeightFalloff(0.15f);
-        Fog->GetComponent()->SetFogInscatteringColor(FLinearColor(0.54f,0.66f,0.69f));
+
+        // Two fog layers: haze over the whole valley plus a dense layer hugging the water.
+        // Density is extinction per km, falloff halves density every 1000/falloff cm, so for a
+        // ~50 m scene the values are far above the engine defaults.
+        auto* Fog = GetWorld()->SpawnActor<AExponentialHeightFog>(FVector(0,0,-25), FRotator::ZeroRotator)->GetComponent();
+        Fog->SetFogDensity(0.045f);
+        Fog->SetFogHeightFalloff(0.5f);
+        FExponentialHeightFogData WaterMist;
+        WaterMist.FogDensity = 0.38f;
+        WaterMist.FogHeightFalloff = 2.0f;   // the engine maximum: halves every 5 m
+        WaterMist.FogHeightOffset = 0.0f;
+        Fog->SetSecondFogData(WaterMist);
+        Fog->SetVolumetricFog(true);
+        Fog->SetVolumetricFogScatteringDistribution(0.4f); // glows toward the sun, still visible away from it
+        Fog->SetVolumetricFogAlbedo(FColor(250,252,255)); // milky, slightly cool
+        Fog->SetVolumetricFogExtinctionScale(1.0f);
+        Fog->SetVolumetricFogDistance(12000.0f);
         auto* Post = GetWorld()->SpawnActor<APostProcessVolume>();
         Post->bUnbound = true;
-        Post->Settings.bOverride_AutoExposureMethod = true;
-        Post->Settings.AutoExposureMethod = AEM_Manual;
-        Post->Settings.bOverride_AutoExposureBias = true;
-        Post->Settings.AutoExposureBias = 0;
-        Post->Settings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
-        Post->Settings.AutoExposureApplyPhysicalCameraExposure = true;
-        Post->Settings.bOverride_CameraISO = true;
-        Post->Settings.CameraISO = 100;
-        Post->Settings.bOverride_CameraShutterSpeed = true;
-        Post->Settings.CameraShutterSpeed = 125;
-        Post->Settings.bOverride_DepthOfFieldFstop = true;
-        Post->Settings.DepthOfFieldFstop = 8;
-        Post->Settings.bOverride_BloomIntensity = true;
-        Post->Settings.BloomIntensity = 0.18f;
+        auto& PP = Post->Settings;
+        PP.bOverride_AutoExposureMethod = true;
+        PP.AutoExposureMethod = AEM_Histogram;
+        PP.bOverride_AutoExposureBias = true;
+        PP.AutoExposureBias = 0.3f;
+        PP.bOverride_AutoExposureSpeedUp = true;
+        PP.AutoExposureSpeedUp = 2.0f;
+        PP.bOverride_AutoExposureSpeedDown = true;
+        PP.AutoExposureSpeedDown = 1.5f;
+        PP.bOverride_BloomIntensity = true;
+        PP.BloomIntensity = 0.5f;
+        PP.bOverride_VignetteIntensity = true;
+        PP.VignetteIntensity = 0.3f;
+        PP.bOverride_MotionBlurAmount = true;
+        PP.MotionBlurAmount = 0.0f;
+        PP.bOverride_ColorSaturation = true;
+        PP.ColorSaturation = FVector4(1.0f,1.0f,1.0f,0.92f);
+        PP.bOverride_ColorContrast = true;
+        PP.ColorContrast = FVector4(1.0f,1.0f,1.0f,1.05f);
+        PP.bOverride_ColorGainHighlights = true;
+        PP.ColorGainHighlights = FVector4(1.02f,1.0f,0.97f,1.0f); // gently warm sunlit highlights
+        PP.bOverride_ColorGainShadows = true;
+        PP.ColorGainShadows = FVector4(0.95f,1.0f,1.06f,1.0f);    // cool shade
+        PP.bOverride_FilmGrainIntensity = true;
+        PP.FilmGrainIntensity = 0.08f;
+        PP.bOverride_LumenFinalGatherQuality = true;
+        PP.LumenFinalGatherQuality = 2.0f;
+        PP.bOverride_LumenReflectionQuality = true;
+        PP.LumenReflectionQuality = 2.0f;
 
         auto Audio = [this](const TCHAR* Name, FVector Location, float Volume, bool Spatial)
         {
@@ -256,11 +294,36 @@ void ALakeEnvironment::BeginPlay()
     }
 #if !UE_BUILD_SHIPPING
     // Reproducible visual check; only enabled by an explicit command-line switch.
+    // Three fixed viewpoints with input and HUD off, so screenshots are comparable between runs.
     if (FParse::Param(FCommandLine::Get(),TEXT("LakePreview")))
     {
-        FTimerHandle ScreenshotTimer, ExitTimer;
-        GetWorldTimerManager().SetTimer(ScreenshotTimer, [] { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / TEXT("WorldPreview.png"),true,false); }, 30.0f, false);
-        GetWorldTimerManager().SetTimer(ExitTimer, [] { FPlatformMisc::RequestExit(false); }, 36.0f, false);
+        struct FShot { FVector Location; FRotator Rotation; const TCHAR* File; };
+        static const FShot Shots[] = {
+            { FVector(-550,-400,130), FRotator(-6,0,0),     TEXT("WorldPreview.png") },   // start, facing the sunrise
+            { FVector(450,-700,115),  FRotator(-4,28,0),    TEXT("WorldPreview_2.png") }, // end of the pier
+            { FVector(4700,600,115),  FRotator(-5,-164,0),  TEXT("WorldPreview_3.png") }, // far shore, looking back
+        };
+        for (int32 I = 0; I < UE_ARRAY_COUNT(Shots); ++I)
+        {
+            const float At = 26.0f + I * 7.0f;
+            FTimerHandle PoseTimer, ShotTimer;
+            GetWorldTimerManager().SetTimer(PoseTimer, [this, I]
+            {
+                APlayerController* PC = GetWorld()->GetFirstPlayerController();
+                if (!PC || !PC->GetPawn()) return;
+                PC->SetIgnoreLookInput(true);
+                PC->SetIgnoreMoveInput(true);
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+                PC->GetPawn()->SetActorLocation(Shots[I].Location, false, nullptr, ETeleportType::TeleportPhysics);
+                PC->SetControlRotation(Shots[I].Rotation);
+            }, At - 5.0f, false);
+            GetWorldTimerManager().SetTimer(ShotTimer, [I]
+            {
+                FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Shots[I].File, false, false);
+            }, At, false);
+        }
+        FTimerHandle ExitTimer;
+        GetWorldTimerManager().SetTimer(ExitTimer, [] { FPlatformMisc::RequestExit(false); }, 26.0f + UE_ARRAY_COUNT(Shots) * 7.0f, false);
     }
 #endif
     UE_LOG(LogTemp,Display,TEXT("QUIET_LAKE_WORLD_READY: terrain, lake, pier, foliage and props"));
