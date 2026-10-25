@@ -3,6 +3,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/HUD.h"
+#include "LakeFish.h"
 #include "LakeGame.generated.h"
 
 UCLASS()
@@ -21,8 +22,27 @@ public:
     UPROPERTY(Replicated) FVector FloatPosition = FVector::ZeroVector;
     UPROPERTY(Replicated) float Tension = 0;
     UPROPERTY(Replicated) float FishDistance = 850;
+    UPROPERTY(Replicated) EBait Bait = EBait::Worm;
+    /** Incremented on every nibble so clients can twitch the bobber. */
+    UPROPERTY(Replicated) uint8 NibbleCounter = 0;
+
+    // --- used by the fish (server) ---
+    bool HasBaitInWater() const { return FishingState == 1; }
+    FVector BaitLocation() const { return BaitPoint; }
+    /** Only one fish at a time may test the bait; returns false if another fish is on it. */
+    bool ClaimBait(ALakeFish* Fish);
+    void ReleaseBaitClaim(ALakeFish* Fish);
+    void OnFishNibble(ALakeFish* Fish);
+    void OnFishTake(ALakeFish* Fish);
 private:
     friend class FLakeFishingTest;
+    friend class FLakeFishBehaviourTest;
+    void SelectBait(EBait NewBait);
+    void BaitWorm() { SelectBait(EBait::Worm); }
+    void BaitMaggot() { SelectBait(EBait::Maggot); }
+    void BaitBread() { SelectBait(EBait::Bread); }
+    UFUNCTION(Server, Reliable) void ServerSelectBait(EBait NewBait);
+    FVector RodTip() const;
     void Forward(float Value);
     void Right(float Value);
     void Fish();
@@ -33,16 +53,17 @@ private:
     UFUNCTION(Server, Reliable) void ServerRelease();
     UFUNCTION(Server, Reliable) void ServerFish();
     UFUNCTION(Server, Reliable) void ServerCancel();
-    void Bite();
     void Escape();
     FTimerHandle FishingTimer;
     double NextActionTime = 0;
     bool bReeling = false;
     float FightTime = 0;
-    float FishWeight = 0;
-    int32 SpeciesIndex = 0;
-    FVector CastOrigin;
-    FVector CastDirection;
+    float LineLength = 0;
+    FVector BaitPoint = FVector::ZeroVector;
+    TWeakObjectPtr<ALakeFish> BaitFish;     // fish testing or holding the bait
+    TWeakObjectPtr<ALakeFish> HookedFish;
+    uint8 SeenNibbles = 0;
+    float NibbleVisualTime = -10;
     UPROPERTY() TObjectPtr<class UCameraComponent> FishingCamera;
     UPROPERTY() TObjectPtr<class UStaticMeshComponent> Rod;
     UPROPERTY() TObjectPtr<class UStaticMeshComponent> Bobber;
@@ -66,6 +87,14 @@ public:
     virtual void BeginPlay() override;
     static float GroundHeight(float X, float Y);
     static bool IsWater(FVector Position);
+    /** 1 at the shoreline of the elliptic lake, 0 at its centre. */
+    static float LakeRadius(float X, float Y);
+    /** Replace a caught fish with a new one of the same species after a while (server). */
+    void ScheduleRespawn(EFishSpecies Species);
+private:
+    void SpawnFish(EFishSpecies Species, int32 Count, int32 School);
+    FRandomStream FishRandom;
+    int32 NextSchool = 0;
 };
 
 UCLASS()

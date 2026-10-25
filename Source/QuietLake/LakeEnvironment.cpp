@@ -28,6 +28,9 @@
 #include "TimerManager.h"
 #include "UnrealClient.h"
 #include "Misc/App.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
+#include "EngineUtils.h"
 
 ALakeEnvironment::ALakeEnvironment()
 {
@@ -36,7 +39,7 @@ ALakeEnvironment::ALakeEnvironment()
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("WorldRoot"));
 }
 
-static float LakeRadius(float X, float Y)
+float ALakeEnvironment::LakeRadius(float X, float Y)
 {
     return FMath::Sqrt(FMath::Square((X - 2200) / 2200) + FMath::Square(Y / 2800));
 }
@@ -357,10 +360,81 @@ void ALakeEnvironment::BeginPlay()
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_PREVIEW %s frame=%.1f ms"), Shots[I].File, FApp::GetDeltaTime() * 1000.0);
             }, At, false);
         }
-        FTimerHandle ExitTimer;
-        GetWorldTimerManager().SetTimer(ExitTimer, [] { FPlatformMisc::RequestExit(false); }, 26.0f + UE_ARRAY_COUNT(Shots) * 7.0f, false);
+        // Fourth shot: a free camera just above the water looking down at the shallowest fish.
+        const float FishShotAt = 26.0f + UE_ARRAY_COUNT(Shots) * 7.0f;
+        FTimerHandle FishPose, FishShot, ExitTimer;
+        GetWorldTimerManager().SetTimer(FishPose, [this]
+        {
+            ALakeFish* Best = nullptr;
+            for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
+                if (!Best || It->GetActorLocation().Z > Best->GetActorLocation().Z) Best = *It;
+            APlayerController* PC = GetWorld()->GetFirstPlayerController();
+            if (!Best || !PC) return;
+            const FVector Target = Best->GetActorLocation();
+            FVector CamPos = Target - Best->GetActorRightVector() * 160 - Best->GetActorForwardVector() * 60;
+            CamPos.Z = LakeFish::SurfaceZ + 110;
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(CamPos, (Target - CamPos).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(55);
+            PC->SetViewTarget(Cam);
+        }, FishShotAt - 0.6f, false);
+        GetWorldTimerManager().SetTimer(FishShot, [] { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / TEXT("WorldPreview_4.png"), false, false); }, FishShotAt, false);
+        GetWorldTimerManager().SetTimer(ExitTimer, [] { FPlatformMisc::RequestExit(false); }, FishShotAt + 3, false);
     }
 #endif
+    // Fish live on the server and replicate to every client.
+    if (HasAuthority())
+    {
+        FishRandom.Initialize(20261026);
+        for (int32 I = 0; I < 3; ++I) SpawnFish(EFishSpecies::Perch, 5, NextSchool++);
+        for (int32 I = 0; I < 3; ++I) SpawnFish(EFishSpecies::Roach, 7, NextSchool++);
+        SpawnFish(EFishSpecies::Crucian, 8, -1);
+        SpawnFish(EFishSpecies::Pike, 2, -1);
+    }
+    // Diagnostic for the network test: how many fish this machine sees after replication settles.
+    FTimerHandle FishCountTimer;
+    GetWorldTimerManager().SetTimer(FishCountTimer, [this]
+    {
+        int32 Count = 0;
+        for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It) ++Count;
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_VISIBLE %d (netmode %d)"), Count, (int32)GetNetMode());
+    }, 8.0f, false);
     UE_LOG(LogTemp,Display,TEXT("QUIET_LAKE_WORLD_READY: terrain, lake, pier, foliage and props"));
+}
+
+void ALakeEnvironment::SpawnFish(EFishSpecies Species, int32 Count, int32 School)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    // A school starts together around one point of its habitat; loners spread out.
+    auto RandomPoint = [this, &S]()
+    {
+        float RMin = 0.25f, RMax = 0.8f;
+        if (S.Habitat == EFishHabitat::Reeds) { RMin = 0.72f; RMax = 0.88f; }
+        if (S.Habitat == EFishHabitat::Bottom) { RMin = 0.4f; RMax = 0.85f; }
+        if (S.Habitat == EFishHabitat::Ambush) { RMin = 0.8f; RMax = 0.88f; }
+        for (int32 Try = 0; Try < 20; ++Try)
+        {
+            const float A = FishRandom.FRandRange(-PI, PI), R = FishRandom.FRandRange(RMin, RMax);
+            const float X = 2200 + FMath::Cos(A) * 2200 * R, Y = FMath::Sin(A) * 2800 * R;
+            const float Bottom = GroundHeight(X, Y);
+            if (LakeFish::SurfaceZ - Bottom < 40) continue;
+            return FVector(X, Y, FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, FishRandom.FRandRange(S.DepthMin, S.DepthMax)));
+        }
+        return FVector(2200, 0, LakeFish::SurfaceZ - 100);
+    };
+    const FVector Home = RandomPoint();
+    for (int32 I = 0; I < Count; ++I)
+    {
+        const FVector Start = School >= 0 ? Home + FVector(FishRandom.FRandRange(-80, 80), FishRandom.FRandRange(-80, 80), FishRandom.FRandRange(-10, 10)) : RandomPoint();
+        // Most fish are small; big ones are rare.
+        const float Weight = FMath::Lerp(S.MinWeight, S.MaxWeight, FMath::Pow(FishRandom.FRand(), 2.5f));
+        auto* Fish = GetWorld()->SpawnActor<ALakeFish>(Start, FRotator(0, FishRandom.FRandRange(0, 360), 0));
+        if (Fish) Fish->Setup(Species, Weight, School >= 0 ? Home : Start, School);
+    }
+}
+
+void ALakeEnvironment::ScheduleRespawn(EFishSpecies Species)
+{
+    FTimerHandle Timer;
+    GetWorldTimerManager().SetTimer(Timer, [this, Species] { SpawnFish(Species, 1, -1); }, 45.0f, false);
 }
 

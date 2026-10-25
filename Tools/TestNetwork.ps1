@@ -29,6 +29,18 @@ try {
     if (-not $joined) { throw 'Two-client connection timed out; inspect Saved/NetworkTest logs' }
     Write-Output 'PASS: two clients joined the server'
     $joins | ForEach-Object { $_.Line }
+    # Fish are simulated on the server; each client must receive them.
+    $seen = $false
+    for ($i = 0; $i -lt 60; $i++) {
+        $counts = foreach ($number in 1,2) {
+            $line = Select-String -Path (Join-Path $logs "Client$number.log") -Pattern 'QUIET_LAKE_FISH_VISIBLE (\d+)' | Select-Object -Last 1
+            if ($line) { [int]$line.Matches[0].Groups[1].Value } else { 0 }
+        }
+        if (($counts | Where-Object { $_ -gt 0 }).Count -eq 2) { $seen = $true; break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $seen) { throw 'Fish did not replicate to both clients; inspect Saved/NetworkTest logs' }
+    Write-Output ('PASS: both clients see fish: ' + ($counts -join ', '))
 } finally {
     foreach ($process in $processes) {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
