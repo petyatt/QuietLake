@@ -3,6 +3,33 @@
   "EngineAssociation": "5.8",
   "Category": "Games",
   "Description": "Multiplayer fishing prototype",
-  "Modules": [{"Name": "QuietLake", "Type": "Runtime", "LoadingPhase": "Default"}],
-  "Plugins": [{"Name": "PythonScriptPlugin", "Enabled": true}, {"Name": "EditorScriptingUtilities", "Enabled": true}, {"Name": "ProceduralMeshComponent", "Enabled": true}]
+  "Modules": [
+    {
+      "Name": "QuietLake",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "PythonScriptPlugin",
+      "Enabled": true
+    },
+    {
+      "Name": "EditorScriptingUtilities",
+      "Enabled": true
+    },
+    {
+      "Name": "ProceduralMeshComponent",
+      "Enabled": true
+    },
+    {
+      "Name": "ProceduralVegetationEditor",
+      "Enabled": true
+    },
+    {
+      "Name": "DynamicWind",
+      "Enabled": true
+    }
+  ]
 }

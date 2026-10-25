@@ -2,6 +2,9 @@
 #include "ProceduralMeshComponent.h"
 #include "KismetProceduralMeshLibrary.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/InstancedSkinnedMeshComponent.h"
+#include "Engine/SkinnedAsset.h"
+#include "DynamicWindData.h"
 #include "Components/AudioComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
@@ -24,6 +27,7 @@
 #include "Misc/Parse.h"
 #include "TimerManager.h"
 #include "UnrealClient.h"
+#include "Misc/App.h"
 
 ALakeEnvironment::ALakeEnvironment()
 {
@@ -93,9 +97,10 @@ void ALakeEnvironment::BeginPlay()
             Vertices.Add(FVector(PX, PY, GroundHeight(PX, PY)));
             UVs.Add(FVector2D(PX / 250, PY / 250));
             const float R = LakeRadius(PX, PY);
-            const float Green = FMath::Clamp((R - 1.05f) * 5, 0.0f, 1.0f);
-            // Damp sandy loam at the shore, meadow further out (linear albedo, realistic range).
-            Colors.Add(FMath::Lerp(FLinearColor(0.21f, 0.165f, 0.105f), FLinearColor(0.07f, 0.12f, 0.035f), Green));
+            // Layer masks for M_TerrainScanned: R = meadow (away from the shore), G = forest floor.
+            const float Meadow = FMath::Clamp((R - 1.06f) * 6, 0.0f, 1.0f);
+            const float Forest = FMath::Clamp((R - 1.3f) * 4, 0.0f, 1.0f);
+            Colors.Add(FLinearColor(Meadow, Forest, 0.0f));
             if (X < Cells && Y < Cells)
             {
                 const int32 A = Y * (Cells + 1) + X;
@@ -104,69 +109,98 @@ void ALakeEnvironment::BeginPlay()
         }
     UKismetProceduralMeshLibrary::CalculateTangentsForMesh(Vertices, Triangles, UVs, Normals, Tangents);
     Terrain->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs, Colors, Tangents, true);
-    Terrain->SetMaterial(0, Material(TEXT("M_Terrain")));
+    Terrain->SetMaterial(0, Material(TEXT("M_TerrainScanned")));
 
     auto* Water = Group(TEXT("Cube"), TEXT("M_LakeSurface"), true);
     Add(Water, FVector(2200, 0, -31), FVector(44, 56, 0.12));
-    auto* Bark = Group(TEXT("Cylinder"), TEXT("M_Bark"), true);
-    auto* Birch = Group(TEXT("Cylinder"), TEXT("M_Birch"), true);
-    auto* Needles = Group(TEXT("Cone"), TEXT("M_Pine"), false);
-    auto* Leaves = Group(TEXT("Sphere"), TEXT("M_Leaves"), false);
-    auto* Rocks = Group(TEXT("Sphere"), TEXT("M_Stone"), true);
-    auto* Grass = Group(TEXT("Cone"), TEXT("M_Grass"), false);
-    auto* Reeds = Group(TEXT("Cylinder"), TEXT("M_Reeds"), false);
-    auto* ReedHeads = Group(TEXT("Cylinder"), TEXT("M_Bark"), false);
+    auto* Bark = Group(TEXT("Cylinder"), TEXT("M_Bark"), true);       // pier posts and firewood
     auto* Wood = Group(TEXT("Cube"), TEXT("M_Planks"), true);
     auto* Metal = Group(TEXT("Cylinder"), TEXT("M_Metal"), true);
+    // Invisible trunk colliders: the Megaplants trees are skinned meshes without per-instance collision.
+    auto* Trunks = Group(TEXT("Cylinder"), TEXT("M_Bark"), true);
+    Trunks->SetHiddenInGame(true);
+    Trunks->SetCastShadow(false);
 
-    for (int32 I = 0; I < 700; ++I)
+    // Quixel Megaplants: Nanite skinned meshes animated by the Dynamic Wind plugin.
+    // One instanced component per mesh variant draws every copy of that variant in one batch.
+    auto* Wind = NewObject<UDynamicWindData>(this);
+    auto Plants = [this, Wind](const TCHAR* Folder, const TCHAR* Prefix, const TCHAR* Letters, float CullDistance)
+    {
+        TArray<UInstancedSkinnedMeshComponent*> Variants;
+        for (const TCHAR* Letter = Letters; *Letter; ++Letter)
+        {
+            const FString Name = FString::Printf(TEXT("%s_%c"), Prefix, *Letter);
+            auto* Mesh = LoadObject<USkinnedAsset>(nullptr, *FString::Printf(TEXT("/Game/Megaplant_Library/%s/%s.%s"), Folder, *Name, *Name));
+            if (!Mesh)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("Megaplant mesh missing: %s/%s"), Folder, *Name);
+                continue;
+            }
+            auto* Component = NewObject<UInstancedSkinnedMeshComponent>(this);
+            Component->SetupAttachment(RootComponent);
+            Component->SetSkinnedAssetAndUpdate(Mesh);
+            Component->SetTransformProvider(Wind);
+            Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Component->SetCullDistances(CullDistance * 0.8f, CullDistance);
+            Component->RegisterComponent();
+            AddInstanceComponent(Component);
+            Variants.Add(Component);
+        }
+        return Variants;
+    };
+    const auto Pines = Plants(TEXT("Tree_Baltic_Pine/Tree_Baltic_Pine_01"), TEXT("Tree_Baltic_Pine_01"), TEXT("ABCD"), 30000);
+    const auto Spruces = Plants(TEXT("Tree_Norway_Spruce/Tree_Norway_Spruce_01"), TEXT("Tree_Norway_Spruce_01"), TEXT("ABCD"), 30000);
+    const auto Birches = Plants(TEXT("Tree_Silver_Birch/Tree_Silver_Birch_01"), TEXT("Tree_Silver_Birch_01"), TEXT("ABCD"), 30000);
+    const auto Alders = Plants(TEXT("Tree_Black_Alder/Tree_Black_Alder_01"), TEXT("Tree_Black_Alder_01"), TEXT("ABCD"), 30000);
+    const auto Bulrush = Plants(TEXT("Plant_Bulrush/Plant_Bulrush_01"), TEXT("Plant_Common_Bulrush_01"), TEXT("ABCDE"), 9000);
+    const auto DryReed = Plants(TEXT("Plant_Dry_Common_Reeds/Plant_Dry_Common_Reeds_01"), TEXT("Plant_Dry_Common_Reed"), TEXT("ABCD"), 9000);
+    auto Place = [&Random](const TArray<UInstancedSkinnedMeshComponent*>& Variants, FVector Location, float Scale)
+    {
+        if (Variants.Num() == 0) return;
+        Variants[Random.RandRange(0, Variants.Num() - 1)]->AddInstance(
+            FTransform(FRotator(0, Random.FRandRange(0, 360), 0), Location, FVector(Scale)), 0);
+    };
+
+    // Forest: deciduous trees on the first band around the shore, conifers behind them.
+    for (int32 I = 0; I < 520; ++I)
     {
         const float X = Random.FRandRange(-8500, 11000), Y = Random.FRandRange(-10000, 10000);
-        if (LakeRadius(X, Y) < 1.26f || (X < 100 && X > -1600 && FMath::Abs(Y) < 1300)) continue;
-        const float Z = GroundHeight(X, Y);
-        const float H = Random.FRandRange(550, 1000);
-        const float Turn = Random.FRandRange(0, 360);
-        const bool bBirch = I % 4 == 0;
-        Add(bBirch ? Birch : Bark, FVector(X,Y,Z + H * 0.42), FVector(0.25,0.25,H * 0.0084), FRotator(0,Turn,Random.FRandRange(-3,3)));
-        if (bBirch)
-        {
-            for (int32 J = 0; J < 4; ++J)
-                Add(Leaves, FVector(X + Random.FRandRange(-90,90), Y + Random.FRandRange(-90,90), Z + H * (0.65 + 0.1 * J)), FVector(2.4,2.2,2.9), FRotator(0,Turn,0));
-        }
-        else
-        {
-            for (int32 J = 0; J < 4; ++J)
-            {
-                const float Width = H * (0.005 - J * 0.0009);
-                Add(Needles, FVector(X,Y,Z + H * (0.44 + J * 0.16)), FVector(Width, Width, H * 0.0048), FRotator(0,Turn,0));
-            }
-        }
+        const float R = LakeRadius(X, Y);
+        if (R < 1.3f || (X < 100 && X > -1600 && FMath::Abs(Y) < 1300)) continue;
+        // Sink the base slightly so roots never float on slopes.
+        const FVector Base(X, Y, GroundHeight(X, Y) - 15);
+        const bool bShoreBand = R < 1.75f && Random.FRand() < 0.7f;
+        const TArray<UInstancedSkinnedMeshComponent*>& Species =
+            bShoreBand ? (Random.FRand() < 0.55f ? Birches : Alders) : (Random.FRand() < 0.55f ? Pines : Spruces);
+        Place(Species, Base, Random.FRandRange(0.7f, 1.05f));
+        Add(Trunks, Base + FVector(0, 0, 250), FVector(0.45f, 0.45f, 5.0f));
     }
-    for (int32 I = 0; I < 150; ++I)
+    // Mossy stone scatters along the shore and a few in the forest (Quixel Megascans, Nanite).
+    auto* Rocks = NewObject<UHierarchicalInstancedStaticMeshComponent>(this);
+    Rocks->SetupAttachment(RootComponent);
+    Rocks->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Fab/Megascans/3D/Mossy_Rocks_tjmudcfda/High/tjmudcfda_tier_1/StaticMeshes/tjmudcfda_tier_1.tjmudcfda_tier_1")));
+    Rocks->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+    Rocks->SetCollisionResponseToAllChannels(ECR_Block);
+    Rocks->RegisterComponent();
+    AddInstanceComponent(Rocks);
+    for (int32 I = 0; I < 90; ++I)
     {
         const float Angle = Random.FRandRange(-PI, PI);
-        const float Radius = Random.FRandRange(1.01, 1.15);
+        const float Radius = I < 60 ? Random.FRandRange(1.0f, 1.12f) : Random.FRandRange(1.3f, 2.2f);
         const float X = 2200 + FMath::Cos(Angle) * 2200 * Radius, Y = FMath::Sin(Angle) * 2800 * Radius;
-        if (X < 600 && FMath::Abs(Y + 700) < 220) continue;
-        const float S = Random.FRandRange(0.3, 1.2);
-        Add(Rocks, FVector(X,Y,GroundHeight(X,Y) + 12), FVector(S * 1.5,S,S * 0.7), FRotator(12,Random.FRandRange(0,360),18));
+        if (X < 600 && FMath::Abs(Y + 700) < 260) continue;   // keep the pier approach clear
+        const float S = Random.FRandRange(0.35f, 0.9f);
+        Add(Rocks, FVector(X, Y, GroundHeight(X, Y) - 4), FVector(S, S, S * Random.FRandRange(0.8f, 1.6f)),
+            FRotator(Random.FRandRange(-4, 4), Random.FRandRange(0, 360), Random.FRandRange(-4, 4)));
     }
-    for (int32 I = 0; I < 1700; ++I)
+    // Bulrush and dry reed clumps along the waterline, thicker away from the pier.
+    for (int32 I = 0; I < 520; ++I)
     {
-        const float X = Random.FRandRange(-3500,7500), Y = Random.FRandRange(-5500,5500);
-        if (LakeRadius(X,Y) < 1.13 || (X < 100 && X > -1600 && FMath::Abs(Y + 700) < 180)) continue;
-        const float H = Random.FRandRange(20,65);
-        Add(Grass, FVector(X,Y,GroundHeight(X,Y) + H * 0.35), FVector(0.12,0.12,H / 100), FRotator(10,Random.FRandRange(0,360),0));
-    }
-    for (int32 I = 0; I < 450; ++I)
-    {
-        const float Angle = Random.FRandRange(-PI,PI);
-        const float R = Random.FRandRange(0.97,1.025);
+        const float Angle = Random.FRandRange(-PI, PI);
+        const float R = Random.FRandRange(0.95f, 1.03f);
         const float X = 2200 + FMath::Cos(Angle) * 2200 * R, Y = FMath::Sin(Angle) * 2800 * R;
         if (X < 800 && FMath::Abs(Y) < 1150) continue;
-        const float H = Random.FRandRange(65,145), Z = GroundHeight(X,Y);
-        Add(Reeds, FVector(X,Y,Z + H / 2), FVector(0.022,0.022,H / 100));
-        Add(ReedHeads, FVector(X,Y,Z + H), FVector(0.06,0.06,0.23));
+        Place(Random.FRand() < 0.6f ? Bulrush : DryReed, FVector(X, Y, GroundHeight(X, Y) - 8), Random.FRandRange(0.8f, 1.25f));
     }
     // Walkable pier: each plank has collision, the first plank is a small step from the shore.
     for (int32 I = 0; I < 27; ++I)
@@ -224,7 +258,7 @@ void ALakeEnvironment::BeginPlay()
         Fog->SetFogDensity(0.045f);
         Fog->SetFogHeightFalloff(0.5f);
         FExponentialHeightFogData WaterMist;
-        WaterMist.FogDensity = 0.38f;
+        WaterMist.FogDensity = 0.3f;
         WaterMist.FogHeightFalloff = 2.0f;   // the engine maximum: halves every 5 m
         WaterMist.FogHeightOffset = 0.0f;
         Fog->SetSecondFogData(WaterMist);
@@ -320,6 +354,7 @@ void ALakeEnvironment::BeginPlay()
             GetWorldTimerManager().SetTimer(ShotTimer, [I]
             {
                 FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Shots[I].File, false, false);
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_PREVIEW %s frame=%.1f ms"), Shots[I].File, FApp::GetDeltaTime() * 1000.0);
             }, At, false);
         }
         FTimerHandle ExitTimer;

@@ -5,3 +5,7 @@ Saved/
 .vs/
 Tools/*.exe
 *.sln
+
+# Fab/Quixel assets (~3.7 GB): re-add via Window > Fab in the editor, see WORLD.md
+Content/Fab/
+Content/Megaplant_Library/
