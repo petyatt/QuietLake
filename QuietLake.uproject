@@ -30,6 +30,10 @@
     {
       "Name": "DynamicWind",
       "Enabled": true
+    },
+    {
+      "Name": "CableComponent",
+      "Enabled": true
     }
   ]
 }

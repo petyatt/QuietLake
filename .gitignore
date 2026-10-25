@@ -9,3 +9,6 @@ Tools/*.exe
 # Fab/Quixel assets (~3.7 GB): re-add via Window > Fab in the editor, see WORLD.md
 Content/Fab/
 Content/Megaplant_Library/
+
+# UE5 mannequins from the engine templates (~126 MB): restore with Tools/CopyMannequin.ps1
+Content/Characters/Mannequins/

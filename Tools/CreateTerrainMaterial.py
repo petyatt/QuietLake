@@ -3,7 +3,7 @@
 Layers (world-aligned, no UV seams on the procedural terrain):
   meadow -> Uncut Grass, forest and shore -> Mossy Forest Floor, patches -> Nordic Moss,
   plus darker, glossier damp ground right above the waterline.
-Terrain vertex colour carries the layer masks: R = meadow, G = forest (set in LakeEnvironment.cpp).
+Terrain vertex colour carries the layer masks: R = meadow, G = forest, B = bare clay (set in LakeEnvironment.cpp).
 """
 import unreal
 
@@ -61,6 +61,7 @@ if unreal.EditorAssetLibrary.does_asset_exist(PATH) and not unreal.EditorAssetLi
 mat = assets.create_asset('M_TerrainScanned', '/Game/Materials', unreal.Material, unreal.MaterialFactoryNew())
 
 position = node(mat, unreal.MaterialExpressionWorldPosition)
+wetness = node(mat, unreal.MaterialExpressionCollectionParameter, collection=unreal.load_asset('/Game/Weather/MPC_Weather'), parameter_name='Wetness')
 vertex = node(mat, unreal.MaterialExpressionVertexColor)
 
 samples = {}
@@ -99,15 +100,23 @@ color = custom(mat, BLEND + """
 float3 c = G * g + F * f + M * m;
 float macro = lerp(0.85, 1.12, frac(sin(dot(floor(P.xy / 900), float2(12.9898, 78.233))) * 43758.5453));
 c *= macro;
-return lerp(c, c * float3(0.5, 0.48, 0.45), W.z);    // damp soil is darker
-""", [('W', weights), ('G', samples['GB']), ('F', samples['FB']), ('M', samples['MB']), ('P', position)])
+c = lerp(c, c * float3(0.5, 0.48, 0.45), W.z);       // damp soil is darker
+// Bare clay on the faces of bluffs and scarps (vertex blue): ochre, banded by its layers,
+// with the forest floor's detail for texture.
+float lum = dot(F, float3(0.3, 0.5, 0.2));
+float3 clay = float3(0.40, 0.28, 0.17) * saturate(lum * 2.4 + 0.35) * (0.88 + 0.12 * sin(P.z * 0.21 + sin(P.x * 0.01)));
+c = lerp(c, clay, V.b);
+// After rain the ground darkens (MPC_Weather.Wetness).
+return c * lerp(1.0, 0.62, Wt);
+""", [('W', weights), ('G', samples['GB']), ('F', samples['FB']), ('M', samples['MB']), ('P', position), ('V', vertex), ('Wt', wetness)])
 normal = custom(mat, BLEND + """
 float3 n = G * g + F * f + M * m;
 n.xy *= lerp(1.0, 0.6, W.z);                         // wet ground looks smoother
+n.xy *= lerp(1.0, 0.55, V.b);                        // clay is smoother than leaf litter
 return normalize(n);
-""", [('W', weights), ('G', samples['GN']), ('F', samples['FN']), ('M', samples['MN'])])
-rough = custom(mat, BLEND + 'float r = G.g * g + F.g * f + M.g * m;\nreturn lerp(r, 0.28, W.z);',
-               [('W', weights), ('G', samples['GORM']), ('F', samples['FORM']), ('M', samples['MORM'])],
+""", [('W', weights), ('G', samples['GN']), ('F', samples['FN']), ('M', samples['MN']), ('V', vertex)])
+rough = custom(mat, BLEND + 'float r = G.g * g + F.g * f + M.g * m;\nr = lerp(r, 0.8, V.b);\nr = lerp(r, 0.35, Wt);\nreturn lerp(r, 0.28, W.z);',
+               [('W', weights), ('G', samples['GORM']), ('F', samples['FORM']), ('M', samples['MORM']), ('V', vertex), ('Wt', wetness)],
                unreal.CustomMaterialOutputType.CMOT_FLOAT1)
 ao = custom(mat, BLEND + 'return G.r * g + F.r * f + M.r * m;',
             [('W', weights), ('G', samples['GORM']), ('F', samples['FORM']), ('M', samples['MORM'])],

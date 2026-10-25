@@ -56,17 +56,40 @@ WAVES = """
 float2 dirs[6] = { float2(1,0.2), float2(0.7,0.7), float2(-0.3,1), float2(0.9,-0.45), float2(-0.8,0.55), float2(0.15,-1) };
 float lens[6] = { 340, 190, 120, 75, 41, 23 };
 float steep[6] = { 0.018, 0.02, 0.022, 0.024, 0.02, 0.016 };  // calm morning surface
+// Wind (MPC_Weather.Wind) raises the waves, longer ones the most; calm leaves a mirror.
+float rough = lerp(0.35, 2.6, W);
 float2 g = 0;
 for (int i = 0; i < 6; i++) {
     float2 d = normalize(dirs[i]);
     float k = 6.2831853 / lens[i];
     float w = sqrt(980.0 * k) * 0.55;
-    g += d * steep[i] * cos(dot(d, P.xy) * k - T * w);
+    g += d * steep[i] * rough * (i < 3 ? 1.0 + W : 1.0) * cos(dot(d, P.xy) * k - T * w);
 }
 float fade = lerp(1.0, 0.15, saturate(distance(P, C) / 4000));
-return normalize(float3(-g * fade, 1));
+g *= fade;
+// Rain (MPC_Weather.Rain): every 30 cm cell gets drops at its own moments; each sends out a ring.
+if (R > 0.01) {
+    float near = 1.0 - saturate(distance(P, C) / 2500);
+    for (int l = 0; l < 3; l++) {
+        float2 q = P.xy / 30.0 + float2(l * 0.37, l * 0.61);
+        float2 c = floor(q);
+        float h = frac(sin(dot(c + l * 7.1, float2(12.9898, 78.233))) * 43758.5453);
+        float h2 = frac(h * 17.31 + 0.13);
+        if (h2 > R) continue;
+        float t = frac(T * 1.3 + h);
+        float2 v = q - (c + 0.25 + 0.5 * float2(h, frac(h * 7.7)));
+        float d = length(v);
+        float ring = d - t * 0.45;
+        float wave = sin(ring * 45.0) * exp(-ring * ring * 300.0) * (1.0 - t);
+        g += (v / max(d, 1e-3)) * wave * 0.5 * near;
+    }
+}
+return normalize(float3(-g, 1));
 """
 
+weather = unreal.load_asset('/Game/Weather/MPC_Weather')
+if not weather:
+    raise RuntimeError('Run CreateWeatherAssets.py first: MPC_Weather is missing')
 for name, rgb in palette.items():
     path = '/Game/Materials/' + name
     # Recreate from scratch: delete_all_material_expressions keeps special output nodes
@@ -84,7 +107,9 @@ for name, rgb in palette.items():
         # UE5 Single Layer Water: depth absorption, scattering, Lumen reflections.
         mat.set_editor_property('shading_model', unreal.MaterialShadingModel.MSM_SINGLE_LAYER_WATER)
         camera = expression(mat, unreal.MaterialExpressionCameraPositionWS)
-        normal = custom(mat, WAVES, [('P', position), ('T', time), ('C', camera)])
+        rain = expression(mat, unreal.MaterialExpressionCollectionParameter, collection=weather, parameter_name='Rain')
+        wind = expression(mat, unreal.MaterialExpressionCollectionParameter, collection=weather, parameter_name='Wind')
+        normal = custom(mat, WAVES, [('P', position), ('T', time), ('C', camera), ('R', rain), ('W', wind)])
         lib.connect_material_property(normal, '', unreal.MaterialProperty.MP_NORMAL)
         base = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.01, 0.013, 0.012, 1))
         lib.connect_material_property(base, '', unreal.MaterialProperty.MP_BASE_COLOR)
@@ -124,7 +149,11 @@ return c;""", [('P', position), ('V', vertex)])
     unreal.EditorAssetLibrary.save_asset(path)
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for name in ('A_Wind','A_Water','A_Birds'):
+# The old surf-like water loop and the first rain loop are no longer used.
+for old in ('A_Water', 'A_Rain'):
+    if unreal.EditorAssetLibrary.does_asset_exist('/Game/Audio/' + old):
+        unreal.EditorAssetLibrary.delete_asset('/Game/Audio/' + old)
+for name in ('A_Wind','A_Birds','A_RainLight','A_RainHeavy','A_Crickets'):
     task = unreal.AssetImportTask()
     task.set_editor_property('filename',os.path.join(root,'Tools','GeneratedAudio',name+'.wav'))
     task.set_editor_property('destination_path','/Game/Audio')
