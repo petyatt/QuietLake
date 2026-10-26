@@ -145,6 +145,7 @@ TSharedRef<SWidget> ULakeMenuWidget::RebuildWidget()
                  TPair<const TCHAR*, const TCHAR*>(TEXT("1 / 2 / 3"), TEXT("наживка: червь, опарыш, хлеб")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("+ / −"), TEXT("глубина наживки (или колесо мыши): 10–500 см, шаг 1 см, только до заброса")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("WASD"), TEXT("ходьба, в том числе с заброшенной удочкой")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("F3"), TEXT("«Живой пруд»: чем заняты рыбы, последние всплески и круги")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("Esc"), TEXT("меню")) })
         {
             UHorizontalBox* HelpRow = WidgetTree->ConstructWidget<UHorizontalBox>();
@@ -288,7 +289,7 @@ void ALakePlayerController::BeginPlay()
     if (!IsLocalController()) return;
     ApplyVolume(LoadVolume());
     // Automated preview runs go straight into the game.
-    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview"))) { bStarted = true; return; }
+    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview"))) { bStarted = true; return; }
     // A slow flight around the lake behind the menu.
     MenuCamera = GetWorld()->SpawnActor<ACameraActor>();
     if (MenuCamera) MenuCamera->GetCameraComponent()->SetFieldOfView(60);

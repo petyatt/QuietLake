@@ -84,6 +84,7 @@ private:
     bool CanWalk() const;
     void ToggleRod();
     void ToggleView();
+    void ToggleLifePanel();
     UFUNCTION(Server, Reliable) void ServerToggleRod();
     void DoCast(float Power);
     /** Rod elevation while waiting (deg): with a deep float the main line is short, so the tip goes down to the water. */
@@ -135,7 +136,10 @@ class QUIETLAKE_API ALakeHUD : public AHUD
     GENERATED_BODY()
 public:
     virtual void DrawHUD() override;
+    /** F3: the "Живой пруд" panel: what the fish are doing, recent signs on the water, markers over nearby fish. */
+    bool bShowLife = false;
 private:
+    void DrawLifePanel(float S);
     FString LastStatus;
     float StatusTime = 0;
     float PlayStart = -1;   // when the menu last closed, for the fading key hints

@@ -12,6 +12,14 @@ UENUM()
 enum class EBait : uint8 { Worm, Maggot, Bread, Count UMETA(Hidden) };
 
 /**
+ * What a free fish is doing with its day (see ALakeLife, "Живой пруд"): feeding (predators hunt),
+ * resting in cover, or cruising its patch of water. Chosen from hunger, tiredness, the species'
+ * daily rhythm and the weather; school members follow their leader.
+ */
+UENUM()
+enum class EFishGoal : uint8 { Cruise, Feed, Rest, Count UMETA(Hidden) };
+
+/**
  * Where in the lake a species lives: how strongly it is drawn to each kind of water (0..1, see
  * LakeMap::FZones) and the water depth it keeps to. Home spots and wanderings are chosen by these
  * weights, so a new species needs only its own row in the species table.
@@ -78,6 +86,8 @@ struct FFishSpeciesInfo
     float Stamina;                  // seconds of hard pulling at full strength
     float TailBeat;                 // base tail beat rate (rad/s)
     FFishMood Mood;
+    FFishHabitat FeedHabitat;       // where it feeds (predators: where they hunt or lie in ambush)
+    FFishHabitat RestHabitat;       // where it rests
 };
 
 namespace LakeFish
@@ -90,8 +100,11 @@ namespace LakeFish
     QUIETLAKE_API float BaitInterest(EFishSpecies Species, EBait Bait, float DepthFraction);
     /** 0..1 how good this point of the lake is for the species to live at (now, if conditions are given). */
     QUIETLAKE_API float HabitatScore(EFishSpecies Species, float X, float Y, const FFishConditions* Conditions = nullptr);
-    /** A good place for the species, near Near within Range cm (Range <= 0: anywhere in the lake). */
-    QUIETLAKE_API FVector PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions = nullptr);
+    /** A good place for the species, near Near within Range cm (Range <= 0: anywhere in the lake), for what it is doing. */
+    QUIETLAKE_API FVector PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions = nullptr,
+                                   EFishGoal Goal = EFishGoal::Cruise);
+    QUIETLAKE_API const FFishHabitat& HabitatFor(EFishSpecies Species, EFishGoal Goal);
+    QUIETLAKE_API const TCHAR* GoalName(EFishSpecies Species, EFishGoal Goal);
     /** Appetite and boldness now, about 0.05..1.6 (1 = an ordinary good day). */
     QUIETLAKE_API float Activity(EFishSpecies Species, const FFishConditions& Conditions);
     /** Metres the species moves its depth band: deeper in warm water and bright sun, up under a grey sky. */
@@ -142,12 +155,36 @@ public:
     /** Bounds of the swimmable water at a point (cm). */
     static float BottomZ(float X, float Y);
 
+    // --- daily life (see ALakeLife) ---
+    EFishGoal GetGoal() const { return Goal; }
+    int32 GetSchool() const { return School; }
+    float GetHunger() const { return Hunger; }
+    float GetEnergy() const { return Energy; }
+    /** Free to live its life: not testing, holding or hooked on anyone's bait, not fleeing. */
+    bool IsFree() const { return State == EState::Roam; }
+    /** On someone's bait or line. */
+    bool IsBusy() const { return State == EState::Investigate || State == EState::Nibble || State == EState::Holding || State == EState::Hooked; }
+    /** Full simulation near players; far away the fish is stepped coarsely and replicated rarely. */
+    void SetNearPlayers(bool bNear);
+    /** A predator struck at the fry next to it, or a hunting school mate dashes: a short burst towards Target. */
+    void Dash(FVector Target, float Seconds);
+    /** Eat: a mouthful of fry or a whole fish (0..1 of a full meal). */
+    void Eat(float Meal);
+
     // Exposed for tests: advance the simulation by a fixed step.
     void Simulate(float DeltaSeconds);
 
 private:
     enum class EState : uint8 { Roam, Investigate, Nibble, Holding, Hooked, Flee };
-    void ChooseRoamTarget();
+    void ChooseRoamTarget(bool bLocal = false);
+    /** Pick what to do next from hunger, tiredness, the daily rhythm and the weather. */
+    void Decide();
+    void SetGoal(EFishGoal NewGoal, float Seconds);
+    /** Goal behaviour while roaming: feeding signs, hunting, the speed it swims at. */
+    void Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed);
+    void UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& MaxSpeed);
+    /** The fish this one follows: the school leader, or itself. */
+    const ALakeFish* Leader() const;
     FVector SteerRoam() const;
     FVector SteerSchool() const;
     FVector SteerBounds() const;
@@ -160,6 +197,7 @@ private:
     UPROPERTY(Replicated) FVector_NetQuantize10 NetLocation;
     UPROPERTY(Replicated) FRotator NetRotation;
     UPROPERTY(Replicated) float NetEffort = 0;   // 0..1, drives the tail beat on clients
+    UPROPERTY(Replicated) EFishGoal Goal = EFishGoal::Cruise;
 
     EState State = EState::Roam;
     int32 School = -1;
@@ -175,6 +213,19 @@ private:
     float NextRun = 0;                // hooked: seconds until the next run
     float Activity = 1;               // see LakeFish::Activity
     float NextMoodCheck = 0;
+    // Daily life.
+    float Energy = 1;                 // 1 rested .. 0 tired
+    float GoalUntil = 0;              // SimTime the current goal is reconsidered
+    float NextSign = 0;               // next feeding sign (bubbles, a rise)
+    float NextLook = 0;               // predators: next look for prey
+    float NextFryAttack = 0;
+    float StrikeEnd = -1;             // pike: SimTime the strike ends
+    TWeakObjectPtr<ALakeFish> Prey;   // pike: the fish it strikes at
+    int32 PreyFry = -1;               // pike/perch: the fry shoal it strikes at
+    bool bAtSpot = false;             // reached its feeding or resting spot
+    bool bNear = true;                // full detail
+    float LastBeat = -1, LastAmp = -1;// what the material was last given
+    friend class FLakePondLifeTest;
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;
     FRandomStream Random;

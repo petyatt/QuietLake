@@ -22,6 +22,7 @@
 #include "Engine/SkyLight.h"
 #include "Components/SkyLightComponent.h"
 #include "LakeFish.h"
+#include "LakeLife.h"
 #include "LakeRod.h"
 #include "LakeMenu.h"
 #include "FisherAnim.h"
@@ -198,6 +199,12 @@ void ALakeCharacter::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("Deeper", IE_Repeat, this, &ALakeCharacter::Deeper);
     Input->BindAction("ToggleRod", IE_Pressed, this, &ALakeCharacter::ToggleRod);
     Input->BindAction("ToggleView", IE_Pressed, this, &ALakeCharacter::ToggleView);
+    Input->BindAction("LifePanel", IE_Pressed, this, &ALakeCharacter::ToggleLifePanel);
+}
+void ALakeCharacter::ToggleLifePanel()
+{
+    if (const APlayerController* PC = Cast<APlayerController>(GetController()))
+        if (ALakeHUD* HUD = Cast<ALakeHUD>(PC->GetHUD())) HUD->bShowLife = !HUD->bShowLife;
 }
 // Walking is possible when no line is out, or when the rod rests on its stand.
 bool ALakeCharacter::CanWalk() const { return !bCharging; }
@@ -276,6 +283,7 @@ void ALakeCharacter::DoCast(float Power)
             : FString::Printf(TEXT("Наживка: %s на глубине %.0f см. Ждём поклёвку, следите за поплавком."), LakeFish::BaitName(Bait), FloatDepth);
         for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
             if (FVector::Dist2D(It->GetActorLocation(), Target) < 220) It->Spook(Target, 2.5f);
+        if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->EmitSign(ELakeSign::Rise, Target, 0.6f, EFishSpecies::Roach, 0.1f, 0, true);
     }, CastFlight, false);
 }
 void ALakeCharacter::ServerToggleRod_Implementation()
@@ -696,6 +704,8 @@ void ALakeCharacter::OnFishNibble(ALakeFish* Fish)
     if (FishingState != 1 || bRetrieving) return;
     ++NibbleCounter;
     Status = TEXT("Поплавок вздрагивает — рыба пробует наживку. Ждите…");
+    // Each tremble of the float sends out a faint ring.
+    if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->EmitSign(ELakeSign::Rise, FloatPosition, 0.22f, Fish ? Fish->Species : EFishSpecies::Roach, 0.1f, 0, true);
 }
 void ALakeCharacter::OnFishTake(ALakeFish* Fish)
 {
@@ -864,9 +874,63 @@ void ALakeHUD::DrawHUD()
         const FString Hint = TEXT("ЛКМ (держать) — заброс   ·   ПКМ — вытащить   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   1/2/3 — наживка   ·   Esc — меню");
         Text(Hint, FLinearColor(0.85f, 0.87f, 0.85f, 0.75f * HintAlpha), Canvas->ClipX - Width(Hint, 0.75f) - 28 * S, WeatherTop - 30 * S, 0.75f);
     }
+    if (bShowLife) DrawLifePanel(S);
     // A small dot in the centre for aiming the cast (first person only).
     if (!Fisher->bThirdPerson)
         DrawRect(FLinearColor(1, 1, 1, 0.55f), Canvas->ClipX / 2 - 1.5f * S, Canvas->ClipY / 2 - 1.5f * S, 3 * S, 3 * S);
+}
+void ALakeHUD::DrawLifePanel(float S)
+{
+    // "Живой пруд": what every species is doing now, the latest signs seen on the water, and
+    // markers over the fish within 30 m (green: feeding or hunting, blue: resting, grey: cruising).
+    UFont* Font = GEngine->GetMediumFont();
+    const ALakeLife* Life = ALakeLife::Get(GetWorld());
+    int32 Count[(int32)EFishSpecies::Count][(int32)EFishGoal::Count] = {};
+    int32 Total[(int32)EFishSpecies::Count] = {};
+    const FLinearColor GoalColour[] = { FLinearColor(0.7f, 0.72f, 0.72f), FLinearColor(0.45f, 0.95f, 0.45f), FLinearColor(0.45f, 0.7f, 1.0f) };
+    const APlayerController* PC = GetOwningPlayerController();
+    FVector ViewPos = FVector::ZeroVector;
+    FRotator ViewRot = FRotator::ZeroRotator;
+    if (PC) PC->GetPlayerViewPoint(ViewPos, ViewRot);
+    for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
+    {
+        const ALakeFish* Fish = *It;
+        ++Count[(int32)Fish->Species][(int32)Fish->GetGoal()];
+        ++Total[(int32)Fish->Species];
+        const FVector P = Fish->GetActorLocation();
+        if (FVector::Dist(P, ViewPos) > 3000 || FVector::DotProduct(P - ViewPos, ViewRot.Vector()) < 50) continue;
+        const FVector Screen = Canvas->Project(P);
+        if (Screen.X < 0 || Screen.Y < 0 || Screen.X > Canvas->ClipX || Screen.Y > Canvas->ClipY) continue;
+        const float Dot = 6 * S;
+        DrawRect(GoalColour[(int32)Fish->GetGoal()].CopyWithNewOpacity(0.85f), Screen.X - Dot / 2, Screen.Y - Dot / 2, Dot, Dot);
+    }
+    TArray<TPair<FString, FLinearColor>> Lines;
+    Lines.Add({ TEXT("Живой пруд  (F3)"), FLinearColor(0.95f, 0.94f, 0.9f) });
+    for (int32 Sp = 0; Sp < (int32)EFishSpecies::Count; ++Sp)
+    {
+        const EFishSpecies Species = (EFishSpecies)Sp;
+        Lines.Add({ FString::Printf(TEXT("%s %d:  %s %d  ·  %s %d  ·  %s %d"), LakeFish::Info(Species).Name, Total[Sp],
+            LakeFish::GoalName(Species, EFishGoal::Feed), Count[Sp][(int32)EFishGoal::Feed],
+            LakeFish::GoalName(Species, EFishGoal::Rest), Count[Sp][(int32)EFishGoal::Rest],
+            LakeFish::GoalName(Species, EFishGoal::Cruise), Count[Sp][(int32)EFishGoal::Cruise]), FLinearColor(0.8f, 0.83f, 0.8f) });
+    }
+    if (Life)
+    {
+        int32 Fry = 0;
+        for (const FFryShoal& Shoal : Life->FryShoals()) Fry += Shoal.Count;
+        Lines.Add({ FString::Printf(TEXT("Малёк: %d стаек, около %d рыбок"), Life->FryShoals().Num(), Fry), FLinearColor(0.8f, 0.83f, 0.8f) });
+        const float Now = GetWorld()->GetRealTimeSeconds();
+        for (const ALakeLife::FNote& Note : Life->Notes())
+            if (Now - Note.Time < 180)
+                Lines.Add({ FString::Printf(TEXT("• %s  (%.0f с назад)"), *Note.Text, Now - Note.Time), FLinearColor(0.95f, 0.85f, 0.55f) });
+    }
+    Lines.Add({ TEXT("Точки над рыбами: зелёные — кормятся, синие — отдыхают, серые — гуляют"), FLinearColor(0.6f, 0.63f, 0.62f) });
+    float W = 0;
+    for (const auto& Line : Lines) { float LW, LH; GetTextSize(Line.Key, LW, LH, Font, 0.8f * S); W = FMath::Max(W, LW); }
+    const float Pad = 14 * S, LineH = 24 * S, X = 28 * S, Y = 28 * S;
+    DrawRect(FLinearColor(0.01f, 0.015f, 0.02f, 0.55f), X, Y, W + Pad * 2, Lines.Num() * LineH + Pad * 2 - 4 * S);
+    for (int32 I = 0; I < Lines.Num(); ++I)
+        DrawText(Lines[I].Key, Lines[I].Value, X + Pad, Y + Pad - 4 * S + I * LineH, Font, (I == 0 ? 0.9f : 0.8f) * S);
 }
 ALakeGameMode::ALakeGameMode()
 {
@@ -877,6 +941,7 @@ ALakeGameMode::ALakeGameMode()
 void ALakeGameMode::BeginPlay()
 {
     Super::BeginPlay();
+    GetWorld()->SpawnActor<ALakeLife>();
     GetWorld()->SpawnActor<ALakeEnvironment>();
     GetWorld()->SpawnActor<ALakeWeather>();
 }

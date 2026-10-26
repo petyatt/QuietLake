@@ -3,6 +3,7 @@
 #include "LakeRod.h"
 #include "LakeFish.h"
 #include "LakeMap.h"
+#include "LakeLife.h"
 #include "Misc/AutomationTest.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -317,6 +318,123 @@ bool FLakeWeatherMoodTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Roach dislike cold water"), Activity(EFishSpecies::Roach, Make(30, true, 9, 0.5f, 0, 0.1f)) < Activity(EFishSpecies::Roach, Make(30, true, 19, 0.5f, 0, 0.1f)) * 0.6f);
     TestTrue(TEXT("Hot bright days push fish deeper than grey ones"), DepthShiftM(EFishSpecies::Roach, Make(55, false, 26, 0.05f, 0, 0.05f)) > DepthShiftM(EFishSpecies::Roach, Make(30, false, 18, 0.9f, 0, 0.2f)) + 0.6f);
     TestTrue(TEXT("Bright sun on a glassy lake makes fish wary"), IsBrightCalm(Noon) && !IsBrightCalm(GreyDawn));
+    return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakePondLifeTest, "QuietLake.Fishing.PondLife", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakePondLifeTest::RunTest(const FString& Parameters)
+{
+    using namespace LakeFish;
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    Life->SpawnFry();
+    TestTrue(FString::Printf(TEXT("Fry shoals live in the shallows (%d)"), Life->Fry.Num()), Life->Fry.Num() >= 8);
+    FRandomStream Random(5);
+    TArray<ALakeFish*> All;
+    auto Spawn = [&](EFishSpecies Species, float Weight, FVector At, int32 School = -1)
+    {
+        ALakeFish* Fish = SpawnFish(World, Species, Weight, At, School);
+        All.Add(Fish);
+        return Fish;
+    };
+    bool bInWater = true;
+    auto Run = [&](float Seconds)
+    {
+        for (int32 Step = 0; Step < Seconds / 0.05f; ++Step)
+        {
+            Life->Step(0.05f);
+            for (ALakeFish* Fish : All)
+            {
+                if (!IsValid(Fish)) continue;
+                Fish->Simulate(0.05f);
+                const FVector P = Fish->GetActorLocation();
+                bInWater &= ALakeEnvironment::IsWater(P) && P.Z <= SurfaceZ && P.Z >= ALakeFish::BottomZ(P.X, P.Y);
+            }
+        }
+    };
+
+    // Needs drive the choice: a hungry, rested fish feeds; a tired, full one rests.
+    const FVector FeedSpot = PickSpot(EFishSpecies::Crucian, Random, LakeMap::Centre, 0, nullptr, EFishGoal::Feed);
+    ALakeFish* Crucian = Spawn(EFishSpecies::Crucian, 0.5f, FeedSpot);
+    int32 Feeds = 0, Rests = 0;
+    for (int32 I = 0; I < 20; ++I)
+    {
+        Crucian->Hunger = 1; Crucian->Energy = 1;
+        Crucian->Decide();
+        Feeds += Crucian->GetGoal() == EFishGoal::Feed;
+        Crucian->Hunger = 0.05f; Crucian->Energy = 0.1f;
+        Crucian->Decide();
+        Rests += Crucian->GetGoal() == EFishGoal::Rest;
+    }
+    TestTrue(FString::Printf(TEXT("Hungry fish feed (%d/20), tired full ones rest (%d/20)"), Feeds, Rests), Feeds >= 18 && Rests >= 18);
+
+    // A feeding crucian roots in the silt: bubbles come up, and it gets full.
+    Crucian->Hunger = 1; Crucian->Energy = 1;
+    Crucian->SetGoal(EFishGoal::Feed, 600);
+    Run(120);
+    AddInfo(FString::Printf(TEXT("Crucian after 2 min of feeding: hunger %.2f, bubbles %d"), Crucian->GetHunger(), Life->Stats().Signs[(int32)ELakeSign::Bubbles]));
+    TestTrue(TEXT("A rooting crucian sends up bubbles"), Life->Stats().Signs[(int32)ELakeSign::Bubbles] > 0);
+    TestTrue(TEXT("Feeding fills the fish"), Crucian->GetHunger() < 0.8f);
+
+    // Resting restores its strength.
+    Crucian->Energy = 0.15f; Crucian->Hunger = 0;
+    Crucian->SetGoal(EFishGoal::Rest, 600);
+    Run(90);
+    AddInfo(FString::Printf(TEXT("Crucian after 1.5 min of rest: energy %.2f"), Crucian->GetEnergy()));
+    TestTrue(TEXT("Resting restores energy"), Crucian->GetEnergy() > 0.5f);
+
+    // A school does what its leader does.
+    const FVector RoachHome = PickSpot(EFishSpecies::Roach, Random, LakeMap::Centre, 0);
+    TArray<ALakeFish*> Roach;
+    for (int32 I = 0; I < 6; ++I) Roach.Add(Spawn(EFishSpecies::Roach, 0.15f, RoachHome + FVector(I * 30, 0, 0), 7));
+    Life->Step(0);
+    ALakeFish* Leader = Life->SchoolLeader(7);
+    TestNotNull(TEXT("The school has a leader"), Leader);
+    if (Leader) { Leader->Energy = 0.2f; Leader->SetGoal(EFishGoal::Rest, 600); }
+    Run(12);
+    int32 Following = 0;
+    for (ALakeFish* Fish : Roach) Following += IsValid(Fish) && Fish->GetGoal() == EFishGoal::Rest;
+    TestEqual(TEXT("The whole school follows the leader"), Following, 6);
+
+    // Hungry perch drive the fry: rushes, spray, and they fill up.
+    const FVector Fry = Life->FryLocation(0);
+    const FVector2D Deeper = LakeMap::DeeperDirection(Fry.X, Fry.Y);
+    TArray<ALakeFish*> Perch;
+    for (int32 I = 0; I < 5; ++I)
+    {
+        const FVector2D P = FVector2D(Fry) + Deeper * (300 + I * 40);
+        Perch.Add(Spawn(EFishSpecies::Perch, 0.25f, FVector(P, FMath::Max(ALakeFish::BottomZ(P.X, P.Y) + 20, SurfaceZ - 60)), 8));
+    }
+    for (ALakeFish* Fish : Perch) { Fish->Hunger = 1; Fish->Energy = 1; }
+    Life->Step(0);
+    if (ALakeFish* PerchLead = Life->SchoolLeader(8)) PerchLead->SetGoal(EFishGoal::Feed, 600);
+    const int32 ScatterBefore = Life->Stats().Signs[(int32)ELakeSign::Scatter];
+    Run(60);
+    float PerchHunger = 0;
+    for (ALakeFish* Fish : Perch) PerchHunger += Fish->GetHunger() / Perch.Num();
+    AddInfo(FString::Printf(TEXT("Perch hunt: %d rushes at the fry, mean hunger %.2f"), Life->Stats().FryAttacks, PerchHunger));
+    TestTrue(TEXT("Perch drive the fry"), Life->Stats().FryAttacks >= 3 && Life->Stats().Signs[(int32)ELakeSign::Scatter] > ScatterBefore);
+    TestTrue(TEXT("Hunting fills the perch"), PerchHunger < 0.8f);
+
+    // A pike in ambush strikes at a small fish swimming past its snout.
+    const FVector Ambush = PickSpot(EFishSpecies::Pike, Random, LakeMap::Centre, 0, nullptr, EFishGoal::Feed);
+    ALakeFish* Pike = Spawn(EFishSpecies::Pike, 2.5f, Ambush);
+    Pike->Hunger = 1;
+    Pike->SetGoal(EFishGoal::Feed, 600);
+    for (int32 Wait = 0; Wait < 18 && !Pike->bAtSpot; ++Wait) Run(5);
+    TestTrue(TEXT("The pike settles in its ambush"), Pike->bAtSpot);
+    const int32 StrikesBefore = Life->Stats().PikeStrikes;
+    for (int32 Try = 0; Try < 6 && Life->Stats().PikeStrikes == StrikesBefore && IsValid(Pike); ++Try)
+    {
+        const FVector Front = Pike->MouthLocation() + Pike->GetActorForwardVector() * 90;
+        Spawn(EFishSpecies::Roach, 0.12f, FVector(Front.X, Front.Y, FMath::Max(Front.Z, ALakeFish::BottomZ(Front.X, Front.Y) + 10)));
+        Pike->NextLook = 0;
+        Run(4);
+    }
+    AddInfo(FString::Printf(TEXT("Pike: %d strikes, %d fish eaten"), Life->Stats().PikeStrikes, Life->Stats().Eaten));
+    TestTrue(TEXT("The pike strikes from ambush"), Life->Stats().PikeStrikes > StrikesBefore);
+
+    TestTrue(TEXT("Every fish stays in the water"), bInWater);
+    World->DestroyWorld(false);
     return true;
 }
 #endif

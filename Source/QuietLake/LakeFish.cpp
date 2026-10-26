@@ -1,5 +1,6 @@
 #include "LakeFish.h"
 #include "LakeGame.h"
+#include "LakeLife.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
 #include "Components/StaticMeshComponent.h"
@@ -16,7 +17,8 @@
 //  pike   - solitary ambush hunter at the edge of reeds and lilies and by snags, explosive bursts.
 // Habitat weights: Shallows, ReedEdge, DropOff, Cover, Deep, Open, water depth (m), ambush.
 // Mood (last column): Dawn, Day, Dusk, Night; water temperature low/best/high; likes overcast;
-// light rain, heavy rain; ripple, strong wind; fog; sensitivity to fronts. Following anglers' lore:
+// light rain, heavy rain; ripple, strong wind; fog; sensitivity to fronts. Then where each species
+// feeds and where it rests (same habitat columns) - see the daily life in ALakeLife. Following anglers' lore:
 //  perch  - by day, best morning and evening, steady weather and a light ripple, sulks in a downpour;
 //  roach  - the dawns, warm settled weather, bites in a light rain, dislikes strong wind;
 //  crucian- warmth: dawns, evenings and warm nights, calm, drizzle and mist; very sensitive to fronts;
@@ -26,10 +28,14 @@ namespace
 {
     const FFishSpeciesInfo GSpecies[] = {
         // Name           Mesh                                        Len  K     Wmin  Wmax  Habitat                                                    Column       Cruise Burst Turn  Acc  School Sense  Worm Maggot Bread  Nib    Str  Stam  Beat
-        { TEXT("Окунь"),  TEXT("/Game/Fish/SM_Fish_Perch.SM_Fish_Perch"),     26, 1.25f, 0.08f, 0.8f, {0.1f, 0.3f, 1.0f, 0.9f, 0.5f, 0.3f, 1.2f, 4.8f, false},  0.3f, 0.75f, 28, 160, 220, 380, 5, 650, {1.0f, 0.55f, 0.08f}, 0, 1, 1.0f, 9,  9 , {1.0f, 0.75f, 0.9f, 0.15f,  6, 18, 27,  0.1f,  1.0f, 0.5f,  1.15f, 0.6f,  0.85f, 0.8f} },
-        { TEXT("Плотва"), TEXT("/Game/Fish/SM_Fish_Roach.SM_Fish_Roach"),     22, 1.1f,  0.05f, 0.4f, {0.5f, 1.0f, 0.3f, 0.3f, 0.0f, 0.4f, 0.6f, 2.8f, false},  0.1f, 0.45f, 24, 130, 200, 320, 7, 450, {0.35f, 1.0f, 0.85f}, 1, 3, 0.7f, 6, 10 , {1.0f, 0.55f, 0.95f, 0.3f,  8, 19, 26,  0.2f,  1.2f, 0.6f,  1.1f, 0.5f,  1.0f, 0.7f} },
-        { TEXT("Карась"), TEXT("/Game/Fish/SM_Fish_Crucian.SM_Fish_Crucian"), 20, 1.9f,  0.15f, 0.9f, {1.0f, 0.4f, 0.0f, 0.2f, 0.0f, 0.0f, 0.35f, 1.8f, false}, 0.75f, 1.0f, 12,  80, 110, 160, 1, 350, {0.55f, 0.7f, 1.0f},  3, 6, 0.9f, 14, 6 , {1.0f, 0.4f, 0.9f, 0.7f,  12, 23, 29,  0.3f,  1.25f, 0.5f,  0.85f, 0.35f,  1.2f, 1.0f} },
-        { TEXT("Щука"),   TEXT("/Game/Fish/SM_Fish_Pike.SM_Fish_Pike"),       62, 0.65f, 0.8f,  3.5f, {0.6f, 1.0f, 0.4f, 1.0f, 0.1f, 0.1f, 0.6f, 2.6f, true},   0.3f, 0.7f,  10, 420, 120, 900, 1, 800, {0.18f, 0.05f, 0.0f}, 0, 0, 1.6f, 12, 7 , {0.95f, 0.6f, 0.9f, 0.12f,  5, 17, 27,  0.6f,  1.3f, 0.7f,  1.3f, 0.75f,  0.8f, 0.8f} },
+        { TEXT("Окунь"),  TEXT("/Game/Fish/SM_Fish_Perch.SM_Fish_Perch"),     26, 1.25f, 0.08f, 0.8f, {0.1f, 0.3f, 1.0f, 0.9f, 0.5f, 0.3f, 1.2f, 4.8f, false},  0.3f, 0.75f, 28, 160, 220, 380, 5, 650, {1.0f, 0.55f, 0.08f}, 0, 1, 1.0f, 9,  9 , {1.0f, 0.75f, 0.9f, 0.15f,  6, 18, 27,  0.1f,  1.0f, 0.5f,  1.15f, 0.6f,  0.85f, 0.8f},
+          {0.4f, 1.0f, 0.8f, 0.4f, 0.1f, 0.2f, 0.6f, 3.5f, false}, {0.0f, 0.1f, 0.5f, 1.0f, 0.6f, 0.0f, 1.5f, 5.0f, false} },
+        { TEXT("Плотва"), TEXT("/Game/Fish/SM_Fish_Roach.SM_Fish_Roach"),     22, 1.1f,  0.05f, 0.4f, {0.5f, 1.0f, 0.3f, 0.3f, 0.0f, 0.4f, 0.6f, 2.8f, false},  0.1f, 0.45f, 24, 130, 200, 320, 7, 450, {0.35f, 1.0f, 0.85f}, 1, 3, 0.7f, 6, 10 , {1.0f, 0.55f, 0.95f, 0.3f,  8, 19, 26,  0.2f,  1.2f, 0.6f,  1.1f, 0.5f,  1.0f, 0.7f},
+          {0.8f, 1.0f, 0.2f, 0.1f, 0.0f, 0.3f, 0.4f, 2.2f, false}, {0.1f, 0.3f, 0.6f, 0.2f, 0.3f, 1.0f, 1.2f, 3.5f, false} },
+        { TEXT("Карась"), TEXT("/Game/Fish/SM_Fish_Crucian.SM_Fish_Crucian"), 20, 1.9f,  0.15f, 0.9f, {1.0f, 0.4f, 0.0f, 0.2f, 0.0f, 0.0f, 0.35f, 1.8f, false}, 0.75f, 1.0f, 12,  80, 110, 160, 1, 350, {0.55f, 0.7f, 1.0f},  3, 6, 0.9f, 14, 6 , {1.0f, 0.4f, 0.9f, 0.7f,  12, 23, 29,  0.3f,  1.25f, 0.5f,  0.85f, 0.35f,  1.2f, 1.0f},
+          {1.0f, 0.5f, 0.0f, 0.1f, 0.0f, 0.0f, 0.3f, 1.6f, false}, {0.8f, 0.3f, 0.0f, 0.6f, 0.0f, 0.0f, 0.6f, 2.2f, false} },
+        { TEXT("Щука"),   TEXT("/Game/Fish/SM_Fish_Pike.SM_Fish_Pike"),       62, 0.65f, 0.8f,  3.5f, {0.6f, 1.0f, 0.4f, 1.0f, 0.1f, 0.1f, 0.6f, 2.6f, true},   0.3f, 0.7f,  10, 420, 120, 900, 1, 800, {0.18f, 0.05f, 0.0f}, 0, 0, 1.6f, 12, 7 , {0.95f, 0.6f, 0.9f, 0.12f,  5, 17, 27,  0.6f,  1.3f, 0.7f,  1.3f, 0.75f,  0.8f, 0.8f},
+          {0.5f, 1.0f, 0.3f, 1.0f, 0.0f, 0.1f, 0.5f, 2.2f, true}, {0.1f, 0.2f, 0.6f, 0.7f, 0.7f, 0.0f, 1.5f, 4.0f, true} },
     };
     const TCHAR* GBaitNames[] = { TEXT("червь"), TEXT("опарыш"), TEXT("хлеб") };
 
@@ -97,9 +103,29 @@ bool LakeFish::IsBrightCalm(const FFishConditions& C)
 {
     return C.SunElevation > 12 && C.Cloud < 0.35f && C.Wind < 0.12f && C.Rain < 0.05f;
 }
+const FFishHabitat& LakeFish::HabitatFor(EFishSpecies Species, EFishGoal Goal)
+{
+    const FFishSpeciesInfo& S = Info(Species);
+    return Goal == EFishGoal::Feed ? S.FeedHabitat : Goal == EFishGoal::Rest ? S.RestHabitat : S.Habitat;
+}
+const TCHAR* LakeFish::GoalName(EFishSpecies Species, EFishGoal Goal)
+{
+    const bool bPredator = Species == EFishSpecies::Perch || Species == EFishSpecies::Pike;
+    return Goal == EFishGoal::Feed ? (bPredator ? TEXT("охотятся") : TEXT("кормятся")) : Goal == EFishGoal::Rest ? TEXT("отдыхают") : TEXT("гуляют");
+}
+namespace
+{
+    float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y, const FFishConditions* Conditions);
+}
 float LakeFish::HabitatScore(EFishSpecies Species, float X, float Y, const FFishConditions* Conditions)
 {
-    const FFishHabitat& H = Info(Species).Habitat;
+    return ScoreHabitat(Info(Species).Habitat, Species, X, Y, Conditions);
+}
+namespace
+{
+float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y, const FFishConditions* Conditions)
+{
+    using namespace LakeFish;
     if (!LakeMap::IsWater(X, Y)) return 0;
     const LakeMap::FZones Z = LakeMap::ZonesAt(X, Y);
     const float Sum = H.Shallows + H.ReedEdge + H.DropOff + H.Cover + H.Deep + H.Open;
@@ -120,8 +146,10 @@ float LakeFish::HabitatScore(EFishSpecies Species, float X, float Y, const FFish
     }
     return (0.03f + Like) * DepthFit * Downwind;
 }
-FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions)
+}
+FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions, EFishGoal Goal)
 {
+    const FFishHabitat& Habitat = HabitatFor(Species, Goal);
     // Best of a few random candidates, with some chance so fish do not all crowd one spot.
     static const FBox2D Lake = [] { FBox2D Box(ForceInit); for (const LakeMap::FShorePoint& P : LakeMap::Shoreline()) Box += P.Location; return Box; }();
     const FFishSpeciesInfo& S = Info(Species);
@@ -132,7 +160,7 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
         const FVector2D P = Range > 0 ? Near + FVector2D(Random.FRandRange(-Range, Range), Random.FRandRange(-Range, Range))
                                       : FVector2D(Random.FRandRange(Lake.Min.X, Lake.Max.X), Random.FRandRange(Lake.Min.Y, Lake.Max.Y));
         if (LakeMap::Depth(P.X, P.Y) < 35) continue;
-        const float Score = HabitatScore(Species, P.X, P.Y, Conditions) * Random.FRandRange(0.6f, 1.0f);
+        const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions) * Random.FRandRange(0.6f, 1.0f);
         if (Score > BestScore) { BestScore = Score; Best = P; }
     }
     if (BestScore < 0 && LakeMap::Depth(Best.X, Best.Y) < 35) Best = LakeMap::Centre;
@@ -156,6 +184,9 @@ ALakeFish::ALakeFish()
     Body->SetupAttachment(RootComponent);
     Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     Body->SetCastShadow(true);
+    // Under the water a fish is lost from sight long before this.
+    Body->LDMaxDrawDistance = 9000;
+    Body->CachedMaxDrawDistance = 9000;
 }
 
 void ALakeFish::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -166,6 +197,7 @@ void ALakeFish::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
     DOREPLIFETIME(ALakeFish, NetLocation);
     DOREPLIFETIME(ALakeFish, NetRotation);
     DOREPLIFETIME(ALakeFish, NetEffort);
+    DOREPLIFETIME(ALakeFish, Goal);
 }
 
 void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int32 InSchool)
@@ -177,12 +209,16 @@ void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int3
     Random.Initialize(GetUniqueID() * 7919 + (int32)(InWeight * 1000));
     Phase = Random.FRandRange(0, 2 * PI);
     Hunger = Random.FRandRange(0.55f, 1.0f);
+    Energy = Random.FRandRange(0.5f, 1.0f);
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     // Bigger fish of a species hold out longer.
     MaxStamina = S.Stamina * FMath::Lerp(0.6f, 1.8f, FMath::Clamp((WeightKg - S.MinWeight) / (S.MaxWeight - S.MinWeight), 0.0f, 1.0f));
     Stamina = MaxStamina;
     NetLocation = GetActorLocation();
     NetRotation = GetActorRotation();
+    // Spread the first decisions so the pond does not change its mind all at once.
+    GoalUntil = Random.FRandRange(2.0f, 25.0f);
+    NextSign = Random.FRandRange(1.0f, 10.0f);
     ChooseRoamTarget();
     UpdateVisual(0);
 }
@@ -202,19 +238,133 @@ bool ALakeFish::GetConditions(FFishConditions& Out) const
     return true;
 }
 
-void ALakeFish::ChooseRoamTarget()
+namespace
 {
-    // Schools and ambushers keep to their home area; loners wander through good water nearby.
-    // Now and then a home moves to better water for the conditions (deeper in the heat, to the
-    // bank the wind blows onto), so schools drift with the weather.
+    /** Dawn or dusk: the sun low or just below the horizon. */
+    bool IsTwilight(const FFishConditions& C) { return C.SunElevation > -9 && C.SunElevation < 12; }
+}
+
+const ALakeFish* ALakeFish::Leader() const
+{
+    if (School < 0) return this;
+    const ALakeLife* Life = ALakeLife::Get(GetWorld());
+    const ALakeFish* Lead = Life ? Life->SchoolLeader(School) : nullptr;
+    return Lead ? Lead : this;
+}
+
+void ALakeFish::ChooseRoamTarget(bool bLocal)
+{
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     FFishConditions Conditions;
     const bool bWeather = GetConditions(Conditions);
     const FFishConditions* C = bWeather ? &Conditions : nullptr;
+    // School members go where their leader goes, each a little to the side.
+    const ALakeFish* Lead = Leader();
+    if (Lead != this)
+    {
+        RoamTarget = Lead->RoamTarget + FVector(Random.FRandRange(-130, 130), Random.FRandRange(-130, 130), Random.FRandRange(-15, 15));
+        RoamTarget.Z = FMath::Clamp(RoamTarget.Z, BottomZ(RoamTarget.X, RoamTarget.Y) + 8, LakeFish::SurfaceZ - 10);
+        if (!LakeMap::IsWater(RoamTarget.X, RoamTarget.Y)) RoamTarget = Lead->RoamTarget;
+        return;
+    }
     const bool bHomeBound = S.SchoolSize > 1 || S.Habitat.bAmbush;
-    if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomePoint), 2500, C);
-    const float Range = S.Habitat.bAmbush ? 350.0f : S.SchoolSize > 1 ? 900.0f : 2500.0f;
-    RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bHomeBound ? HomePoint : GetActorLocation()), Range, C);
+    if (Goal == EFishGoal::Cruise)
+    {
+        // Schools and ambushers keep to their home area; loners wander through good water nearby.
+        // Now and then a home moves to better water for the conditions (deeper in the heat, to the
+        // bank the wind blows onto), so schools drift with the weather.
+        if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomePoint), 2500, C);
+        const float Range = S.Habitat.bAmbush ? 350.0f : S.SchoolSize > 1 ? 900.0f : 2500.0f;
+        RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bHomeBound ? HomePoint : GetActorLocation()), Range, C);
+        return;
+    }
+    // Hungry perch go after the nearest fry.
+    PreyFry = -1;
+    if (Goal == EFishGoal::Feed && Species == EFishSpecies::Perch)
+        if (const ALakeLife* Life = ALakeLife::Get(GetWorld()))
+        {
+            PreyFry = Life->NearestFry(GetActorLocation(), 4500);
+            if (PreyFry >= 0) { RoamTarget = Life->FryLocation(PreyFry) - FVector(0, 0, 20); return; }
+        }
+    // Feeding and resting places: near home for schools and ambushers, anywhere near for loners;
+    // once there, a fish browses along a few metres at a time.
+    const float Range = bLocal ? (Species == EFishSpecies::Crucian ? 250.0f : 500.0f) : bHomeBound ? 1500.0f : 1200.0f;
+    const FVector2D Near = bLocal || !bHomeBound ? FVector2D(GetActorLocation()) : FVector2D(HomePoint);
+    RoamTarget = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal);
+    const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
+    auto Column = [&](float Fraction) { return FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, Fraction); };
+    if (Goal == EFishGoal::Feed)
+    {
+        // Crucian root in the silt; roach sip insects off the top on calm dawns and evenings.
+        if (Species == EFishSpecies::Crucian) RoamTarget.Z = Bottom + 7;
+        else if (Species == EFishSpecies::Roach && bWeather && IsTwilight(Conditions) && Conditions.Wind < 0.5f && Conditions.Rain < 0.6f && Random.FRand() < 0.65f)
+            RoamTarget.Z = LakeFish::SurfaceZ - 12;
+        else if (Species == EFishSpecies::Perch) RoamTarget.Z = Column(Random.FRandRange(0.6f, 0.95f));
+    }
+    else
+        RoamTarget.Z = Column(Species == EFishSpecies::Crucian ? 0.75f : Species == EFishSpecies::Roach ? 0.5f : 0.8f);
+}
+
+void ALakeFish::SetGoal(EFishGoal NewGoal, float Seconds)
+{
+    GoalUntil = SimTime + Seconds;
+    if (NewGoal == Goal) return;
+    Goal = NewGoal;
+    bAtSpot = false;
+    StrikeEnd = -1;
+    Prey = nullptr;
+    StateTime = 0;
+    ChooseRoamTarget();
+}
+
+void ALakeFish::Decide()
+{
+    // School members follow their leader's choice.
+    const ALakeFish* Lead = Leader();
+    if (Lead != this)
+    {
+        if (Lead->Goal != Goal) { Goal = Lead->Goal; bAtSpot = false; ChooseRoamTarget(); }
+        GoalUntil = SimTime + Random.FRandRange(3.0f, 6.0f);
+        return;
+    }
+    // Hunger and the daily rhythm (Activity: the time of day and the weather for this species)
+    // call for food; tiredness and a sluggish hour (heat, cold, the wrong time of day) for rest;
+    // otherwise the fish patrols its water. A little chance and some stickiness keep it natural.
+    const float A = FMath::Clamp(Activity, 0.0f, 1.3f);
+    float Score[(int32)EFishGoal::Count];
+    Score[(int32)EFishGoal::Feed] = FMath::Pow(Hunger, 1.3f) * A * 1.4f;
+    Score[(int32)EFishGoal::Rest] = (1 - Energy) * 1.4f + FMath::Max(0.0f, 0.55f - A) * 1.5f;
+    Score[(int32)EFishGoal::Cruise] = 0.3f + 0.15f * Energy;
+    Score[(int32)Goal] *= 1.15f;
+    int32 Best = 0;
+    for (int32 G = 0; G < (int32)EFishGoal::Count; ++G)
+    {
+        Score[G] *= Random.FRandRange(0.85f, 1.15f);
+        if (Score[G] > Score[Best]) Best = G;
+    }
+    const EFishGoal Pick = (EFishGoal)Best;
+    SetGoal(Pick, Pick == EFishGoal::Feed ? Random.FRandRange(60, 160) : Pick == EFishGoal::Rest ? Random.FRandRange(45, 120) : Random.FRandRange(25, 70));
+}
+
+void ALakeFish::SetNearPlayers(bool bInNear)
+{
+    if (bNear == bInNear) return;
+    bNear = bInNear;
+    // Far from everyone: a few coarse steps a second and rare network updates are plenty.
+    SetActorTickInterval(bNear ? 0.0f : 0.2f);
+    SetNetUpdateFrequency(bNear ? 12.0f : 2.0f);
+}
+
+void ALakeFish::Dash(FVector Target, float Seconds)
+{
+    if (State != EState::Roam) return;
+    BurstTime = FMath::Max(BurstTime, Seconds);
+    RoamTarget = Target;
+}
+
+void ALakeFish::Eat(float Meal)
+{
+    Hunger = FMath::Max(0.0f, Hunger - Meal);
 }
 
 FVector ALakeFish::SteerRoam() const
@@ -223,8 +373,13 @@ FVector ALakeFish::SteerRoam() const
     const FVector To = RoamTarget - GetActorLocation();
     // Pike hang almost still at their ambush spot; others cruise and slow down on arrival.
     const float Lively = FMath::Lerp(0.45f, 1.0f, FMath::Clamp(Activity, 0.0f, 1.0f));
-    const float Speed = S.Habitat.bAmbush ? FMath::Min(S.CruiseSpeed, To.Size() * 0.2f)
-                                          : S.CruiseSpeed * FMath::Clamp(To.Size() / 120.0f, 0.3f, 1.0f) * Lively;
+    // An ambusher moving to a new lie swims steadily and glides the last metre.
+    float Speed = S.Habitat.bAmbush ? FMath::Min(FMath::Max(S.CruiseSpeed, 30.0f), To.Size() * 0.25f)
+                                    : S.CruiseSpeed * FMath::Clamp(To.Size() / 120.0f, 0.3f, 1.0f) * Lively;
+    // Resting fish barely move; browsing ones potter about.
+    if (Goal == EFishGoal::Rest && bAtSpot) Speed *= 0.3f;
+    else if (Goal == EFishGoal::Feed && bAtSpot && Species != EFishSpecies::Perch) Speed *= 0.55f;
+    else if (Goal != EFishGoal::Cruise && !bAtSpot && !S.Habitat.bAmbush) Speed *= 1.5f;   // on its way somewhere
     return To.GetSafeNormal() * Speed;
 }
 
@@ -233,22 +388,25 @@ FVector ALakeFish::SteerSchool() const
     if (School < 0) return FVector::ZeroVector;
     FVector Centre = FVector::ZeroVector, Heading = FVector::ZeroVector, Separation = FVector::ZeroVector;
     int32 Count = 0;
-    for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
+    auto Visit = [&](const ALakeFish* Other)
     {
-        const ALakeFish* Other = *It;
-        if (Other == this) continue;
+        if (Other == this) return;
         const FVector Offset = GetActorLocation() - Other->GetActorLocation();
         const float Dist = Offset.Size();
         if (Dist < 35 && Dist > 0.1f) Separation += Offset / (Dist * Dist) * 35;   // any species
-        if (Other->School != School || Dist > 260) continue;
+        if (Other->School != School || Dist > 260) return;
         Centre += Other->GetActorLocation();
         Heading += Other->Vel;
         ++Count;
-    }
+    };
+    if (const ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->ForEachFishNear(GetActorLocation(), 260, [&](ALakeFish* Other) { Visit(Other); });
+    else for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It) Visit(*It);
     if (Count == 0) return Separation * 20;
     Centre /= Count;
     Heading /= Count;
-    return (Centre - GetActorLocation()) * 0.25f + Heading * 0.45f + Separation * 20;
+    // A resting school hangs loosely; a hunting one keeps tight.
+    const float Pull = Goal == EFishGoal::Rest ? 0.15f : 0.25f;
+    return (Centre - GetActorLocation()) * Pull + Heading * 0.45f + Separation * 20;
 }
 
 FVector ALakeFish::SteerBounds() const
@@ -265,6 +423,141 @@ FVector ALakeFish::SteerBounds() const
     if (P.Z > LakeFish::SurfaceZ - 12) Push.Z -= 40;
     if (P.Z < BottomZ(P.X, P.Y) + 10) Push.Z += 40;
     return Push;
+}
+
+// --- daily life ------------------------------------------------------------------------------
+
+void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    ALakeLife* Life = ALakeLife::Get(GetWorld());
+    // Needs: swimming tires, resting restores; hunger grows with the appetite of the hour.
+    const float Recovery = Goal != EFishGoal::Rest ? 0.0f : bAtSpot ? 0.014f : 0.006f;   // already easing off on the way
+    Energy = FMath::Clamp(Energy - DeltaSeconds * (0.0012f + 0.004f * Effort) + DeltaSeconds * Recovery, 0.0f, 1.0f);
+    Hunger = FMath::Min(1.0f, Hunger + DeltaSeconds * 0.0035f * Activity);
+    const float Dist = FVector::Dist(GetActorLocation(), RoamTarget);
+    if (Dist < 90) bAtSpot = true;
+    if (Goal == EFishGoal::Feed && bAtSpot)
+    {
+        // Grazers find food where they browse; perch without fry pick at the bottom.
+        if (Species == EFishSpecies::Crucian || Species == EFishSpecies::Roach) Hunger -= DeltaSeconds * 0.012f;
+        else if (Species == EFishSpecies::Perch && PreyFry < 0) Hunger -= DeltaSeconds * 0.005f;
+        Hunger = FMath::Max(0.0f, Hunger);
+    }
+    if (SimTime >= GoalUntil || (Goal == EFishGoal::Feed && Hunger < 0.1f) || (Goal == EFishGoal::Rest && Energy > 0.97f)) Decide();
+    else if (School >= 0)
+    {
+        // A school turns together: follow the leader's change at once.
+        const ALakeFish* Lead = Leader();
+        if (Lead != this && Lead->Goal != Goal) Decide();
+    }
+
+    // Perch drive the fry: follow the shoal, the leader leads each rush into it.
+    if (Goal == EFishGoal::Feed && Species == EFishSpecies::Perch && PreyFry >= 0 && Life)
+    {
+        if (Leader() == this)
+        {
+            RoamTarget = Life->FryLocation(PreyFry) - FVector(0, 0, 20);
+            if (FVector::Dist2D(GetActorLocation(), RoamTarget) < 320 && SimTime >= NextFryAttack)
+            {
+                NextFryAttack = SimTime + Random.FRandRange(1.0f, 2.4f);
+                Life->AttackFry(PreyFry, this);
+            }
+        }
+    }
+    else if (Dist < 60 || StateTime > (S.Habitat.bAmbush ? 70 : 25) || (School >= 0 && StateTime > 3 && Leader() != this))
+    {
+        ChooseRoamTarget(bAtSpot && Goal != EFishGoal::Cruise);
+        StateTime = 0;
+    }
+    Desired = SteerRoam() + SteerSchool();
+    if (Goal == EFishGoal::Feed && Species == EFishSpecies::Pike) UpdatePikeAmbush(DeltaSeconds, Desired, MaxSpeed);
+    if (!Life || SimTime < NextSign) return;
+
+    // Signs of feeding on the water.
+    const FVector P = GetActorLocation();
+    const float Bottom = BottomZ(P.X, P.Y);
+    const FVector Surface(P.X, P.Y, LakeFish::SurfaceZ);
+    const float Pace = FMath::Clamp(Activity, 0.4f, 1.3f);
+    if (Goal == EFishGoal::Feed && Species == EFishSpecies::Crucian && bAtSpot && P.Z < Bottom + 30 && LakeFish::SurfaceZ - Bottom < 300)
+    {
+        // Rooting in the silt sends up chains of bubbles.
+        Life->EmitSign(ELakeSign::Bubbles, Surface, 0.4f + WeightKg * 0.8f, Species, WeightKg);
+        NextSign = SimTime + Random.FRandRange(5.0f, 12.0f) / Pace;
+    }
+    else if (Goal == EFishGoal::Feed && Species == EFishSpecies::Roach && P.Z > LakeFish::SurfaceZ - 30)
+    {
+        // Sipping an insect off the top: a small ring.
+        Life->EmitSign(ELakeSign::Rise, Surface, 0.3f + WeightKg * 1.5f, Species, WeightKg);
+        NextSign = SimTime + Random.FRandRange(9.0f, 25.0f) / Pace;
+    }
+    else NextSign = SimTime + Random.FRandRange(2.0f, 5.0f);
+}
+
+void ALakeFish::UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    ALakeLife* Life = ALakeLife::Get(GetWorld());
+    if (!Life) return;
+    if (StrikeEnd > 0)
+    {
+        // The strike: a short explosive dash at the prey.
+        ALakeFish* Target = Prey.Get();
+        const FVector At = Target ? Target->GetActorLocation() : Life->FryLocation(PreyFry);
+        const FVector To = At - MouthLocation();
+        Desired = To.GetSafeNormal() * S.BurstSpeed;
+        MaxSpeed = S.BurstSpeed;
+        BurstTime = FMath::Max(BurstTime, 0.1f);
+        if (To.Size() > 35 && SimTime < StrikeEnd) return;
+        // Resolved: caught or missed. Near the top it breaks the surface, a little deeper it shows as a swirl.
+        const float Depth = LakeFish::SurfaceZ - At.Z;
+        const FVector Surface(At.X, At.Y, LakeFish::SurfaceZ);
+        const float Size = FMath::Min(0.6f + 0.3f * WeightKg, 1.8f);
+        if (Depth < 200) Life->EmitSign(Depth < 90 ? ELakeSign::Splash : ELakeSign::Swirl, Surface, Size, Species, WeightKg);
+        if (Target)
+        {
+            const bool bCaught = To.Size() < 60 && Target->IsFree() && Random.FRand() < 0.3f + 0.35f * Hunger;
+            if (bCaught) { Life->Devour(Target, this); Eat(0.9f); }
+            else
+            {
+                Target->Spook(GetActorLocation(), 4);
+                Life->Alarm(Target, 450);
+                // A fish that escapes near the top often leaps clear.
+                if (Depth < 90 && Random.FRand() < 0.35f)
+                {
+                    const FVector Away = (At - GetActorLocation()).GetSafeNormal2D();
+                    Life->EmitSign(ELakeSign::Jump, Surface, 1, Target->Species, Target->WeightKg, FMath::RadiansToDegrees(FMath::Atan2(Away.Y, Away.X)));
+                }
+            }
+        }
+        else if (PreyFry >= 0) Life->AttackFry(PreyFry, this);
+        StrikeEnd = -1;
+        Prey = nullptr;
+        PreyFry = -1;
+        NextLook = SimTime + Random.FRandRange(4.0f, 10.0f);
+        return;
+    }
+    // Waiting in ambush: a fish or fry passing in front of the snout is struck.
+    if (!bAtSpot || SimTime < NextLook || Hunger < 0.3f) return;
+    NextLook = SimTime + 0.4f;
+    const FVector Mouth = MouthLocation(), Forward = GetActorForwardVector();
+    ALakeFish* Best = nullptr;
+    float BestDist = 260;
+    Life->ForEachFishNear(Mouth, 260, [&](ALakeFish* Other)
+    {
+        if (Other == this || Other->Species == EFishSpecies::Pike || !Other->IsFree() || Other->WeightKg > WeightKg * 0.3f) return;
+        const FVector To = Other->GetActorLocation() - Mouth;
+        const float Dist = To.Size();
+        if (Dist < BestDist && FVector::DotProduct(Forward, To / FMath::Max(1.0f, Dist)) > 0.2f) { Best = Other; BestDist = Dist; }
+    });
+    const int32 Fry = Best ? -1 : Life->NearestFry(Mouth, 350);
+    if (!Best && Fry < 0) return;
+    if (Random.FRand() > 0.35f * Hunger * FMath::Clamp(Activity, 0.3f, 1.3f)) return;
+    Prey = Best;
+    PreyFry = Fry;
+    StrikeEnd = SimTime + 0.8f;
+    BurstTime = 0.8f;
+    Life->CountPikeStrike();
 }
 
 // --- reaction to bait ----------------------------------------------------------------------
@@ -286,9 +579,11 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
         FFishConditions Conditions;
         Activity = GetConditions(Conditions) ? LakeFish::Activity(Species, Conditions) : 1.0f;
     }
-    if (State == EState::Roam && SimTime >= NextThink)
+    if (State == EState::Roam && SimTime >= NextThink && StrikeEnd < 0)
     {
         NextThink = SimTime + Random.FRandRange(0.6f, 1.4f);
+        // A feeding fish is quick to find bait, a resting one rarely bothers.
+        const float Mind = Goal == EFishGoal::Feed ? 1.4f : Goal == EFishGoal::Rest ? 0.3f : 0.85f;
         for (TActorIterator<ALakeCharacter> It(GetWorld()); It; ++It)
         {
             ALakeCharacter* Candidate = *It;
@@ -299,7 +594,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
             const float Dist = FVector::Dist(Bait, GetActorLocation());
             if (Dist > S.SenseRadius) continue;
             const float Interest = LakeFish::BaitInterest(Species, Candidate->Bait, Depth01(Bait.Z, Bait.X, Bait.Y))
-                * Hunger * Activity * FMath::Sqrt(1 - Dist / S.SenseRadius);
+                * Hunger * Activity * Mind * FMath::Sqrt(1 - Dist / S.SenseRadius);
             if (Random.FRand() < Interest * 0.7f)
             {
                 State = EState::Investigate;
@@ -371,6 +666,8 @@ void ALakeFish::Spook(FVector From, float Seconds)
     FleeFrom = From;
     FleeTime = Seconds;
     BurstTime = FMath::Min(Seconds, 1.2f);
+    StrikeEnd = -1;
+    Prey = nullptr;
 }
 
 void ALakeFish::Hook(ALakeCharacter* Angler)
@@ -379,6 +676,9 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     StateTime = 0;
     TargetAngler = Angler;
     BurstTime = 2.0f;   // the first run after the strike
+    StrikeEnd = -1;
+    // The thrashing scares the school mates nearby.
+    if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->Alarm(this, 600);
 }
 
 void ALakeFish::ApplyLineForce(FVector Force) { PendingLineForce = Force; }
@@ -462,13 +762,7 @@ void ALakeFish::Simulate(float DeltaSeconds)
     switch (State)
     {
     case EState::Roam:
-        if (FVector::Dist(GetActorLocation(), RoamTarget) < 60 || StateTime > (S.Habitat.bAmbush ? 70 : 20))
-        {
-            ChooseRoamTarget();
-            StateTime = 0;
-        }
-        Desired = SteerRoam() + SteerSchool();
-        Hunger = FMath::Min(1.0f, Hunger + DeltaSeconds * 0.004f * Activity);
+        Live(DeltaSeconds, Desired, MaxSpeed);
         break;
     case EState::Investigate:
     {
@@ -516,6 +810,14 @@ void ALakeFish::Simulate(float DeltaSeconds)
         MaxSpeed = FMath::Lerp(S.CruiseSpeed * 0.5f, S.BurstSpeed, Fresh);
         // Pulling against the line costs stamina; with a slack line the fish gets its breath back.
         Stamina = FMath::Clamp(Stamina - DeltaSeconds * (0.15f + Effort * 0.9f) + (Effort < 0.2f ? DeltaSeconds * 0.12f : 0.0f), 0.0f, MaxStamina);
+        // Thrashing at the top: splashes the angler can see and hear.
+        if (GetActorLocation().Z > LakeFish::SurfaceZ - 30 && Effort > 0.35f && SimTime >= NextSign)
+            if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
+            {
+                const FVector P = GetActorLocation();
+                Life->EmitSign(ELakeSign::Splash, FVector(P.X, P.Y, LakeFish::SurfaceZ), FMath::Min(0.35f + WeightKg * 0.4f, 1.4f), Species, WeightKg, 0, true);
+                NextSign = SimTime + Random.FRandRange(0.9f, 2.2f);
+            }
         break;
     }
     case EState::Flee:
@@ -543,13 +845,24 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
         // and put the centre of mass (about 40% back from the snout) on the actor's origin.
         Body->SetRelativeRotation(FRotator(0, 180, 0));
         Body->SetRelativeLocation(FVector(S.MeshLength * 0.4f, 0, 0));
-        Body->SetCustomPrimitiveDataFloat(2, Phase);
         Body->SetCustomPrimitiveDataFloat(3, S.MeshLength);
     }
-    SetActorScale3D(FVector(LakeFish::LengthCm(Species, WeightKg) / S.MeshLength));
-    const float E = HasAuthority() ? Effort : NetEffort;
-    Body->SetCustomPrimitiveDataFloat(0, S.TailBeat * (0.6f + 2.2f * E));
-    Body->SetCustomPrimitiveDataFloat(1, 0.03f + 0.06f * E);
+    const FVector Scale(LakeFish::LengthCm(Species, WeightKg) / S.MeshLength);
+    if (!GetActorScale3D().Equals(Scale, 0.001f)) SetActorScale3D(Scale);
+    // The material bends the body by sin(u - Time * Rate + Phase). Every change of these values
+    // rebuilds the fish's render state, so they change only in steps of effort, and the phase is
+    // shifted so the tail carries on smoothly at the new rate.
+    const float E = FMath::RoundToFloat((HasAuthority() ? Effort : NetEffort) * 8) / 8;
+    const float Beat = S.TailBeat * (0.6f + 2.2f * E), Amp = 0.03f + 0.06f * E;
+    if (Beat != LastBeat)
+    {
+        const double Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+        if (LastBeat >= 0) Phase = (float)FMath::Fmod(Phase + Now * (Beat - LastBeat), 2.0 * PI);
+        LastBeat = Beat;
+        Body->SetCustomPrimitiveDataFloat(0, Beat);
+        Body->SetCustomPrimitiveDataFloat(2, Phase);
+    }
+    if (Amp != LastAmp) { LastAmp = Amp; Body->SetCustomPrimitiveDataFloat(1, Amp); }
 }
 
 void ALakeFish::Tick(float DeltaSeconds)
@@ -557,8 +870,10 @@ void ALakeFish::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     if (HasAuthority())
     {
-        // Fixed sub-steps keep the swimming model stable at low frame rates.
-        const int32 Steps = FMath::Clamp(FMath::CeilToInt(DeltaSeconds / 0.02f), 1, 5);
+        // Fixed sub-steps keep the swimming model stable at low frame rates; far from every
+        // player a few coarse steps are enough.
+        const float StepLength = bNear ? 0.02f : 0.1f;
+        const int32 Steps = FMath::Clamp(FMath::CeilToInt(DeltaSeconds / StepLength), 1, bNear ? 5 : 3);
         for (int32 I = 0; I < Steps; ++I) Simulate(DeltaSeconds / Steps);
         NetLocation = GetActorLocation();
         NetRotation = GetActorRotation();
