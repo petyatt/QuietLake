@@ -1,5 +1,6 @@
 #include "LakeLife.h"
 #include "LakeGame.h"
+#include "LakeHUD.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
 #include "Camera/PlayerCameraManager.h"

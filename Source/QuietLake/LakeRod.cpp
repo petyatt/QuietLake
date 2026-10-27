@@ -293,15 +293,15 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
     bool bHookHeld = false;
     FVector HookTarget = HookPos;
     // Lifting a fish out: the fish is a heavy weight on the end of the line.
-    const bool bFishOut = In.FishingState == 4 && In.FishGrams > 0;
+    const bool bFishOut = In.FishingState == EFishingState::Landing && In.FishGrams > 0;
     if (!bFishOut) LandLine = -1;
     const float WholeLine = MainLength + LeaderLength;
-    if (In.LineFish && (In.FishingState == 2 || In.FishingState == 3))
+    if (In.LineFish && (In.FishingState == EFishingState::Bite || In.FishingState == EFishingState::Fight))
     {
         bHookHeld = true;
         HookTarget = In.LineFish->MouthLocation();
     }
-    else if (In.FishingState >= 1 && In.BiteMotion != EBiteMotion::None)
+    else if (In.FishingState >= EFishingState::Waiting && In.BiteMotion != EBiteMotion::None)
     {
         bHookHeld = true;
         // Pulling means first taking up the slack (bait lying on the bottom), then drawing the line.
@@ -397,11 +397,11 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         // The ripple rocks the antenna a little, so a float with nothing to hold it upright falls over.
         const FVector Rock = Wet > 0.02f ? FVector(FMath::Sin(Time * 1.3f), FMath::Cos(Time * 1.7f), 0) * 15.0f : FVector::ZeroVector;
         Integrate(FloatT, FloatTPrev, FloatDamp, FVector(0, 0, -Gravity + LiftT * Gravity / TipMass) + Rock);
-        if (In.FishingState == 1 || In.FishingState == 2)
+        if (In.FishingState == EFishingState::Waiting || In.FishingState == EFishingState::Bite)
             if (!bFlying && Wet > 0.02f)
             {
                 // The server keeps where the float is (it moves when the angler walks): drift towards it.
-                const FVector Pull = FVector(In.FloatTarget.X - FloatK.X, In.FloatTarget.Y - FloatK.Y, 0) * (bHookHeld && In.FishingState == 2 ? 0.3f : 2.0f) * H * H;
+                const FVector Pull = FVector(In.FloatTarget.X - FloatK.X, In.FloatTarget.Y - FloatK.Y, 0) * (bHookHeld && In.FishingState == EFishingState::Bite ? 0.3f : 2.0f) * H * H;
                 FloatK += Pull;
                 FloatT += Pull;
             }
@@ -548,8 +548,8 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
         const FVector ToRig = (BobberPos - Tip()).GetSafeNormal();
         const float MainLength = LineLength - FMath::Clamp(In.HookDepth, 5.0f, 520.0f);
         const bool bTaut = FVector::Dist(BobberPos, Tip()) > MainLength * 0.985f;
-        if (In.FishingState == 3) TipLoad = ToRig * (1500.0f + In.Tension * 75000.0f);
-        else if (In.FishingState == 4) TipLoad = (HookPos - Tip()).GetSafeNormal() * (2500.0f + In.FishGrams * 30.0f);   // the fish's weight bends the rod
+        if (In.FishingState == EFishingState::Fight) TipLoad = ToRig * (1500.0f + In.Tension * 75000.0f);
+        else if (In.FishingState == EFishingState::Landing) TipLoad = (HookPos - Tip()).GetSafeNormal() * (2500.0f + In.FishGrams * 30.0f);   // the fish's weight bends the rod
         else if (bTaut) TipLoad = ToRig * (bBobberInWater ? 2500.0f : In.bSweeping ? 6000.0f : 4000.0f);
     }
     SimulateBlank(In.Hold, TipLoad, DeltaSeconds);

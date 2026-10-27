@@ -20,6 +20,17 @@ UENUM()
 enum class EFishGoal : uint8 { Cruise, Feed, Rest, Count UMETA(Hidden) };
 
 /** What the float does while a fish works at the bait. */
+/** Where an angler is in the fishing cycle (replicated: every machine animates the rod from it). */
+UENUM()
+enum class EFishingState : uint8
+{
+    Idle,       // no line in the water
+    Waiting,    // the bait is in the water (also while the rig is being lifted out)
+    Bite,       // a fish holds the bait: strike now
+    Fight,      // hooked: playing the fish
+    Landing,    // a tired fish lifted out of the water on the line and swung to the hand
+};
+
 UENUM()
 enum class EBiteMotion : uint8
 {

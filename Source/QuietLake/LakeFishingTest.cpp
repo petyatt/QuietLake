@@ -44,7 +44,7 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     auto Settle = [Fisher]()
     {
         // Lifting a fish out ends with it in the hand.
-        if (Fisher->FishingState == 4)
+        if (Fisher->FishingState == EFishingState::Landing)
         {
             Fisher->LandServerTime -= ALakeCharacter::LandTime;
             Fisher->UpdateLanding();
@@ -56,26 +56,26 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     };
     Controller->SetControlRotation(FRotator(0, FacingYaw + 180, 0));
     Cast();
-    TestEqual(TEXT("Cast toward land rejected"), Fisher->FishingState, 0);
+    TestTrue(TEXT("Cast toward land rejected"), Fisher->FishingState == EFishingState::Idle);
     TestFalse(TEXT("Backswing ends after a rejected cast"), Fisher->bCharging);
     Controller->SetControlRotation(FRotator(0, FacingYaw, 0));
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    TestTrue(TEXT("Pressing LMB starts the sweep"), Fisher->bCharging && Fisher->FishingState == 0);
+    TestTrue(TEXT("Pressing LMB starts the sweep"), Fisher->bCharging && Fisher->FishingState == EFishingState::Idle);
     Fisher->ChargeServerStart -= ALakeCharacter::ChargeTime * 0.5f;
     Fisher->ServerRelease_Implementation();
     const float HalfCast = FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
     Fisher->BaitActiveTime = 0;
-    TestEqual(TEXT("Cast toward water accepted"), Fisher->FishingState, 1);
+    TestTrue(TEXT("Cast toward water accepted"), Fisher->FishingState == EFishingState::Waiting);
     TestTrue(TEXT("Bait hangs in the water"), ALakeEnvironment::IsWater(Fisher->BaitLocation()) && Fisher->BaitLocation().Z < LakeFish::SurfaceZ);
     Fisher->ServerFish_Implementation();
-    TestEqual(TEXT("Rapid repeated input ignored"), Fisher->FishingState, 1);
+    TestTrue(TEXT("Rapid repeated input ignored"), Fisher->FishingState == EFishingState::Waiting);
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
     TestEqual(TEXT("Early strike gives no catch"), Fisher->CatchCount, 0);
-    TestTrue(TEXT("Early strike lifts the rig out slowly"), Fisher->bRetrieving && Fisher->FishingState == 1 && !Fisher->HasBaitInWater());
+    TestTrue(TEXT("Early strike lifts the rig out slowly"), Fisher->bRetrieving && Fisher->FishingState == EFishingState::Waiting && !Fisher->HasBaitInWater());
     Settle();
-    TestEqual(TEXT("Early strike ends cast"), Fisher->FishingState, 0);
+    TestTrue(TEXT("Early strike ends cast"), Fisher->FishingState == EFishingState::Idle);
     Cast();
     const float FullCast = FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
     TestTrue(FString::Printf(TEXT("Holding LMB longer casts farther (%.0f vs %.0f cm)"), FullCast, HalfCast), FullCast > HalfCast + 100 && FullCast < 1000);
@@ -86,14 +86,14 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Cast();
     const FVector Bait = Fisher->BaitLocation();
     ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.35f, Bait + FVector(320, 120, 0));
-    for (int32 Step = 0; Step < 6000 && Fisher->FishingState == 1; ++Step) Perch->Simulate(0.05f);
-    TestEqual(TEXT("Perch takes the worm by itself"), Fisher->FishingState, 2);
+    for (int32 Step = 0; Step < 6000 && Fisher->FishingState == EFishingState::Waiting; ++Step) Perch->Simulate(0.05f);
+    TestTrue(TEXT("Perch takes the worm by itself"), Fisher->FishingState == EFishingState::Bite);
     TestEqual(TEXT("Taking the bait is not a catch"), Fisher->CatchCount, 0);
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    TestEqual(TEXT("Strike hooks the fish"), Fisher->FishingState, 3);
+    TestTrue(TEXT("Strike hooks the fish"), Fisher->FishingState == EFishingState::Fight);
     TestTrue(TEXT("Fish knows it is hooked"), Perch->IsHooked());
-    for (int32 Step = 0; Step < 3000 && Fisher->FishingState == 3; ++Step)
+    for (int32 Step = 0; Step < 3000 && Fisher->FishingState == EFishingState::Fight; ++Step)
     {
         if (Fisher->Tension > 0.55f) Fisher->ServerRelease_Implementation();
         else if (Fisher->Tension < 0.2f) Fisher->ServerFish_Implementation();
@@ -103,28 +103,28 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
         if (IsValid(Perch)) Perch->Simulate(0.05f);
     }
     AddInfo(TEXT("Fight ended: ") + Fisher->Status);
-    TestTrue(TEXT("A tired perch is lifted out of the water"), Fisher->FishingState == 4 && IsValid(Perch) && Perch->IsLifted());
+    TestTrue(TEXT("A tired perch is lifted out of the water"), Fisher->FishingState == EFishingState::Landing && IsValid(Perch) && Perch->IsLifted());
     TestEqual(TEXT("A fish counts only once in the hand"), Fisher->CatchCount, 0);
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
     Fisher->ServerCancel_Implementation();
-    TestEqual(TEXT("Input does not interrupt the lift"), Fisher->FishingState, 4);
+    TestTrue(TEXT("Input does not interrupt the lift"), Fisher->FishingState == EFishingState::Landing);
     Settle();
     TestEqual(TEXT("Controlled reeling lands the perch"), Fisher->CatchCount, 1);
-    TestEqual(TEXT("Successful catch ends cast"), Fisher->FishingState, 0);
+    TestTrue(TEXT("Successful catch ends cast"), Fisher->FishingState == EFishingState::Idle);
 
     // The same careful play takes longer with a heavy fish than with a light one of its species.
     auto FightSeconds = [&](float Weight)
     {
         Cast();
-        TestEqual(TEXT("Cast for the crucian fight"), Fisher->FishingState, 1);
+        TestTrue(TEXT("Cast for the crucian fight"), Fisher->FishingState == EFishingState::Waiting);
         for (int32 Pose = 0; Pose < 60; ++Pose) Fisher->UpdateRodPose(0.05f);   // the rod settles to the waiting pose
         ALakeFish* Fish = SpawnFish(World, EFishSpecies::Crucian, Weight, Fisher->BaitLocation());
         Fisher->OnFishTake(Fish);
         Fisher->NextActionTime = 0;
         Fisher->ServerFish_Implementation();
         int32 Step = 0;
-        for (; Step < 2400 && Fisher->FishingState == 3; ++Step)
+        for (; Step < 2400 && Fisher->FishingState == EFishingState::Fight; ++Step)
         {
             if (Fisher->Tension > 0.55f) Fisher->ServerRelease_Implementation();
             else if (Fisher->Tension < 0.2f) Fisher->ServerFish_Implementation();
@@ -148,19 +148,19 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Cast();
     ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.2f, Fisher->BaitLocation() + FVector(0, 300, 0));
     Fisher->OnFishTake(Roach);
-    TestEqual(TEXT("Take sinks the bobber"), Fisher->FishingState, 2);
+    TestTrue(TEXT("Take sinks the bobber"), Fisher->FishingState == EFishingState::Bite);
     Fisher->Escape();
     TestEqual(TEXT("Missed take awards no fish"), Fisher->CatchCount, 1);
-    TestTrue(TEXT("Missed take leaves the rig fishing"), Fisher->FishingState == 1 && !Fisher->bRetrieving && Fisher->HasBaitInWater());
+    TestTrue(TEXT("Missed take leaves the rig fishing"), Fisher->FishingState == EFishingState::Waiting && !Fisher->bRetrieving && Fisher->HasBaitInWater());
     TestTrue(TEXT("The fish lets go of the bait"), Roach->IsFree());
     Fisher->ServerCancel_Implementation();
     Settle();
-    TestEqual(TEXT("The rig can then be lifted out"), Fisher->FishingState, 0);
+    TestTrue(TEXT("The rig can then be lifted out"), Fisher->FishingState == EFishingState::Idle);
     Cast();
     Fisher->ServerCancel_Implementation();
     TestTrue(TEXT("Cancel starts lifting the rig"), Fisher->bRetrieving);
     Settle();
-    TestEqual(TEXT("Cancel ends cast"), Fisher->FishingState, 0);
+    TestTrue(TEXT("Cancel ends cast"), Fisher->FishingState == EFishingState::Idle);
 
     // A big pike against a reel that is never released breaks the line.
     Cast();
@@ -168,8 +168,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->OnFishTake(Pike);
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    for (int32 Step = 0; Step < 600 && Fisher->FishingState == 3; ++Step) { Fisher->UpdateFight(0.05f); Pike->Simulate(0.05f); }
-    TestEqual(TEXT("Continuous reeling against a pike breaks the line"), Fisher->FishingState, 0);
+    for (int32 Step = 0; Step < 600 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); Pike->Simulate(0.05f); }
+    TestTrue(TEXT("Continuous reeling against a pike breaks the line"), Fisher->FishingState == EFishingState::Idle);
     TestEqual(TEXT("Broken line awards no fish"), Fisher->CatchCount, 1);
     TestFalse(TEXT("Pike is free again"), Pike->IsHooked());
 
@@ -180,8 +180,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
     Fisher->ServerRelease_Implementation();
-    for (int32 Step = 0; Step < 3000 && Fisher->FishingState == 3; ++Step) { Fisher->UpdateFight(0.05f); Crucian->Simulate(0.05f); }
-    TestEqual(TEXT("Abandoned fight times out"), Fisher->FishingState, 0);
+    for (int32 Step = 0; Step < 3000 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); Crucian->Simulate(0.05f); }
+    TestTrue(TEXT("Abandoned fight times out"), Fisher->FishingState == EFishingState::Idle);
     TestEqual(TEXT("Timeout awards no fish"), Fisher->CatchCount, 1);
 
     // Fixed line: walking away from the water drags the float after the angler.
@@ -195,12 +195,12 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->SetActorLocation(Back(200));
     for (int32 Step = 0; Step < 40; ++Step) Fisher->UpdateRodPose(0.05f);
     Fisher->ConstrainFloat();
-    TestTrue(TEXT("Stepping back drags the float towards the bank"), Fisher->FishingState == 0 || FVector2D::DotProduct(FVector2D(Fisher->FloatPosition - FloatBefore), Facing) < -100);
+    TestTrue(TEXT("Stepping back drags the float towards the bank"), Fisher->FishingState == EFishingState::Idle || FVector2D::DotProduct(FVector2D(Fisher->FloatPosition - FloatBefore), Facing) < -100);
     Fisher->SetActorLocation(Back(1140));
     for (int32 Step = 0; Step < 40; ++Step) Fisher->UpdateRodPose(0.05f);
-    if (Fisher->FishingState == 1) Fisher->ConstrainFloat();
+    if (Fisher->FishingState == EFishingState::Waiting) Fisher->ConstrainFloat();
     Settle();
-    TestEqual(TEXT("Walking far inland pulls the rig out of the water"), Fisher->FishingState, 0);
+    TestTrue(TEXT("Walking far inland pulls the rig out of the water"), Fisher->FishingState == EFishingState::Idle);
     Fisher->SetActorLocation(Back(0));
     for (int32 Step = 0; Step < 40; ++Step) Fisher->UpdateRodPose(0.05f);
 
@@ -218,11 +218,11 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Depth is at most 15-20% short of the rod"), Fisher->FloatDepth == ALakeCharacter::MaxDepth && Fisher->FloatDepth <= 0.85f * ALakeRod::RodLength && Fisher->FloatDepth >= 0.8f * ALakeRod::RodLength);
     // A deep float leaves a short main line: the rod is lowered so the float still sits on the water.
     Cast();
-    TestEqual(TEXT("Deep cast accepted"), Fisher->FishingState, 1);
+    TestTrue(TEXT("Deep cast accepted"), Fisher->FishingState == EFishingState::Waiting);
     for (int32 Step = 0; Step < 60; ++Step) Fisher->UpdateRodPose(0.05f);
     Fisher->ConstrainFloat();
     TestTrue(FString::Printf(TEXT("Float reaches the water with a 1 m main line (tip %.0f cm above it)"), Fisher->RodTip().Z - LakeFish::SurfaceZ),
-        Fisher->FishingState == 1 && Fisher->RodTip().Z - LakeFish::SurfaceZ < ALakeRod::LineLength - Fisher->HookDepth);
+        Fisher->FishingState == EFishingState::Waiting && Fisher->RodTip().Z - LakeFish::SurfaceZ < ALakeRod::LineLength - Fisher->HookDepth);
     Fisher->ServerCancel_Implementation();
     Settle();
     for (int32 I = 0; I < 1000; ++I) Fisher->ServerChangeDepth_Implementation(-1);
@@ -246,11 +246,11 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->SetActorLocation(Fisher->StandBase + FVector(-600, 0, 100));
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    TestEqual(TEXT("Cannot strike from far away"), Fisher->FishingState, 2);
+    TestTrue(TEXT("Cannot strike from far away"), Fisher->FishingState == EFishingState::Bite);
     Fisher->SetActorLocation(Fisher->StandBase + FVector(-80, 0, 100));
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    TestEqual(TEXT("Grabbing the rod from the stand strikes"), Fisher->FishingState, 3);
+    TestTrue(TEXT("Grabbing the rod from the stand strikes"), Fisher->FishingState == EFishingState::Fight);
     TestFalse(TEXT("Rod is back in the hands"), Fisher->bRodOnStand);
     Fisher->ServerCancel_Implementation();
     World->DestroyWorld(false);
@@ -525,18 +525,18 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     Fisher->ChargeServerStart -= ALakeCharacter::ChargeTime;
     Fisher->ServerRelease_Implementation();
     Fisher->BaitActiveTime = 0;
-    TestEqual(TEXT("Cast for the crucian"), Fisher->FishingState, 1);
+    TestTrue(TEXT("Cast for the crucian"), Fisher->FishingState == EFishingState::Waiting);
     TSet<EBiteMotion> Seen;
     EBiteMotion FirstTake = EBiteMotion::None;
     for (int32 Try = 0; Try < 8 && FirstTake == EBiteMotion::None; ++Try)
     {
         ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.6f, Fisher->BaitLocation() + FVector(150, 0, 0));
-        for (int32 Step = 0; Step < 2400 && Fisher->FishingState == 1; ++Step)
+        for (int32 Step = 0; Step < 2400 && Fisher->FishingState == EFishingState::Waiting; ++Step)
         {
             Crucian->Simulate(0.05f);
             Seen.Add(Fisher->BiteMotion);
         }
-        if (Fisher->FishingState == 2) FirstTake = Fisher->BiteMotion;
+        if (Fisher->FishingState == EFishingState::Bite) FirstTake = Fisher->BiteMotion;
         else Crucian->Destroy();
     }
     AddInfo(FString::Printf(TEXT("Crucian take shown as motion %d; the float trembled first: %d"), (int32)FirstTake, Seen.Contains(EBiteMotion::Tremble)));

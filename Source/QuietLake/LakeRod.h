@@ -8,7 +8,7 @@
 struct FRodInput
 {
     FTransform Hold;              // rod butt; X = along the rod towards the tip
-    int32 FishingState = 0;
+    EFishingState FishingState = EFishingState::Idle;
     EBait Bait = EBait::Worm;
     FVector FloatTarget = FVector::ZeroVector;   // where the bobber sits / lands (server)
     float HookDepth = 100;        // leader length under the bobber
@@ -26,7 +26,7 @@ struct FRodInput
     FVector StandBase = FVector::ZeroVector;
     float StandYaw = 0;
     class ALakeFish* LineFish = nullptr;          // fish holding the bait or hooked
-    // Lifting a fish out (state 4): it hangs on the hook with its weight; at the end the angler's
+    // Lifting a fish out (Landing): it hangs on the hook with its weight; at the end the angler's
     // free hand takes it.
     float FishGrams = 0, FishLength = 0;
     FVector HandPoint = FVector::ZeroVector;

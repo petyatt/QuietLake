@@ -2,7 +2,6 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/GameModeBase.h"
-#include "GameFramework/HUD.h"
 #include "LakeFish.h"
 #include "LakeGame.generated.h"
 
@@ -17,7 +16,7 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
     virtual void EndPlay(const EEndPlayReason::Type Reason) override;
     virtual void BeginPlay() override;
-    UPROPERTY(Replicated) int32 FishingState = 0;
+    UPROPERTY(Replicated) EFishingState FishingState = EFishingState::Idle;
     UPROPERTY(Replicated) int32 CatchCount = 0;
     UPROPERTY(Replicated) FString Status = TEXT("Подойдите к воде. ЛКМ — забросить.");
     UPROPERTY(Replicated) FVector FloatPosition = FVector::ZeroVector;
@@ -49,7 +48,7 @@ public:
     UPROPERTY(Replicated) float CastFlight = 1;
     UPROPERTY(Replicated) float CastPower = 0;
     UPROPERTY(Replicated) float StrikeServerTime = -100;
-    /** State 4: a tired fish lifted out of the water on the line and swung to the hand. */
+    /** Landing: when the tired fish was lifted out of the water on the line, to be swung to the hand. */
     UPROPERTY(Replicated) float LandServerTime = -100;
     static constexpr float LandTime = 4.0f;
     UPROPERTY(Replicated) float HookDepth = 100;            // rig in the water: bobber to hook
@@ -97,6 +96,8 @@ private:
     void ToggleRod();
     void ToggleView();
     void ToggleLifePanel();
+    /** -LakePreview, -BitePreview, -LandPreview: scripted scenes, filmed and logged (LakePreviews.cpp). */
+    void RunPreviews();
     UFUNCTION(Server, Reliable) void ServerToggleRod();
     void DoCast(float Power);
     /** Rod elevation while waiting (deg): with a deep float the main line is short, so the tip goes down to the water. */
@@ -143,21 +144,6 @@ private:
     TWeakObjectPtr<ALakeFish> BaitFish;     // fish testing or holding the bait
     TWeakObjectPtr<ALakeFish> HookedFish;
     UPROPERTY() TObjectPtr<class UCameraComponent> FishingCamera;
-};
-
-UCLASS()
-class QUIETLAKE_API ALakeHUD : public AHUD
-{
-    GENERATED_BODY()
-public:
-    virtual void DrawHUD() override;
-    /** F3: the "Живой пруд" panel: what the fish are doing, recent signs on the water, markers over nearby fish. */
-    bool bShowLife = false;
-private:
-    void DrawLifePanel(float S);
-    FString LastStatus;
-    float StatusTime = 0;
-    float PlayStart = -1;   // when the menu last closed, for the fading key hints
 };
 
 UCLASS()

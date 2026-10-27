@@ -22,6 +22,7 @@
 #include "Engine/SkyLight.h"
 #include "Components/SkyLightComponent.h"
 #include "LakeFish.h"
+#include "LakeHUD.h"
 #include "LakeLife.h"
 #include "LakeRod.h"
 #include "LakeMenu.h"
@@ -73,285 +74,7 @@ void ALakeCharacter::BeginPlay()
         if (RodVisual) RodVisual->AddTickPrerequisiteActor(this);
     }
 #if !UE_BUILD_SHIPPING
-    // -LakePreview: after the environment shots, film the angler: idle, bait close-up,
-    // backswing, the cast, the float on the water and the rod on its stand.
-    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) && GetNetMode() == NM_Standalone)
-    {
-        // The environment shots end at 103 s; the times below were laid out from 50 s.
-        constexpr float Offset = 61.0f;
-        auto At = [this, Offset](float Seconds, TFunction<void()> Action)
-        {
-            FTimerHandle Handle;
-            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds + Offset, false);
-        };
-        auto Shot = [](const TCHAR* Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
-        At(50.0f, [this]
-        {
-            APlayerController* PC = Cast<APlayerController>(GetController());
-            if (!PC) return;
-            PC->SetViewTarget(this);
-            FVector2D Facing;
-            const FVector2D Spot = LakeMap::StartSpot(&Facing) + FVector2D(-Facing.Y, Facing.X) * 300;
-            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
-            PC->SetControlRotation(FRotator(-6, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)) + 8, 0));
-            if (!bThirdPerson) ToggleView();
-        });
-        At(54.0f, [Shot] { Shot(TEXT("Fisher_Idle.png")); });
-        // Depth control: the float slides up the line towards the tip, then back.
-        At(54.1f, [this] { ServerChangeDepth_Implementation(250); });
-        for (int32 I = 0; I <= 18; ++I)
-            At(54.1f + I * 0.1f, [this, I]
-            {
-                if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEPTHLOG t=%.1f hookdepth=%.0f tipZ=%.0f floatZ=%.0f hookZ=%.0f"), I * 0.1f, HookDepth,
-                    RodVisual->Tip().Z, RodVisual->BobberLocation().Z, RodVisual->HookLocation().Z);
-            });
-        At(55.0f, [this, Shot]
-        {
-            if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEPTH depth=%.0f float above hook=%.0f cm"), FloatDepth, RodVisual->BobberLocation().Z - RodVisual->HookLocation().Z);
-            Shot(TEXT("Fisher_Depth.png"));
-        });
-        At(55.1f, [this] { ServerChangeDepth_Implementation(-250); });
-        At(55.93f, [this]
-        {
-            if (!RodVisual) return;
-            const FVector HookAt = RodVisual->HookLocation();
-            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_ROD tip=%s hook=%s hook above ground=%.0f cm float above ground=%.0f cm"), *RodVisual->Tip().ToString(), *HookAt.ToString(),
-                HookAt.Z - ALakeEnvironment::GroundHeight(HookAt.X, HookAt.Y), RodVisual->BobberLocation().Z - ALakeEnvironment::GroundHeight(RodVisual->BobberLocation().X, RodVisual->BobberLocation().Y));
-            const FVector CamPos = HookAt + GetActorRightVector() * 30 - GetActorForwardVector() * 10 + FVector(0, 0, 6);
-            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(CamPos, (HookAt - CamPos).Rotation());
-            Cam->GetCameraComponent()->SetFieldOfView(40);
-            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
-        });
-        At(56.0f, [Shot] { Shot(TEXT("Fisher_Bait.png")); });
-        At(57.0f, [this]
-        {
-            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(this);
-            NextActionTime = 0;
-            ServerFish_Implementation();
-        });
-        At(58.0f, [Shot] { Shot(TEXT("Fisher_Sweep.png")); });
-        for (int32 I = 0; I <= 30; ++I)
-            At(57.0f + I * 0.1f, [this, I]
-            {
-                if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CAST t=%.1f float=%s tip=%s"), I * 0.1f, *RodVisual->BobberLocation().ToString(), *RodVisual->Tip().ToString());
-            });
-        At(59.0f, [this] { ServerRelease_Implementation(); });
-        At(59.4f, [Shot] { Shot(TEXT("Fisher_Cast.png")); });
-        At(61.5f, [Shot] { Shot(TEXT("Fisher_Waiting.png")); });
-        auto LookFrom = [this](FVector From, FVector At)
-        {
-            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (At - From).Rotation());
-            Cam->GetCameraComponent()->SetFieldOfView(50);
-            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
-        };
-        At(61.9f, [this, LookFrom]
-        {
-            if (!RodVisual) return;
-            const FVector Float = RodVisual->BobberLocation();
-            LookFrom(Float + GetActorRightVector() * 110 - GetActorForwardVector() * 70 + FVector(0, 0, 35), Float);
-        });
-        At(62.0f, [Shot] { Shot(TEXT("Fisher_Float.png")); });
-        // A nibble: the float should only dip a little and settle, never leave the water.
-        At(62.3f, [this] { ++NibbleCounter; });
-        for (int32 I = 0; I <= 10; ++I)
-            At(62.3f + I * 0.1f, [this, I]
-            {
-                if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_NIBBLE t=%.1f float above water=%.1f cm"), I * 0.1f, RodVisual->BobberLocation().Z - LakeFish::SurfaceZ);
-            });
-        At(62.8f, [this, LookFrom]
-        {
-            // Side view of the angler and the whole line for the retrieve.
-            LookFrom(GetActorLocation() + GetActorRightVector() * 900 + GetActorForwardVector() * 450 + FVector(0, 0, 120),
-                     GetActorLocation() + GetActorForwardVector() * 500 + FVector(0, 0, 120));
-        });
-        At(63.0f, [this] { ServerCancel_Implementation(); });          // lift the rig out of the water
-        for (int32 I = 0; I <= 26; ++I)
-            At(63.0f + I * 0.1f, [this, I]
-            {
-                if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_RETRIEVE t=%.1f float=%s tip=%s"), I * 0.1f, *RodVisual->BobberLocation().ToString(), *RodVisual->Tip().ToString());
-            });
-        At(64.2f, [Shot] { Shot(TEXT("Fisher_Retrieve.png")); });
-        At(65.7f, [this] { if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(this); });
-        At(65.9f, [this] { ServerToggleRod_Implementation(); });
-        At(68.0f, [Shot] { Shot(TEXT("Fisher_Stand.png")); });
-    }
-    // -BitePreview: a cast at the camp on a clear morning, then each motion of the float in turn,
-    // filmed close up and logged (height above the water, lean).
-    if (FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) && GetNetMode() == NM_Standalone)
-    {
-        auto At = [this](float Seconds, TFunction<void()> Action)
-        {
-            FTimerHandle Handle;
-            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
-        };
-        auto Shot = [](const TCHAR* Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
-        At(4.0f, [this]
-        {
-            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
-            {
-                FLakeWeatherState Calm;
-                Calm.Cloud = 0.3f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.03f; Calm.WindYaw = 40;
-                Weather->SetWeather(Calm, 1);
-                Weather->SetHours(9.0f);
-            }
-            FVector2D Facing;
-            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
-            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
-            if (APlayerController* PC = Cast<APlayerController>(GetController()))
-            {
-                PC->SetControlRotation(FRotator(-10, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
-                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
-            }
-            FloatDepth = 100;
-        });
-        // Sound the depth first, as anglers do, then set the bait just on the bottom (the shot
-        // hanging 8 cm above it) and cast to the same place: the classic setting for a lift bite.
-        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); ChargeServerStart -= ChargeTime * 0.7f; });
-        At(6.3f, [this] { ServerRelease_Implementation(); });
-        At(8.5f, [this]
-        {
-            const float Water = LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(FloatPosition.X, FloatPosition.Y);
-            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BITE sounded %.0f cm of water"), Water);
-            ServerCancel_Implementation();
-            FloatDepth = FMath::Clamp(FMath::RoundToFloat(Water + 2), MinDepth, MaxDepth);
-        });
-        At(12.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); ChargeServerStart -= ChargeTime * 0.7f; });
-        At(12.3f, [this] { ServerRelease_Implementation(); });
-        At(16.0f, [this]
-        {
-            if (!RodVisual) return;
-            const FVector Float = RodVisual->BobberLocation();
-            const FVector From = Float + GetActorRightVector() * 80 - GetActorForwardVector() * 40 + FVector(0, 0, 18);
-            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Float - From).Rotation());
-            Cam->GetCameraComponent()->SetFieldOfView(35);
-            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
-        });
-        At(16.60f, [Shot] { Shot(TEXT("Bite_Still.png")); });
-        struct FDemo { float At; EBiteMotion Motion; float Duration, Amount; int32 State; };
-        const FDemo Demos[] = {
-            { 17.0f, EBiteMotion::Tremble, 1.6f, 0.8f, 1 },
-            { 19.0f, EBiteMotion::Peck, 0.35f, 1.8f, 1 },
-            { 21.0f, EBiteMotion::Lift, 2.0f, 3.2f, 2 },
-            { 24.0f, EBiteMotion::Drift, 3.0f, 8.0f, 2 },
-            { 27.5f, EBiteMotion::Sink, 2.5f, 55.0f, 2 },
-        };
-        for (const FDemo& Demo : Demos)
-            At(Demo.At, [this, Demo]
-            {
-                FishingState = Demo.State;
-                FBiteStep Step;
-                Step.Motion = Demo.Motion; Step.Duration = Demo.Duration; Step.Amount = Demo.Amount; Step.bTake = Demo.State == 2;
-                OnBiteMotion(nullptr, Step);
-            });
-        At(17.50f, [Shot] { Shot(TEXT("Bite_Tremble.png")); });
-        At(19.17f, [Shot] { Shot(TEXT("Bite_Peck.png")); });
-        At(22.00f, [Shot] { Shot(TEXT("Bite_Lift.png")); });
-        auto Aim = [this]
-        {
-            if (!RodVisual) return;
-            const FVector Float = RodVisual->BobberLocation();
-            const FVector From = Float + GetActorRightVector() * 70 - GetActorForwardVector() * 30 + FVector(0, 0, 22);
-            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Float - From).Rotation());
-            Cam->GetCameraComponent()->SetFieldOfView(35);
-            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
-        };
-        At(23.40f, Aim);
-        At(23.60f, [Shot] { Shot(TEXT("Bite_Lie.png")); });
-        At(25.80f, Aim);
-        At(26.00f, [Shot] { Shot(TEXT("Bite_Drift.png")); });
-        At(28.00f, [Shot] { Shot(TEXT("Bite_Sink.png")); });
-        for (int32 I = 0; I <= 140; ++I)
-            At(16.50f + I * 0.1f, [this, I]
-            {
-                if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BITE t=%.1f motion=%d antenna above water=%.1f cm tilt=%.0f keel %.1f shot %.1f hook %.1f (bottom %.1f)"), 16.5f + I * 0.1f, (int32)BiteMotion,
-                    RodVisual->FloatTip().Z - LakeFish::SurfaceZ, RodVisual->GetBiteTilt(), RodVisual->FloatKeel().Z - LakeFish::SurfaceZ,
-                    RodVisual->ShotLocation().Z - LakeFish::SurfaceZ, RodVisual->HookLocation().Z - LakeFish::SurfaceZ,
-                    ALakeEnvironment::GroundHeight(RodVisual->HookLocation().X, RodVisual->HookLocation().Y) - LakeFish::SurfaceZ);
-            });
-        At(31.0f, [] { FPlatformMisc::RequestExit(false); });
-    }
-    // -LandPreview: a perch struck at the camp on a clear morning and lifted out of the water on
-    // the line, filmed from the side and close up, its swing logged.
-    if (FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) && GetNetMode() == NM_Standalone)
-    {
-        auto At = [this](float Seconds, TFunction<void()> Action)
-        {
-            FTimerHandle Handle;
-            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
-        };
-        auto Shot = [](const TCHAR* Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
-        auto LookFrom = [this](FVector From, FVector Target, float Fov)
-        {
-            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
-            Cam->GetCameraComponent()->SetFieldOfView(Fov);
-            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
-        };
-        At(4.0f, [this]
-        {
-            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
-            {
-                FLakeWeatherState Calm;
-                Calm.Cloud = 0.3f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.03f; Calm.WindYaw = 40;
-                Weather->SetWeather(Calm, 1);
-                Weather->SetHours(9.0f);
-            }
-            FVector2D Facing;
-            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
-            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
-            if (APlayerController* PC = Cast<APlayerController>(GetController()))
-            {
-                PC->SetControlRotation(FRotator(-10, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
-                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
-            }
-            FloatDepth = 60;
-        });
-        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); ChargeServerStart -= ChargeTime * 0.35f; });
-        At(6.3f, [this] { ServerRelease_Implementation(); });
-        At(9.0f, [this]
-        {
-            const FVector Bait = BaitLocation();
-            ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(Bait, FRotator(0, GetActorRotation().Yaw + 90, 0));
-            Fish->Setup(EFishSpecies::Perch, 0.32f, Bait, -1);
-            OnFishTake(Fish);
-            NextActionTime = 0;
-            ServerFish_Implementation();
-        });
-        At(10.4f, [this, LookFrom]
-        {
-            LookFrom(GetActorLocation() + GetActorRightVector() * 650 + GetActorForwardVector() * 230 + FVector(0, 0, 40),
-                     GetActorLocation() + GetActorForwardVector() * 230 + FVector(0, 0, 130), 60);
-        });
-        At(10.5f, [this] { if (ALakeFish* Fish = HookedFish.Get()) StartLanding(Fish); });
-        At(11.0f, [Shot] { Shot(TEXT("Land_Out.png")); });
-        At(11.7f, [Shot] { Shot(TEXT("Land_Swing.png")); });
-        At(12.0f, [Shot] { Shot(TEXT("Land_Hang.png")); });
-        At(12.2f, [this, LookFrom]
-        {
-            if (!RodVisual) return;
-            const FVector Hook = RodVisual->HookLocation();
-            LookFrom(Hook + GetActorRightVector() * 110 + GetActorForwardVector() * 30 + FVector(0, 0, 5), Hook - FVector(0, 0, 10), 45);
-        });
-        At(12.3f, [Shot] { Shot(TEXT("Land_Close.png")); });
-        At(13.5f, [this, LookFrom]
-        {
-            LookFrom(GetActorLocation() + GetActorRightVector() * 260 + GetActorForwardVector() * 160 + FVector(0, 0, 60),
-                     GetActorLocation() + GetActorForwardVector() * 30 + FVector(0, 0, 20), 55);
-        });
-        At(13.75f, [Shot] { Shot(TEXT("Land_Hand.png")); });
-        for (int32 I = 0; I <= 40; ++I)
-            At(10.5f + I * 0.1f, [this, I]
-            {
-                if (!RodVisual) return;
-                const FVector Hook = RodVisual->HookLocation() - GetActorLocation();
-                const ALakeFish* Fish = LineFish;
-                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LAND t=%.1f state=%d hook ahead %.0f side %.0f up %.0f (above water %.0f) tip up %.0f fish axis Z %.2f"),
-                    I * 0.1f, FishingState, FVector::DotProduct(Hook, GetActorForwardVector()), FVector::DotProduct(Hook, GetActorRightVector()), Hook.Z,
-                    RodVisual->HookLocation().Z - LakeFish::SurfaceZ, RodVisual->Tip().Z - GetActorLocation().Z, Fish ? Fish->GetActorForwardVector().Z : 0.0f);
-                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LAND    tip ahead %.0f, tip to hook %.0f, float %s shot %s"), FVector::DotProduct(RodVisual->Tip() - GetActorLocation(), GetActorForwardVector()),
-                    FVector::Dist(RodVisual->Tip(), RodVisual->HookLocation()), *(RodVisual->FloatKeel() - GetActorLocation()).ToCompactString(), *(RodVisual->ShotLocation() - GetActorLocation()).ToCompactString());
-            });
-        At(15.0f, [] { FPlatformMisc::RequestExit(false); });
-    }
+    RunPreviews();
 #endif
 }
 void ALakeCharacter::SetupPlayerInputComponent(UInputComponent* Input)
@@ -402,7 +125,7 @@ float ALakeCharacter::ServerNow() const
     const AGameStateBase* State = GetWorld()->GetGameState();
     return State ? State->GetServerWorldTimeSeconds() : GetWorld()->GetTimeSeconds();
 }
-bool ALakeCharacter::HasBaitInWater() const { return FishingState == 1 && !bRetrieving && ServerNow() >= BaitActiveTime; }
+bool ALakeCharacter::HasBaitInWater() const { return FishingState == EFishingState::Waiting && !bRetrieving && ServerNow() >= BaitActiveTime; }
 void ALakeCharacter::ServerRelease_Implementation()
 {
     bReeling = false;
@@ -443,7 +166,7 @@ void ALakeCharacter::DoCast(float Power)
     }
     FloatPosition = FVector(Target.X, Target.Y, LakeFish::SurfaceZ);
     PlaceBait();
-    FishingState = 1;
+    FishingState = EFishingState::Waiting;
     CastPower = Power;
     CastFlight = 0.85f;               // the float drops a metre or two onto the water
     CastServerTime = ServerNow();
@@ -453,7 +176,7 @@ void ALakeCharacter::DoCast(float Power)
     FTimerHandle Landing;
     GetWorldTimerManager().SetTimer(Landing, [this, Target]
     {
-        if (FishingState != 1) return;
+        if (FishingState != EFishingState::Waiting) return;
         const float Water = LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(FloatPosition.X, FloatPosition.Y);
         // The float tells the depth: with the shot (10 cm above the hook) lying on the bottom it
         // has no load and lies flat; with only the bait on the bottom it stands a little higher.
@@ -473,10 +196,10 @@ void ALakeCharacter::ServerToggleRod_Implementation()
     {
         if (FVector::Dist2D(GetActorLocation(), StandBase) > 260) { Status = TEXT("Подойдите к удочке, чтобы взять её."); return; }
         bRodOnStand = false;
-        Status = FishingState ? TEXT("Удочка в руках.") : TEXT("Удочка в руках. Держите ЛКМ — заброс, отпустите — поплавок ляжет на воду.");
+        Status = FishingState != EFishingState::Idle ? TEXT("Удочка в руках.") : TEXT("Удочка в руках. Держите ЛКМ — заброс, отпустите — поплавок ляжет на воду.");
         return;
     }
-    if (FishingState >= 2 || bCharging || bRetrieving) return;
+    if (FishingState >= EFishingState::Bite || bCharging || bRetrieving) return;
     // The stand goes into the ground a little in front of the angler, on land.
     const FVector Facing = FRotator(0, GetControlRotation().Yaw, 0).Vector();
     FVector Base = GetActorLocation() + Facing * 70;
@@ -512,18 +235,18 @@ void ALakeCharacter::Tick(float DeltaSeconds)
             FinishFishing(TEXT("Вы вернулись к месту рыбалки."));
         }
         // A fish holding the bait drags the float along; clients see which fish is on the line.
-        if (FishingState == 2 && BaitFish.IsValid())
+        if (FishingState == EFishingState::Bite && BaitFish.IsValid())
         {
             const FVector Mouth = BaitFish->MouthLocation();
             FloatPosition = FMath::VInterpTo(FloatPosition, FVector(Mouth.X, Mouth.Y, LakeFish::SurfaceZ), DeltaSeconds, 2);
         }
-        LineFish = FishingState >= 3 ? HookedFish.Get() : FishingState == 2 ? BaitFish.Get() : nullptr;
+        LineFish = FishingState >= EFishingState::Fight ? HookedFish.Get() : FishingState == EFishingState::Bite ? BaitFish.Get() : nullptr;
     }
-    if (FishingState != 3 || !HasAuthority()) UpdateRodPose(DeltaSeconds);
-    if (HasAuthority() && (FishingState == 1 || FishingState == 2) && ServerNow() >= BaitActiveTime) ConstrainFloat();
-    if (HasAuthority() && FishingState == 3) UpdateFight(DeltaSeconds);
+    if (FishingState != EFishingState::Fight || !HasAuthority()) UpdateRodPose(DeltaSeconds);
+    if (HasAuthority() && (FishingState == EFishingState::Waiting || FishingState == EFishingState::Bite) && ServerNow() >= BaitActiveTime) ConstrainFloat();
+    if (HasAuthority() && FishingState == EFishingState::Fight) UpdateFight(DeltaSeconds);
     if (HasAuthority() && bRetrieving) UpdateRetrieve();
-    if (HasAuthority() && FishingState == 4) UpdateLanding();
+    if (HasAuthority() && FishingState == EFishingState::Landing) UpdateLanding();
     if (GetNetMode() != NM_DedicatedServer) UpdateVisuals(DeltaSeconds);
 }
 float ALakeCharacter::WaitElevation(float Pitch, float Depth) const
@@ -554,7 +277,7 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         Grip = FMath::Lerp(Idle, Forward, FMath::InterpEaseInOut(0.0f, 1.0f, C, 1.6f));
         Stiffness = 6;
     }
-    else if (FishingState > 0)
+    else if (FishingState != EFishingState::Idle)
     {
         const float Since = Now - CastServerTime;
         Elevation = WaitElevation(Pitch, HookDepth);
@@ -569,7 +292,7 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
             Grip = FMath::Lerp(Waiting, Idle, A);
             Stiffness = 9;
         }
-        if (FishingState == 3)
+        if (FishingState == EFishingState::Fight)
         {
             // No reel: holding LMB lifts the rod and draws the fish in, releasing lowers it
             // towards the fish to give line. A strong pull drags the tip down.
@@ -577,7 +300,7 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
             Grip = FMath::Lerp(FVector(36, 18, 8), FVector(20, 18, 24), RodLift);
             Stiffness = 6;
         }
-        if (FishingState == 4)
+        if (FishingState == EFishingState::Landing)
         {
             // Lifting the fish out: the rod goes up almost upright and the hands come up and back,
             // so the fish leaves the water and swings in on the line towards the angler.
@@ -652,7 +375,7 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     const FVector Axis0 = FRotator(RodElevation, RodYaw, 0).Vector();
     FTransform Hold(FRotationMatrix::MakeFromXZ(Axis0, FVector::UpVector).Rotator(), GetActorTransform().TransformPosition(RodGrip) - Axis0 * ALakeRod::GripPoint);
     // A fish on the line makes the rod tremble in the hands, more the harder it pulls.
-    if (FishingState == 3 && !bRodOnStand)
+    if (FishingState == EFishingState::Fight && !bRodOnStand)
     {
         const float J = Tension * 1.3f + 0.15f;
         Hold.ConcatenateRotation(FRotator(J * FMath::Sin(Now * 23) * FMath::Sin(Now * 6.1f), J * 0.6f * FMath::Sin(Now * 17), 0).Quaternion());
@@ -664,7 +387,7 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     In.Bait = Bait;
     In.FloatTarget = FloatPosition;
     In.HookDepth = HookDepth;
-    In.SinceCast = FishingState > 0 && CastServerTime > 0 ? Now - CastServerTime : -1;
+    In.SinceCast = FishingState != EFishingState::Idle && CastServerTime > 0 ? Now - CastServerTime : -1;
     In.CastFlight = CastFlight;
     In.bSweeping = bCharging;
     In.SweepAngle = SweepLineAngle(CastCharge(Now));
@@ -680,8 +403,8 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     In.StandBase = StandBase;
     In.StandYaw = StandYaw;
     In.LineFish = LineFish;
-    const float LandAlpha = FishingState == 4 ? FMath::SmoothStep(0.55f, 0.85f, (Now - LandServerTime) / LandTime) : 0.0f;
-    if (FishingState == 4 && LineFish)
+    const float LandAlpha = FishingState == EFishingState::Landing ? FMath::SmoothStep(0.55f, 0.85f, (Now - LandServerTime) / LandTime) : 0.0f;
+    if (FishingState == EFishingState::Landing && LineFish)
     {
         In.FishGrams = LineFish->WeightKg * 1000;
         In.FishLength = LakeFish::LengthCm(LineFish->Species, LineFish->WeightKg);
@@ -690,7 +413,7 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     }
     RodVisual->UpdateRod(In, DeltaSeconds);
     // A fish lifted out hangs on the hook wherever the rod's line has swung it.
-    if (FishingState == 4 && LineFish) LineFish->HangOnLine(RodVisual->HookLocation(), RodVisual->HookLineUp(), DeltaSeconds);
+    if (FishingState == EFishingState::Landing && LineFish) LineFish->HangOnLine(RodVisual->HookLocation(), RodVisual->HookLineUp(), DeltaSeconds);
 
     // Hands on the rod: right hand at the grip, left hand at the butt end.
     if (auto* Anim = Cast<UFisherAnimInstance>(GetMesh()->GetAnimInstance()))
@@ -724,14 +447,14 @@ void ALakeCharacter::FinishFishing(const FString& Message)
     GetWorldTimerManager().ClearTimer(FishingTimer);
     // Whatever was on the line swims off frightened.
     if (ALakeFish* Fish = HookedFish.Get()) Fish->Release(12);
-    else if (ALakeFish* Holder = BaitFish.Get(); Holder && FishingState == 2) Holder->Release(10);
+    else if (ALakeFish* Holder = BaitFish.Get(); Holder && FishingState == EFishingState::Bite) Holder->Release(10);
     HookedFish = nullptr;
     BaitFish = nullptr;
     LineFish = nullptr;
     BiteMotion = EBiteMotion::None;
     bCharging = false;
     bRetrieving = false;
-    FishingState = 0;
+    FishingState = EFishingState::Idle;
     Tension = 0;
     bReeling = false;
     Status = Message;
@@ -739,17 +462,17 @@ void ALakeCharacter::FinishFishing(const FString& Message)
 }
 void ALakeCharacter::StartRetrieve(const FString& Message, const FString& EndMessage)
 {
-    if (bRetrieving || FishingState == 0) return;
+    if (bRetrieving || FishingState == EFishingState::Idle) return;
     // Whatever was on the line swims off; the rig is then simply lifted out by raising the rod,
     // the line drawing it across the water towards the angler.
     GetWorldTimerManager().ClearTimer(FishingTimer);
     if (ALakeFish* Fish = HookedFish.Get()) Fish->Release(12);
-    else if (ALakeFish* Holder = BaitFish.Get(); Holder && FishingState == 2) Holder->Release(10);
+    else if (ALakeFish* Holder = BaitFish.Get(); Holder && FishingState == EFishingState::Bite) Holder->Release(10);
     HookedFish = nullptr;
     BaitFish = nullptr;
     LineFish = nullptr;
     BiteMotion = EBiteMotion::None;
-    FishingState = 1;
+    FishingState = EFishingState::Waiting;
     Tension = 0;
     bReeling = false;
     bRetrieving = true;
@@ -794,7 +517,7 @@ void ALakeCharacter::ConstrainFloat()
 }
 void ALakeCharacter::UpdateFight(float DeltaSeconds)
 {
-    if (FishingState != 3) return;
+    if (FishingState != EFishingState::Fight) return;
     ALakeFish* Fish = HookedFish.Get();
     if (!Fish) { FinishFishing(TEXT("Рыба сошла. ЛКМ — новый заброс.")); return; }
     FightTime += DeltaSeconds;
@@ -838,7 +561,7 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
 void ALakeCharacter::StartLanding(ALakeFish* Fish)
 {
     // The rod goes up; the fish comes out of the water with a splash and swings in on the line.
-    FishingState = 4;
+    FishingState = EFishingState::Landing;
     LandServerTime = ServerNow();
     Tension = 0;
     LineFish = Fish;
@@ -867,12 +590,12 @@ void ALakeCharacter::UpdateLanding()
 }
 void ALakeCharacter::ServerFish_Implementation()
 {
-    if (FishingState == 3) { bReeling = true; return; }
-    if (bRetrieving || FishingState == 4) return;
+    if (FishingState == EFishingState::Fight) { bReeling = true; return; }
+    if (bRetrieving || FishingState == EFishingState::Landing) return;
     const double Now = GetWorld()->GetTimeSeconds();
     if (Now < NextActionTime) return;
     NextActionTime = Now + 0.3;
-    if (FishingState == 0)
+    if (FishingState == EFishingState::Idle)
     {
         if (bRodOnStand) { Status = TEXT("Сначала возьмите удочку: R."); return; }
         if (bCharging) return;
@@ -880,7 +603,7 @@ void ALakeCharacter::ServerFish_Implementation()
         ChargeServerStart = ServerNow();
         Status = TEXT("Ведите удилище вперёд… Чем дольше держите ЛКМ, тем дальше заброс. Отпустите — поплавок ляжет на воду.");
     }
-    else if (FishingState == 1)
+    else if (FishingState == EFishingState::Waiting)
     {
         if (ServerNow() < BaitActiveTime || !TakeRodFromStand()) return;
         if (ALakeFish* Fish = BaitFish.Get()) Fish->Spook(BaitPoint, 4);
@@ -914,7 +637,7 @@ void ALakeCharacter::ServerFish_Implementation()
         Fish->Hook(this);
         HookedFish = Fish;
         BaitFish = nullptr;
-        FishingState = 3;
+        FishingState = EFishingState::Fight;
         Tension = 0.2f;
         FightTime = 0;
         FightHint = -1;
@@ -927,24 +650,24 @@ void ALakeCharacter::ServerCancel_Implementation()
 {
     if (bCharging) { bCharging = false; Status = TEXT("Заброс отменён. ЛКМ — забросить."); return; }
     // Wait for the float to land before lifting it out again.
-    if (FishingState == 0 || FishingState == 4 || bRetrieving || (FishingState == 1 && ServerNow() < BaitActiveTime)) return;
+    if (FishingState == EFishingState::Idle || FishingState == EFishingState::Landing || bRetrieving || (FishingState == EFishingState::Waiting && ServerNow() < BaitActiveTime)) return;
     if (!TakeRodFromStand()) return;
     StartRetrieve(TEXT("Поднимаете удилище — снасть выходит из воды…"), TEXT("Снасть убрана. ЛКМ — забросить."));
 }
 bool ALakeCharacter::ClaimBait(ALakeFish* Fish)
 {
-    if (FishingState != 1 || bRetrieving) return false;
+    if (FishingState != EFishingState::Waiting || bRetrieving) return false;
     if (BaitFish.IsValid() && BaitFish.Get() != Fish) return false;
     BaitFish = Fish;
     return true;
 }
 void ALakeCharacter::ReleaseBaitClaim(ALakeFish* Fish)
 {
-    if (BaitFish.Get() == Fish && FishingState == 1) BaitFish = nullptr;
+    if (BaitFish.Get() == Fish && FishingState == EFishingState::Waiting) BaitFish = nullptr;
 }
 void ALakeCharacter::OnFishNibble(ALakeFish* Fish)
 {
-    if (FishingState != 1 || bRetrieving) return;
+    if (FishingState != EFishingState::Waiting || bRetrieving) return;
     ++NibbleCounter;
     Status = TEXT("Поплавок вздрагивает — рыба пробует наживку. Ждите…");
     // Each tremble of the float sends out a faint ring.
@@ -952,7 +675,7 @@ void ALakeCharacter::OnFishNibble(ALakeFish* Fish)
 }
 void ALakeCharacter::OnBiteMotion(ALakeFish* Fish, const FBiteStep& Step)
 {
-    if ((FishingState != 1 && FishingState != 2) || bRetrieving) return;
+    if ((FishingState != EFishingState::Waiting && FishingState != EFishingState::Bite) || bRetrieving) return;
     BiteMotion = Step.Motion;
     BiteStart = ServerNow();
     BiteDuration = Step.Duration;
@@ -969,9 +692,9 @@ void ALakeCharacter::OnBiteMotion(ALakeFish* Fish, const FBiteStep& Step)
 }
 void ALakeCharacter::OnFishTake(ALakeFish* Fish, float Window)
 {
-    if (FishingState != 1 || bRetrieving) return;
+    if (FishingState != EFishingState::Waiting || bRetrieving) return;
     BaitFish = Fish;
-    FishingState = 2;
+    FishingState = EFishingState::Bite;
     Status = TEXT("ПОКЛЁВКА! Поплавок ушёл под воду — нажмите ЛКМ, подсекайте!");
     // Cautious fish hold the bait a little longer before spitting it out.
     // A hungry fish takes the bait boldly and holds it longer; a wary one drops it quickly.
@@ -991,21 +714,21 @@ void ALakeCharacter::ServerChangeDepth_Implementation(float Delta)
 {
     // The float is set on the line before casting; the hook hangs at most 15-20% less than the rod length under it.
     static_assert(MaxDepth >= 0.8f * ALakeRod::RodLength && MaxDepth <= 0.85f * ALakeRod::RodLength, "depth limit is 15-20% short of the rod");
-    if (FishingState != 0 || bCharging) { Status = TEXT("Глубину можно менять только до заброса: сначала вытащите снасть (ПКМ)."); return; }
+    if (FishingState != EFishingState::Idle || bCharging) { Status = TEXT("Глубину можно менять только до заброса: сначала вытащите снасть (ПКМ)."); return; }
     FloatDepth = FMath::Clamp(FMath::RoundToFloat(FloatDepth + Delta), MinDepth, MaxDepth);
     HookDepth = FloatDepth;      // the float slides along the hanging rig right away
     Status = FString::Printf(TEXT("Глубина спуска наживки: %.0f см."), FloatDepth);
 }
 void ALakeCharacter::Escape()
 {
-    if (FishingState != 2) return;
+    if (FishingState != EFishingState::Bite) return;
     // Not struck in time: the fish lets go of the bait and swims off. The rig stays where the fish
     // left it and keeps fishing: the float stands up again, and the angler may wait or recast (RMB).
     if (ALakeFish* Holder = BaitFish.Get()) Holder->DropBait();
     BaitFish = nullptr;
     LineFish = nullptr;
     BiteMotion = EBiteMotion::None;
-    FishingState = 1;
+    FishingState = EFishingState::Waiting;
     PlaceBait();
     Status = TEXT("Рыба бросила наживку. Поплавок встал на место — ждите новой поклёвки или перезабросьте (ПКМ).");
     ForceNetUpdate();
@@ -1013,7 +736,7 @@ void ALakeCharacter::Escape()
 void ALakeCharacter::SelectBait(EBait NewBait) { ServerSelectBait(NewBait); }
 void ALakeCharacter::ServerSelectBait_Implementation(EBait NewBait)
 {
-    if (FishingState != 0 || NewBait >= EBait::Count) return;
+    if (FishingState != EFishingState::Idle || NewBait >= EBait::Count) return;
     Bait = NewBait;
     Status = FString::Printf(TEXT("Наживка: %s. ЛКМ — забросить."), LakeFish::BaitName(Bait));
 }
@@ -1056,159 +779,6 @@ void ALakeCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
     DOREPLIFETIME_CONDITION(ALakeCharacter, FishDistance, COND_OwnerOnly);
     DOREPLIFETIME_CONDITION(ALakeCharacter, CatchCount, COND_OwnerOnly);
     DOREPLIFETIME_CONDITION(ALakeCharacter, Status, COND_OwnerOnly);
-}
-void ALakeHUD::DrawHUD()
-{
-    Super::DrawHUD();
-    auto* Fisher = Cast<ALakeCharacter>(GetOwningPawn());
-    if (!Fisher || !Canvas) return;
-    if (auto* PC = Cast<ALakePlayerController>(GetOwningPlayerController()); PC && PC->IsMenuOpen()) { PlayStart = -1; return; }
-    const float Now = GetWorld()->GetRealTimeSeconds();
-    if (PlayStart < 0) PlayStart = Now;
-    // Everything scales with the screen height (designed for 1080p) and stays out of the view:
-    // a small status card in the bottom-left corner, bars at the bottom centre only when needed.
-    const float S = FMath::Max(0.8f, Canvas->ClipY / 1080.0f) * 1.4f;
-    UFont* Font = GEngine->GetMediumFont();
-    auto Text = [this, Font, S](const FString& Line, FLinearColor Colour, float X, float Y, float Scale)
-    {
-        DrawText(Line, Colour, X, Y, Font, Scale * S);
-    };
-    auto Width = [this, Font, S](const FString& Line, float Scale)
-    {
-        float W = 0, H = 0;
-        GetTextSize(Line, W, H, Font, Scale * S);
-        return W;
-    };
-
-    // Status: a new message shows for 6 s and fades; a bite stays (and is highlighted) while it lasts.
-    if (Fisher->Status != LastStatus) { LastStatus = Fisher->Status; StatusTime = Now; }
-    const bool bUrgent = Fisher->FishingState >= 2;
-    const float Age = Now - StatusTime;
-    const float Alpha = bUrgent ? 1.0f : FMath::Clamp((6.0f - Age) / 1.0f, 0.0f, 1.0f);
-    FString Info = FString::Printf(TEXT("Улов: %d   ·   Наживка: %s   ·   Глубина: %.0f см"), Fisher->CatchCount, LakeFish::BaitName(Fisher->Bait), Fisher->FloatDepth);
-    // The name of the fishing spot the angler stands at.
-    if (const LakeMap::FSpot* Spot = LakeMap::SpotAt(FVector2D(Fisher->GetActorLocation()))) Info = FString::Printf(TEXT("%s   ·   %s"), Spot->Name, *Info);
-    const float Pad = 14 * S, X = 28 * S;
-    const float LineH = 26 * S;
-    const float CardW = FMath::Max(Width(Info, 0.85f), Alpha > 0 ? Width(LastStatus, 0.95f) : 0.0f) + Pad * 2;
-    const float CardH = (Alpha > 0 ? LineH * 2 : LineH) + Pad * 2 - 6 * S;
-    const float CardY = Canvas->ClipY - CardH - 28 * S;
-    DrawRect(FLinearColor(0.01f, 0.015f, 0.02f, 0.45f), X, CardY, CardW, CardH);
-    float Y = CardY + Pad - 4 * S;
-    if (Alpha > 0)
-    {
-        const FLinearColor Colour = Fisher->FishingState == 2 ? FLinearColor(1.0f, 0.82f, 0.25f) : FLinearColor(0.93f, 0.91f, 0.86f, Alpha);
-        Text(LastStatus, Colour, X + Pad, Y, 0.95f);
-        Y += LineH;
-    }
-    Text(Info, FLinearColor(0.7f, 0.74f, 0.72f, 0.9f), X + Pad, Y, 0.85f);
-
-    // Line tension while fighting a fish.
-    const float BarW = 360 * S, BarH = 8 * S, BarX = (Canvas->ClipX - BarW) / 2, BarY = Canvas->ClipY - 70 * S;
-    if (Fisher->FishingState == 3)
-    {
-        const FLinearColor Fill = Fisher->Tension > 0.75f ? FLinearColor(0.95f, 0.25f, 0.2f) : FLinearColor(0.35f, 0.8f, 0.55f);
-        DrawRect(FLinearColor(0, 0, 0, 0.4f), BarX, BarY, BarW, BarH);
-        DrawRect(Fill, BarX, BarY, BarW * Fisher->Tension, BarH);
-        const FString Label = Fisher->Tension > 0.75f ? TEXT("Отпустите ЛКМ — леска на пределе")
-            : FString::Printf(TEXT("Натяжение %.0f%%   ·   до рыбы %.1f м"), Fisher->Tension * 100, Fisher->FishDistance / 100);
-        Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
-    }
-    // Casting power while swinging.
-    if (Fisher->bCharging)
-    {
-        const float Power = Fisher->CastCharge(Fisher->ServerNow());
-        DrawRect(FLinearColor(0, 0, 0, 0.4f), BarX, BarY, BarW, BarH);
-        DrawRect(FLinearColor(0.95f, 0.75f, 0.2f), BarX, BarY, BarW * Power, BarH);
-        const FString Label = TEXT("Дальность заброса");
-        Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
-    }
-    // Bottom right: the time of day, the weather and the air temperature.
-    float WeatherTop = Canvas->ClipY - 28 * S;
-    if (const ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
-    {
-        const float H = Weather->Hours();
-        const FString Clock = FString::Printf(TEXT("%02d:%02d"), (int32)H, (int32)(FMath::Frac(H) * 60));
-        const int32 T = FMath::RoundToInt(Weather->TemperatureC());
-        const FString Line = Weather->Describe() + FString::Printf(TEXT("  ·  %s%d °C"), T > 0 ? TEXT("+") : TEXT(""), T);
-        // Pressure and water temperature: what an angler checks to guess the bite.
-        const float Trend = Weather->PressureTrend();
-        const int32 Water = FMath::RoundToInt(Weather->WaterTempC());
-        const FString Line2 = FString::Printf(TEXT("Давление %d мм%s  ·  вода %s%d °C"), FMath::RoundToInt(Weather->PressureMmHg()),
-            Trend < -0.3f ? TEXT(", падает") : Trend > 0.3f ? TEXT(", растёт") : TEXT(""), Water > 0 ? TEXT("+") : TEXT(""), Water);
-        const float W = FMath::Max3(Width(Clock, 1.35f), Width(Line, 0.8f), Width(Line2, 0.8f)) + Pad * 2;
-        const float CardH2 = 30 * S + LineH * 2 + Pad * 2 - 6 * S;
-        const float CX = Canvas->ClipX - W - 28 * S, CY = Canvas->ClipY - CardH2 - 28 * S;
-        DrawRect(FLinearColor(0.01f, 0.015f, 0.02f, 0.45f), CX, CY, W, CardH2);
-        Text(Clock, FLinearColor(0.95f, 0.94f, 0.9f), CX + W - Pad - Width(Clock, 1.35f), CY + Pad - 6 * S, 1.35f);
-        Text(Line, FLinearColor(0.75f, 0.78f, 0.76f, 0.95f), CX + W - Pad - Width(Line, 0.8f), CY + Pad + 30 * S, 0.8f);
-        Text(Line2, FLinearColor(0.68f, 0.72f, 0.72f, 0.9f), CX + W - Pad - Width(Line2, 0.8f), CY + Pad + 30 * S + LineH, 0.8f);
-        WeatherTop = CY;
-    }
-    // Key hints for the first seconds of play only (the full list is in the Esc menu).
-    const float HintAlpha = FMath::Clamp((15.0f - (Now - PlayStart)) / 2.0f, 0.0f, 1.0f);
-    if (HintAlpha > 0)
-    {
-        const FString Hint = TEXT("ЛКМ (держать) — заброс   ·   ПКМ — вытащить   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   1/2/3 — наживка   ·   Esc — меню");
-        Text(Hint, FLinearColor(0.85f, 0.87f, 0.85f, 0.75f * HintAlpha), Canvas->ClipX - Width(Hint, 0.75f) - 28 * S, WeatherTop - 30 * S, 0.75f);
-    }
-    if (bShowLife) DrawLifePanel(S);
-    // A small dot in the centre for aiming the cast (first person only).
-    if (!Fisher->bThirdPerson)
-        DrawRect(FLinearColor(1, 1, 1, 0.55f), Canvas->ClipX / 2 - 1.5f * S, Canvas->ClipY / 2 - 1.5f * S, 3 * S, 3 * S);
-}
-void ALakeHUD::DrawLifePanel(float S)
-{
-    // "Живой пруд": what every species is doing now, the latest signs seen on the water, and
-    // markers over the fish within 30 m (green: feeding or hunting, blue: resting, grey: cruising).
-    UFont* Font = GEngine->GetMediumFont();
-    const ALakeLife* Life = ALakeLife::Get(GetWorld());
-    int32 Count[(int32)EFishSpecies::Count][(int32)EFishGoal::Count] = {};
-    int32 Total[(int32)EFishSpecies::Count] = {};
-    const FLinearColor GoalColour[] = { FLinearColor(0.7f, 0.72f, 0.72f), FLinearColor(0.45f, 0.95f, 0.45f), FLinearColor(0.45f, 0.7f, 1.0f) };
-    const APlayerController* PC = GetOwningPlayerController();
-    FVector ViewPos = FVector::ZeroVector;
-    FRotator ViewRot = FRotator::ZeroRotator;
-    if (PC) PC->GetPlayerViewPoint(ViewPos, ViewRot);
-    for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
-    {
-        const ALakeFish* Fish = *It;
-        ++Count[(int32)Fish->Species][(int32)Fish->GetGoal()];
-        ++Total[(int32)Fish->Species];
-        const FVector P = Fish->GetActorLocation();
-        if (FVector::Dist(P, ViewPos) > 3000 || FVector::DotProduct(P - ViewPos, ViewRot.Vector()) < 50) continue;
-        const FVector Screen = Canvas->Project(P);
-        if (Screen.X < 0 || Screen.Y < 0 || Screen.X > Canvas->ClipX || Screen.Y > Canvas->ClipY) continue;
-        const float Dot = 6 * S;
-        DrawRect(GoalColour[(int32)Fish->GetGoal()].CopyWithNewOpacity(0.85f), Screen.X - Dot / 2, Screen.Y - Dot / 2, Dot, Dot);
-    }
-    TArray<TPair<FString, FLinearColor>> Lines;
-    Lines.Add({ TEXT("Живой пруд  (F3)"), FLinearColor(0.95f, 0.94f, 0.9f) });
-    for (int32 Sp = 0; Sp < (int32)EFishSpecies::Count; ++Sp)
-    {
-        const EFishSpecies Species = (EFishSpecies)Sp;
-        Lines.Add({ FString::Printf(TEXT("%s %d:  %s %d  ·  %s %d  ·  %s %d"), LakeFish::Info(Species).Name, Total[Sp],
-            LakeFish::GoalName(Species, EFishGoal::Feed), Count[Sp][(int32)EFishGoal::Feed],
-            LakeFish::GoalName(Species, EFishGoal::Rest), Count[Sp][(int32)EFishGoal::Rest],
-            LakeFish::GoalName(Species, EFishGoal::Cruise), Count[Sp][(int32)EFishGoal::Cruise]), FLinearColor(0.8f, 0.83f, 0.8f) });
-    }
-    if (Life)
-    {
-        int32 Fry = 0;
-        for (const FFryShoal& Shoal : Life->FryShoals()) Fry += Shoal.Count;
-        Lines.Add({ FString::Printf(TEXT("Малёк: %d стаек, около %d рыбок"), Life->FryShoals().Num(), Fry), FLinearColor(0.8f, 0.83f, 0.8f) });
-        const float Now = GetWorld()->GetRealTimeSeconds();
-        for (const ALakeLife::FNote& Note : Life->Notes())
-            if (Now - Note.Time < 180)
-                Lines.Add({ FString::Printf(TEXT("• %s  (%.0f с назад)"), *Note.Text, Now - Note.Time), FLinearColor(0.95f, 0.85f, 0.55f) });
-    }
-    Lines.Add({ TEXT("Точки над рыбами: зелёные — кормятся, синие — отдыхают, серые — гуляют"), FLinearColor(0.6f, 0.63f, 0.62f) });
-    float W = 0;
-    for (const auto& Line : Lines) { float LW, LH; GetTextSize(Line.Key, LW, LH, Font, 0.8f * S); W = FMath::Max(W, LW); }
-    const float Pad = 14 * S, LineH = 24 * S, X = 28 * S, Y = 28 * S;
-    DrawRect(FLinearColor(0.01f, 0.015f, 0.02f, 0.55f), X, Y, W + Pad * 2, Lines.Num() * LineH + Pad * 2 - 4 * S);
-    for (int32 I = 0; I < Lines.Num(); ++I)
-        DrawText(Lines[I].Key, Lines[I].Value, X + Pad, Y + Pad - 4 * S + I * LineH, Font, (I == 0 ? 0.9f : 0.8f) * S);
 }
 ALakeGameMode::ALakeGameMode()
 {
