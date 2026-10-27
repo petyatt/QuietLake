@@ -19,6 +19,8 @@ struct FRodInput
     FVector Facing = FVector::ForwardVector;
     float Tension = 0;
     uint8 Nibbles = 0;
+    EBiteMotion BiteMotion = EBiteMotion::None;   // what a fish at the bait makes the float do
+    float BiteElapsed = 0, BiteDuration = 1, BiteAmount = 0;
     bool bReeling = false;
     bool bOnStand = false;
     FVector StandBase = FVector::ZeroVector;
@@ -54,6 +56,11 @@ public:
     FVector Tip() const { return Points.Num() ? Points.Last() : FVector::ZeroVector; }
     FVector HookLocation() const { return HookPos; }
     FVector BobberLocation() const { return BobberPos; }
+    float GetBiteTilt() const { return BiteTilt; }
+    /** The tip of the float's antenna (how much of it shows above the water tells the angler everything). */
+    FVector FloatTip() const { return FloatT; }
+    FVector ShotLocation() const { return ShotPos; }
+    FVector FloatKeel() const { return FloatK; }
 
 private:
     /** A thin, nearly weightless and inextensible line between two pinned ends. */
@@ -64,7 +71,7 @@ private:
     };
     void SimulateLine(FLineSim& Line, FVector A, FVector B, float Length, float DeltaSeconds, bool bFloatsOnWater, bool bReset);
     void LayoutLine(const FLineSim& Line, const TArray<TObjectPtr<class UStaticMeshComponent>>& Segments, float Radius);
-    FLineSim MainSim, LeaderSim;
+    FLineSim MainSim, LeaderSim, TailSim;
     void SimulateBlank(const FTransform& Hold, FVector TipLoad, float DeltaSeconds);
     void UpdateBobber(const FRodInput& In, float DeltaSeconds);
     void Layout(const FRodInput& In);
@@ -74,6 +81,7 @@ private:
     UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> Blank;
     UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> MainLine;
     UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> Leader;
+    UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> Tail;    // leader below the shot
     UPROPERTY() TObjectPtr<class UStaticMeshComponent> Bobber;
     UPROPERTY() TObjectPtr<class USceneComponent> BobberEye;
     UPROPERTY() TObjectPtr<class UStaticMeshComponent> Sinker;
@@ -90,5 +98,13 @@ private:
     float LeaderNow = 100;
     float SinkNow = 0;                            // how far a taking fish has drawn the float under (cm)                        // float-to-hook distance as shown, easing to the set depth
     uint8 SeenNibbles = 0;
+    float BiteTilt = 0;                           // the float leaning (deg): lying down after a lift, pulled at a slant
+    float LastBiteElapsed = 0;
+    FVector BiteAnchor = FVector::ZeroVector;     // where the hook lay when the fish began this motion
+    FVector BiteFloat = FVector::ZeroVector;      // where the float was then
+    // The float as a rigid stick (keel eye, antenna tip) and the shot, simulated with their weights.
+    FVector FloatK = FVector::ZeroVector, FloatKPrev = FVector::ZeroVector, FloatT = FVector::ZeroVector, FloatTPrev = FVector::ZeroVector;
+    FVector ShotPos = FVector::ZeroVector, ShotPrev = FVector::ZeroVector;
+    EBiteMotion LastBiteMotion = EBiteMotion::None;
     bool bInitialised = false;
 };

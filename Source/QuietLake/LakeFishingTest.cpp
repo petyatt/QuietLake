@@ -254,17 +254,21 @@ bool FLakeFishBehaviourTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("A 200 g perch is about 25 cm"), FMath::IsNearlyEqual(LengthCm(EFishSpecies::Perch, 0.2f), 25.2f, 1.5f));
 
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    // The pond's life as in the game: schools follow their leaders.
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
     TArray<ALakeFish*> Fish;
     const FVector Centre(LakeMap::Centre, SurfaceZ - 100);
     for (int32 I = 0; I < 5; ++I) Fish.Add(SpawnFish(World, EFishSpecies::Perch, 0.2f, Centre + FVector(I * 40, 0, 0), 0));
-    Fish.Add(SpawnFish(World, EFishSpecies::Roach, 0.1f, FVector(LakeMap::PointAt(PI / 2, 0.6f), SurfaceZ - 40)));
+    FRandomStream Places(11);
+    Fish.Add(SpawnFish(World, EFishSpecies::Roach, 0.1f, PickSpot(EFishSpecies::Roach, Places, LakeMap::Centre, 0)));
     Fish.Add(SpawnFish(World, EFishSpecies::Crucian, 0.4f, FVector(3600, 0, SurfaceZ - 60)));
-    Fish.Add(SpawnFish(World, EFishSpecies::Pike, 2.0f, FVector(LakeMap::PointAt(-PI / 2, 0.7f), SurfaceZ - 50)));
+    Fish.Add(SpawnFish(World, EFishSpecies::Pike, 2.0f, PickSpot(EFishSpecies::Pike, Places, LakeMap::Centre, 0)));
     bool bInWater = true;
     float PathLength = 0;
     for (int32 Step = 0; Step < 3000; ++Step)
         for (ALakeFish* F : Fish)
         {
+            if (F == Fish[0]) Life->Step(0.05f);
             const FVector Before = F->GetActorLocation();
             F->Simulate(0.05f);
             if (F == Fish[0]) PathLength += FVector::Dist(Before, F->GetActorLocation());
@@ -370,8 +374,10 @@ bool FLakePondLifeTest::RunTest(const FString& Parameters)
     // A feeding crucian roots in the silt: bubbles come up, and it gets full.
     Crucian->Hunger = 1; Crucian->Energy = 1;
     Crucian->SetGoal(EFishGoal::Feed, 600);
-    Run(120);
-    AddInfo(FString::Printf(TEXT("Crucian after 2 min of feeding: hunger %.2f, bubbles %d"), Crucian->GetHunger(), Life->Stats().Signs[(int32)ELakeSign::Bubbles]));
+    Run(180);   // the spot it picks may be a couple of minutes' swim away at a crucian's pace
+    AddInfo(FString::Printf(TEXT("Crucian after 3 min of feeding: hunger %.2f, bubbles %d; at %s target %s, goal %d, at spot %d, water %.0f cm, state %d"),
+        Crucian->GetHunger(), Life->Stats().Signs[(int32)ELakeSign::Bubbles], *Crucian->GetActorLocation().ToString(), *Crucian->RoamTarget.ToString(),
+        (int32)Crucian->GetGoal(), Crucian->bAtSpot, LakeMap::Depth(Crucian->GetActorLocation().X, Crucian->GetActorLocation().Y), (int32)Crucian->State));
     TestTrue(TEXT("A rooting crucian sends up bubbles"), Life->Stats().Signs[(int32)ELakeSign::Bubbles] > 0);
     TestTrue(TEXT("Feeding fills the fish"), Crucian->GetHunger() < 0.8f);
 
@@ -420,7 +426,12 @@ bool FLakePondLifeTest::RunTest(const FString& Parameters)
     ALakeFish* Pike = Spawn(EFishSpecies::Pike, 2.5f, Ambush);
     Pike->Hunger = 1;
     Pike->SetGoal(EFishGoal::Feed, 600);
-    for (int32 Wait = 0; Wait < 18 && !Pike->bAtSpot; ++Wait) Run(5);
+    for (int32 Wait = 0; Wait < 18 && !Pike->bAtSpot; ++Wait)
+    {
+        Run(5);
+    }
+    AddInfo(FString::Printf(TEXT("Pike at %s target %s, water %.0f cm, shore %.0f cm, goal %d, state %d"), *Pike->GetActorLocation().ToString(), *Pike->RoamTarget.ToString(),
+        LakeMap::Depth(Pike->GetActorLocation().X, Pike->GetActorLocation().Y), LakeMap::ShoreDistance(Pike->GetActorLocation().X, Pike->GetActorLocation().Y), (int32)Pike->GetGoal(), (int32)Pike->State));
     TestTrue(TEXT("The pike settles in its ambush"), Pike->bAtSpot);
     const int32 StrikesBefore = Life->Stats().PikeStrikes;
     for (int32 Try = 0; Try < 6 && Life->Stats().PikeStrikes == StrikesBefore && IsValid(Pike); ++Try)
@@ -434,6 +445,87 @@ bool FLakePondLifeTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("The pike strikes from ambush"), Life->Stats().PikeStrikes > StrikesBefore);
 
     TestTrue(TEXT("Every fish stays in the water"), bInWater);
+    World->DestroyWorld(false);
+    return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeBitePatternsTest, "QuietLake.Fishing.BitePatterns", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
+{
+    using namespace LakeFish;
+    FRandomStream R(3);
+    struct FSummary { float Before = 0, Window = 0; int32 Tries = 0; EBiteMotion Take = EBiteMotion::None; float TakeAmount = 0; };
+    auto Summarise = [](const TArray<FBiteStep>& Bite)
+    {
+        FSummary S;
+        for (const FBiteStep& Step : Bite)
+        {
+            if (Step.bTake) { if (S.Take == EBiteMotion::None) { S.Take = Step.Motion; S.TakeAmount = Step.Amount; } S.Window += Step.Duration; }
+            else { S.Before += Step.Duration; S.Tries += Step.Motion != EBiteMotion::None; }
+        }
+        return S;
+    };
+    constexpr int32 N = 300;
+    int32 CrucianLifts = 0, CrucianOffBottomLifts = 0, RoachWithPecks = 0, PerchFastSinks = 0;
+    float CrucianBefore = 0, PerchBefore = 0, SmallTries = 0, BigTries = 0, EagerWindow = 0, SluggishWindow = 0;
+    for (int32 I = 0; I < N; ++I)
+    {
+        const FSummary Crucian = Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 1.0f, true, false, R));
+        CrucianLifts += Crucian.Take == EBiteMotion::Lift;
+        CrucianBefore += Crucian.Before / N;
+        CrucianOffBottomLifts += Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 1.0f, false, false, R)).Take == EBiteMotion::Lift;
+        SmallTries += Summarise(MakeBite(EFishSpecies::Crucian, 0.1f, 1.0f, true, false, R)).Tries / float(N);
+        BigTries += Summarise(MakeBite(EFishSpecies::Crucian, 0.9f, 1.0f, true, false, R)).Tries / float(N);
+        EagerWindow += Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 1.2f, false, false, R)).Window / N;
+        SluggishWindow += Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 0.2f, false, true, R)).Window / N;
+        const TArray<FBiteStep> Roach = MakeBite(EFishSpecies::Roach, 0.5f, 1.0f, false, false, R);
+        RoachWithPecks += Roach.ContainsByPredicate([](const FBiteStep& S) { return S.Motion == EBiteMotion::Peck && !S.bTake; });
+        const FSummary Perch = Summarise(MakeBite(EFishSpecies::Perch, 0.5f, 1.0f, true, false, R));
+        PerchFastSinks += Perch.Take == EBiteMotion::Sink && Perch.TakeAmount >= 45;
+        PerchBefore += Perch.Before / N;
+    }
+    AddInfo(FString::Printf(TEXT("Crucian: lifts %d/%d from the bottom, %d off it; %.1f s of testing; tries small %.1f, big %.1f; take window eager %.1f s, sluggish %.1f s"),
+        CrucianLifts, N, CrucianOffBottomLifts, CrucianBefore, SmallTries, BigTries, EagerWindow, SluggishWindow));
+    AddInfo(FString::Printf(TEXT("Perch: %.1f s before the take, fast sinks %d/%d; roach with pecks %d/%d"), PerchBefore, PerchFastSinks, N, RoachWithPecks, N));
+    TestTrue(TEXT("A crucian with the bait on the bottom usually lifts the float"), CrucianLifts > N * 0.7f);
+    TestEqual(TEXT("No lift when the bait hangs off the bottom"), CrucianOffBottomLifts, 0);
+    TestTrue(TEXT("Small crucian keep trembling the float longer than big ones"), SmallTries > BigTries + 1.0f);
+    TestTrue(TEXT("A sluggish crucian lets go sooner"), SluggishWindow < EagerWindow * 0.8f);
+    TestTrue(TEXT("Roach peck before taking"), RoachWithPecks == N);
+    TestTrue(TEXT("Perch pull the float under sharply"), PerchFastSinks == N);
+    TestTrue(TEXT("Perch take far more boldly than crucian"), PerchBefore < CrucianBefore * 0.4f);
+
+    // A real crucian at a bait lying on the bottom: trembles first, then lifts or leads the float off.
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FVector2D Facing;
+    const FVector2D Edge = LakeMap::StartSpot(&Facing) + Facing * 90;
+    ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Edge, 100), FRotator(0, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+    APlayerController* Controller = World->SpawnActor<APlayerController>();
+    Controller->Possess(Fisher);
+    Controller->SetControlRotation(Fisher->GetActorRotation());
+    Fisher->FloatDepth = ALakeCharacter::MaxDepth;       // lies on the bottom
+    Fisher->Bait = EBait::Bread;
+    Fisher->NextActionTime = 0;
+    Fisher->ServerFish_Implementation();
+    Fisher->ChargeServerStart -= ALakeCharacter::ChargeTime;
+    Fisher->ServerRelease_Implementation();
+    Fisher->BaitActiveTime = 0;
+    TestEqual(TEXT("Cast for the crucian"), Fisher->FishingState, 1);
+    TSet<EBiteMotion> Seen;
+    EBiteMotion FirstTake = EBiteMotion::None;
+    for (int32 Try = 0; Try < 8 && FirstTake == EBiteMotion::None; ++Try)
+    {
+        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.6f, Fisher->BaitLocation() + FVector(150, 0, 0));
+        for (int32 Step = 0; Step < 2400 && Fisher->FishingState == 1; ++Step)
+        {
+            Crucian->Simulate(0.05f);
+            Seen.Add(Fisher->BiteMotion);
+        }
+        if (Fisher->FishingState == 2) FirstTake = Fisher->BiteMotion;
+        else Crucian->Destroy();
+    }
+    AddInfo(FString::Printf(TEXT("Crucian take shown as motion %d; the float trembled first: %d"), (int32)FirstTake, Seen.Contains(EBiteMotion::Tremble)));
+    TestTrue(TEXT("The crucian tests the bait first: the float trembles"), Seen.Contains(EBiteMotion::Tremble));
+    TestTrue(TEXT("Its take lifts the float or leads it off"), FirstTake == EBiteMotion::Lift || FirstTake == EBiteMotion::Drift);
     World->DestroyWorld(false);
     return true;
 }

@@ -86,6 +86,7 @@ mat, path = fresh('M_OldBark')
 lp = node(mat, unreal.MaterialExpressionLocalPosition)
 wp = node(mat, unreal.MaterialExpressionWorldPosition)
 rnd = node(mat, unreal.MaterialExpressionPerInstanceRandom)
+nrm = node(mat, unreal.MaterialExpressionVertexNormalWS)
 color = custom(mat, """
 float a = atan2(L.y, L.x);
 float furrow = abs(sin(a * 9 + vn(float3(L.z * 0.05, a, R * 10)) * 3));
@@ -94,7 +95,11 @@ float3 grey = float3(0.13, 0.125, 0.115);
 float3 c = lerp(bark, grey, saturate(R * 0.4 + vn(W * 0.02) * 0.3 - 0.25));
 float wet = 1 - saturate((W.z + 22) / 20);                  // darker where it has been in the water
 c = lerp(c, c * float3(0.45, 0.45, 0.42), wet);
-return c * lerp(0.85, 1.1, vn(W * 0.08));""", [('L', lp), ('W', wp), ('R', rnd)])
+// Moss on the upper side of lying logs and snags, in patches.
+float moss = saturate(Nw.z * 1.4 - 0.3) * smoothstep(0.35, 0.65, vn(W * 0.03 + 7)) * (1 - wet);
+c = lerp(c, float3(0.045, 0.06, 0.025), moss * 0.8);
+// Old wood stays dark under the bright sky the scene is exposed for.
+return c * 0.6 * lerp(0.85, 1.1, vn(W * 0.08));""", [('L', lp), ('W', wp), ('R', rnd), ('Nw', nrm)])
 prop(color, unreal.MaterialProperty.MP_BASE_COLOR)
 rough = custom(mat, 'float wet = 1 - saturate((W.z + 22) / 20); return lerp(0.9, 0.45, wet);', [('W', wp)], unreal.CustomMaterialOutputType.CMOT_FLOAT1)
 prop(rough, unreal.MaterialProperty.MP_ROUGHNESS)

@@ -441,27 +441,50 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         const FVector ToMoon(-ToSun.X, -ToSun.Y, FMath::Max(0.3f, -ToSun.Z * 0.8f + 0.2f));
         Moon->SetWorldRotation((-ToMoon.GetSafeNormal()).Rotation());
     }
-    if (Changed(LastSun, 10.0f * S(-3.0f, 6.0f, Elevation) * FMath::Lerp(1.0f, 0.12f, Overcast * Overcast), 0.05f)) Sun->SetIntensity(LastSun);
-    if (Changed(LastSunTemp, FMath::Lerp(3200.0f, 5800.0f, S(0.0f, 20.0f, Elevation)), 25.0f)) Sun->SetTemperature(LastSunTemp);
+    // 6.5 lux: the sky is lit up to match in LakeEnvironment (SkyLuminanceFactor), so only the direct light is softer.
+    if (Changed(LastSun, 6.5f * S(-3.0f, 6.0f, Elevation) * FMath::Lerp(1.0f, 0.12f, Overcast * Overcast), 0.05f)) Sun->SetIntensity(LastSun);
+    // The atmosphere already reddens a low sun (the light crosses more air); the colour
+    // temperature only adds a little warmth on top, or a misty dawn turns blood red.
+    if (Changed(LastSunTemp, FMath::Lerp(4800.0f, 5800.0f, S(0.0f, 20.0f, Elevation)), 25.0f)) Sun->SetTemperature(LastSunTemp);
     if (Changed(LastSunAngle, FMath::Lerp(0.8f, 6.0f, Overcast), 0.1f)) Sun->SetLightSourceAngle(LastSunAngle);
     if (Changed(LastMoon, 0.4f * Night * FMath::Lerp(1.0f, 0.15f, Overcast), 0.005f))
     {
         Moon->SetIntensity(LastMoon);
         Moon->SetVisibility(LastMoon > 0.003f);
     }
-    if (SkyLight && Changed(LastSky, FMath::Lerp(1.0f, 1.2f, W.Cloud * Day) * FMath::Lerp(1.0f, 0.75f, W.Rain), 0.01f)) SkyLight->SetIntensity(LastSky);
+    // Under a thick cloud the whole sky is dimmer, more so in rain.
+    if (SkyLight && Changed(LastSky, FMath::Lerp(1.0f, 0.8f, W.Cloud * W.Cloud) * FMath::Lerp(1.0f, 0.6f, W.Rain), 0.01f)) SkyLight->SetIntensity(LastSky);
     if (Atmosphere)
     {
         // A grey sky under cloud and rain: less blue scattering, more milky haze.
-        if (Changed(LastMie, 0.004f + 0.006f * FogNow + 0.02f * W.Rain + 0.006f * W.Cloud, 0.0002f)) Atmosphere->SetMieScatteringScale(LastMie);
+        if (Changed(LastMie, 0.004f + 0.003f * FogNow + 0.02f * W.Rain + 0.006f * W.Cloud, 0.0002f)) Atmosphere->SetMieScatteringScale(LastMie);
         if (Changed(LastRayleigh, FMath::Lerp(0.0331f, 0.012f, Overcast * 0.85f), 0.0003f)) Atmosphere->SetRayleighScatteringScale(LastRayleigh);
     }
     if (Post)
     {
-        // The scene's light levels are low (the sun is 10 lux), so in daylight the eye adapts freely;
-        // at night adaptation stops early, which keeps the night dark but readable.
-        Post->Settings.AutoExposureMinBrightness = FMath::Lerp(-3.2f, -6.0f, Day);
-        Post->Settings.AutoExposureBias = FMath::Lerp(-0.4f, 0.3f, Day);
+        // By day the eye adapts only part of the way: a grey or rainy day must look darker than a
+        // sunny one, not be brightened back to it. Measured with -ExposureProbe, free adaptation
+        // settles at EV100 -0.1 at a clear noon, -3.3 against a low sun, and drops with the
+        // sunlight the cloud lets through (-2.5 overcast, -3.35 in a downpour) while fog raises it.
+        // The exposure is held in a narrow band that follows only half of the loss of sunlight,
+        // and a little darker overall than before. At night adaptation stops early, which keeps
+        // the night dark but readable.
+        const float SunShare = FMath::Lerp(1.0f, 0.12f, Overcast * Overcast);
+        const float ClearEV = FMath::Lerp(-3.3f, -0.1f, S(0.0f, 35.0f, Elevation));
+        const float DayEV = ClearEV + 0.3f + 0.5f * FMath::Log2(SunShare) + 1.3f * FogNow;
+        Post->Settings.AutoExposureMinBrightness = FMath::Lerp(-3.2f, DayEV - 0.25f, Day);
+        Post->Settings.AutoExposureMaxBrightness = FMath::Lerp(1.0f, DayEV + 0.25f, Day);
+        Post->Settings.AutoExposureBias = FMath::Lerp(-0.4f, 0.0f, Day);
+#if !UE_BUILD_SHIPPING
+        // -ExposureProbe: free adaptation and the HDR debug view, to read what the eye would choose.
+        if (FParse::Param(FCommandLine::Get(), TEXT("ExposureProbe")))
+        {
+            Post->Settings.AutoExposureMinBrightness = -6;
+            Post->Settings.AutoExposureMaxBrightness = 16;
+            static bool bShown = false;
+            if (!bShown && GetWorld()->GetFirstPlayerController()) { bShown = true; GetWorld()->GetFirstPlayerController()->ConsoleCommand(TEXT("ShowFlag.VisualizeHDR 1")); }
+        }
+#endif
     }
 
     // Fog: a thin haze over the valley and a dense layer on the water; mist on calm mornings.
@@ -473,6 +496,26 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         Water.FogHeightFalloff = 2.0f;
         Fog->SetSecondFogData(Water);
         Fog->SetVolumetricFogExtinctionScale(0.5f + 0.8f * FogNow + 0.4f * W.Rain);
+    }
+    // A misty dawn is milky white, not orange: a low sun lights the fog only weakly (its light is
+    // reddened by the long way through the air), the cool light of the sky lights most of it.
+    // Only around dawn and dusk: at night the sky's light stays as it was, or the fog glows.
+    const float Twilight = S(-6.0f, 2.0f, Elevation) * (1 - S(2.0f, 20.0f, Elevation));
+    if (Changed(LastSunInFog, FMath::Lerp(0.3f, 1.0f, S(2.0f, 20.0f, Elevation)) + 2 * Twilight, 0.02f))
+    {
+        Sun->SetVolumetricScatteringIntensity(FMath::Lerp(0.3f, 1.0f, S(2.0f, 20.0f, Elevation)));
+        if (SkyLight) SkyLight->SetVolumetricScatteringIntensity(1.0f + 0.6f * Twilight);
+    }
+    // The haze colour and the lift of the sky (LakeEnvironment dims the sun and raises the sky to
+    // match) are daytime light: the haze's own glow fades out at night, the night sky is not raised.
+    if (Changed(LastDayTint, Day, 0.01f))
+    {
+        if (Fog) Fog->SetFogInscatteringColor(FLinearColor(0.42f, 0.47f, 0.55f) * FMath::Lerp(0.015f, 1.0f, Day * Day));
+        if (Atmosphere)
+        {
+            const float Lift = FMath::Lerp(1.0f, 10.0f / 6.5f, Day);
+            Atmosphere->SetSkyLuminanceFactor(FLinearColor(Lift, Lift, Lift));
+        }
     }
     if (CloudMaterial && Changed(LastCloud, W.Cloud + 2.0f * W.Rain, 0.004f))
     {

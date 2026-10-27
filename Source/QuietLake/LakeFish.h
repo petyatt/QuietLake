@@ -19,6 +19,31 @@ enum class EBait : uint8 { Worm, Maggot, Bread, Count UMETA(Hidden) };
 UENUM()
 enum class EFishGoal : uint8 { Cruise, Feed, Rest, Count UMETA(Hidden) };
 
+/** What the float does while a fish works at the bait. */
+UENUM()
+enum class EBiteMotion : uint8
+{
+    None,       // still (a pause between tries)
+    Tremble,    // fine quick quivering on the spot: lips at the bait
+    Peck,       // a short dip and back: a tug at the bait
+    Lift,       // rises slowly (the bait and the shot lifted off the bottom); lifted high it lies down
+    Drift,      // moves off to the side, slowly settling at a slant
+    Sink,       // pulled under and away
+};
+
+/**
+ * One step of a bite as the float shows it. Amount: centimetres of quiver, dip, rise or settling
+ * (Tremble, Peck, Lift, Drift); cm/s the float is pulled under (Sink). bTake: the fish holds the
+ * bait in its mouth now, a strike can hook it.
+ */
+struct FBiteStep
+{
+    EBiteMotion Motion = EBiteMotion::None;
+    float Duration = 1;
+    float Amount = 0;
+    bool bTake = false;
+};
+
 /**
  * Where in the lake a species lives: how strongly it is drawn to each kind of water (0..1, see
  * LakeMap::FZones) and the water depth it keeps to. Home spots and wanderings are chosen by these
@@ -105,6 +130,20 @@ namespace LakeFish
                                    EFishGoal Goal = EFishGoal::Cruise);
     QUIETLAKE_API const FFishHabitat& HabitatFor(EFishSpecies Species, EFishGoal Goal);
     QUIETLAKE_API const TCHAR* GoalName(EFishSpecies Species, EFishGoal Goal);
+    /**
+     * How a fish takes the bait, step by step, as anglers know it:
+     *  crucian - tests the bait at length (the float trembles, pauses, trembles; small ones keep at
+     *            it), then lifts it off the bottom - the float rises and, lifted high, lies down -
+     *            and leads it off to the side, the float slowly settling; bait off the bottom: a dip
+     *            and a slow lead away;
+     *  roach   - quick pecks, then the float goes under at a slant (from the bottom it sometimes lifts);
+     *  perch   - a tap or two, then the float is pulled under sharply and led away;
+     *  pike    - a jerk, then the float goes under fast.
+     * Size01 0..1 within the species, Activity as LakeFish::Activity, bWary: bright calm water.
+     */
+    QUIETLAKE_API TArray<FBiteStep> MakeBite(EFishSpecies Species, float Size01, float Activity, bool bBaitOnBottom, bool bWary, FRandomStream& Random);
+    /** What the angler sees, for the status line. */
+    QUIETLAKE_API const TCHAR* BiteText(EBiteMotion Motion, float Amount);
     /** Appetite and boldness now, about 0.05..1.6 (1 = an ordinary good day). */
     QUIETLAKE_API float Activity(EFishSpecies Species, const FFishConditions& Conditions);
     /** Metres the species moves its depth band: deeper in warm water and bright sun, up under a grey sky. */
@@ -225,6 +264,12 @@ private:
     bool bAtSpot = false;             // reached its feeding or resting spot
     bool bNear = true;                // full detail
     float LastBeat = -1, LastAmp = -1;// what the material was last given
+    // The bite in progress (see LakeFish::MakeBite).
+    TArray<FBiteStep> Bite;
+    int32 BiteIndex = -1;
+    float BiteStepEnd = 0;
+    float HoldSpeed = 0.6f;           // swimming with the bait, fraction of the cruise speed
+    void NextBiteStep(class ALakeCharacter* Angler);
     friend class FLakePondLifeTest;
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;

@@ -51,29 +51,32 @@ wp = node(grass, unreal.MaterialExpressionWorldPosition)
 tm = node(grass, unreal.MaterialExpressionTime)
 pos = node(grass, unreal.MaterialExpressionObjectPositionWS)
 mpc = unreal.load_asset('/Game/Weather/MPC_Weather')
-wnd, wdx, wdy = (node(grass, unreal.MaterialExpressionCollectionParameter, collection=mpc, parameter_name=n) for n in ('Wind', 'WindDirX', 'WindDirY'))
-rgb = node(grass, unreal.MaterialExpressionCustom, code='return C * lerp(0.85, 1.1, frac(sin(dot(O.xy, float2(12.9898, 78.233))) * 43758.5453));',
+wnd, wdx, wdy, wet = (node(grass, unreal.MaterialExpressionCollectionParameter, collection=mpc, parameter_name=n) for n in ('Wind', 'WindDirX', 'WindDirY', 'Wetness'))
+# The vertex colours are painted bright; real grass reflects far less light (albedo ~0.1-0.2), so
+# they are scaled down here, and wet grass darkens further.
+rgb = node(grass, unreal.MaterialExpressionCustom, code='return C * 0.45 * lerp(0.85, 1.1, frac(sin(dot(O.xy, float2(12.9898, 78.233))) * 43758.5453)) * lerp(1.0, 0.72, Wt);',
            output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+rough = node(grass, unreal.MaterialExpressionCustom, code='return lerp(0.7, 0.4, Wt);', output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT1)
 sway = node(grass, unreal.MaterialExpressionCustom, output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT3,
             code='float speed = lerp(1.0, 2.6, W);\n'
                  'float gust = sin(T * 1.6 * speed - dot(P.xy, float2(X, Y)) * 0.004) * 0.6 + sin(T * 3.1 * speed + P.x * 0.011) * 0.25 + 0.5;\n'
                  'float amp = lerp(3.0, 26.0, W);\n'
                  'float h = A * A;\nreturn float3(float2(X, Y) * gust * amp + float2(-Y, X) * gust * amp * 0.25, -gust * amp * 0.15) * h;')
-for n, names in ((rgb, ('C', 'O')), (sway, ('T', 'P', 'A', 'W', 'X', 'Y'))):
+for n, names in ((rgb, ('C', 'O', 'Wt')), (rough, ('Wt',)), (sway, ('T', 'P', 'A', 'W', 'X', 'Y'))):
     items = []
     for nm in names:
         it = unreal.CustomInput()
         it.set_editor_property('input_name', nm)
         items.append(it)
     n.set_editor_property('inputs', items)
-for src, out, dst, inp in ((vc, '', rgb, 'C'), (pos, '', rgb, 'O'), (tm, '', sway, 'T'), (wp, '', sway, 'P'), (vc, 'A', sway, 'A'),
+for src, out, dst, inp in ((vc, '', rgb, 'C'), (pos, '', rgb, 'O'), (wet, '', rgb, 'Wt'), (wet, '', rough, 'Wt'), (tm, '', sway, 'T'), (wp, '', sway, 'P'), (vc, 'A', sway, 'A'),
                            (wnd, '', sway, 'W'), (wdx, '', sway, 'X'), (wdy, '', sway, 'Y')):
     if not lib.connect_material_expressions(src, out, dst, inp):
         raise RuntimeError('link failed ' + inp)
 prop(rgb, '', unreal.MaterialProperty.MP_BASE_COLOR)
 prop(sway, '', unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
-prop(node(grass, unreal.MaterialExpressionConstant, r=0.65), '', unreal.MaterialProperty.MP_ROUGHNESS)
-prop(node(grass, unreal.MaterialExpressionConstant, r=0.3), '', unreal.MaterialProperty.MP_SPECULAR)
+prop(rough, '', unreal.MaterialProperty.MP_ROUGHNESS)
+prop(node(grass, unreal.MaterialExpressionConstant, r=0.25), '', unreal.MaterialProperty.MP_SPECULAR)
 lib.recompile_material(grass)
 unreal.EditorAssetLibrary.save_asset(path)
 

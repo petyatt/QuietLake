@@ -60,6 +60,86 @@ float LakeFish::BaitInterest(EFishSpecies Species, EBait Bait, float DepthFracti
     const float DepthMatch = FMath::Clamp(1.0f - FMath::Max(0.0f, FMath::Abs(DepthFraction - Mid) - Half) * 2.5f, 0.15f, 1.0f);
     return S.BaitLike[FMath::Clamp((int32)Bait, 0, 2)] * DepthMatch;
 }
+TArray<FBiteStep> LakeFish::MakeBite(EFishSpecies Species, float Size01, float A, bool bOnBottom, bool bWary, FRandomStream& R)
+{
+    TArray<FBiteStep> Out;
+    // Sluggish (poor appetite, bright calm water): more testing, and the fish lets go sooner.
+    const float Lazy = FMath::Clamp(1.0f - A, 0.0f, 0.9f) + (bWary ? 0.3f : 0.0f);
+    const float Pace = FMath::Lerp(1.1f, 0.65f, FMath::Clamp(Lazy, 0.0f, 1.0f));
+    auto Add = [&Out](EBiteMotion Motion, float Duration, float Amount, bool bTake) { Out.Add({ Motion, Duration, Amount, bTake }); };
+    auto Pause = [&](float Lo, float Hi) { Add(EBiteMotion::None, R.FRandRange(Lo, Hi), 0, false); };
+    switch (Species)
+    {
+    case EFishSpecies::Crucian:
+    {
+        const int32 Trembles = R.RandRange(1, 3) + (Size01 < 0.3f ? R.RandRange(1, 3) : 0) + (Lazy > 0.4f ? 1 : 0);
+        for (int32 I = 0; I < Trembles; ++I)
+        {
+            Add(EBiteMotion::Tremble, R.FRandRange(0.6f, 1.8f), R.FRandRange(0.3f, 0.9f) * (1 - 0.4f * Size01), false);
+            Pause(0.8f, 3.5f);
+        }
+        if (bOnBottom && R.FRand() < 0.8f)
+        {
+            const float Lift = R.FRandRange(1.2f, 3.6f) * (0.6f + 0.6f * Size01);
+            Add(EBiteMotion::Lift, R.FRandRange(1.2f, 2.4f), Lift, true);
+            Add(EBiteMotion::Drift, R.FRandRange(1.5f, 3.0f) * Pace, R.FRandRange(3.0f, 8.0f), true);
+        }
+        else
+        {
+            Add(EBiteMotion::Peck, 0.35f, R.FRandRange(0.8f, 1.5f), false);
+            Pause(0.4f, 1.2f);
+            Add(EBiteMotion::Drift, R.FRandRange(2.0f, 3.2f) * Pace, R.FRandRange(6.0f, 12.0f), true);
+        }
+        break;
+    }
+    case EFishSpecies::Roach:
+    {
+        const int32 Pecks = R.RandRange(1, 3) + (Lazy > 0.4f ? 1 : 0);
+        for (int32 I = 0; I < Pecks; ++I)
+        {
+            if (R.FRand() < 0.3f) Add(EBiteMotion::Tremble, R.FRandRange(0.4f, 0.8f), R.FRandRange(0.4f, 0.7f), false);
+            Add(EBiteMotion::Peck, R.FRandRange(0.18f, 0.3f), R.FRandRange(0.8f, 2.0f), false);
+            Pause(0.3f, 1.2f);
+        }
+        if (bOnBottom && R.FRand() < 0.25f)
+        {
+            Add(EBiteMotion::Lift, R.FRandRange(0.8f, 1.4f), R.FRandRange(1.0f, 2.0f), true);
+            Add(EBiteMotion::Drift, R.FRandRange(1.0f, 1.6f) * Pace, R.FRandRange(5.0f, 9.0f), true);
+        }
+        else Add(EBiteMotion::Sink, R.FRandRange(1.2f, 2.0f) * Pace, R.FRandRange(20.0f, 35.0f), true);
+        break;
+    }
+    case EFishSpecies::Perch:
+    {
+        const int32 Taps = R.RandRange(0, 2) + (Lazy > 0.5f ? 1 : 0);
+        for (int32 I = 0; I < Taps; ++I)
+        {
+            Add(EBiteMotion::Peck, 0.2f, R.FRandRange(1.5f, 3.0f), false);
+            Pause(0.4f, 1.5f);
+        }
+        Add(EBiteMotion::Sink, R.FRandRange(2.0f, 3.0f) * FMath::Max(Pace, 0.85f), R.FRandRange(45.0f, 70.0f), true);
+        break;
+    }
+    default:
+        Add(EBiteMotion::Peck, 0.3f, R.FRandRange(2.0f, 4.0f), false);
+        Pause(0.5f, 2.0f);
+        Add(EBiteMotion::Sink, R.FRandRange(1.3f, 1.8f), R.FRandRange(60.0f, 90.0f), true);
+        break;
+    }
+    return Out;
+}
+const TCHAR* LakeFish::BiteText(EBiteMotion Motion, float Amount)
+{
+    switch (Motion)
+    {
+    case EBiteMotion::Tremble: return TEXT("Поплавок подрагивает…");
+    case EBiteMotion::Peck: return TEXT("Поплавок коротко притопило…");
+    case EBiteMotion::Lift: return Amount >= 2.5f ? TEXT("Поплавок поднимается и ложится на бок!") : TEXT("Поплавок поднимается!");
+    case EBiteMotion::Drift: return TEXT("Поплавок медленно пошёл в сторону!");
+    case EBiteMotion::Sink: return TEXT("Поплавок ушёл под воду!");
+    default: return TEXT("");
+    }
+}
 float LakeFish::Activity(EFishSpecies Species, const FFishConditions& C)
 {
     const FFishMood& M = Info(Species).Mood;
@@ -141,7 +221,7 @@ float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y
     if (Conditions && Conditions->Wind > 0.15f)
     {
         const float SD = LakeMap::ShoreDistance(X, Y) / 100;
-        const FVector2D Out = (FVector2D(X, Y) - LakeMap::Centre).GetSafeNormal();
+        const FVector2D Out = LakeMap::NearestShore(FVector2D(X, Y)).Outward;
         Downwind = 1 + 0.8f * Conditions->Wind * FMath::Max(0.0f, FVector2D::DotProduct(Out, Conditions->WindDir)) * (1 - FMath::SmoothStep(10.0f, 25.0f, SD));
     }
     return (0.03f + Like) * DepthFit * Downwind;
@@ -151,15 +231,28 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
 {
     const FFishHabitat& Habitat = HabitatFor(Species, Goal);
     // Best of a few random candidates, with some chance so fish do not all crowd one spot.
-    static const FBox2D Lake = [] { FBox2D Box(ForceInit); for (const LakeMap::FShorePoint& P : LakeMap::Shoreline()) Box += P.Location; return Box; }();
+    const FBox2D Lake = LakeMap::LakeBounds();
     const FFishSpeciesInfo& S = Info(Species);
     FVector2D Best = Range > 0 ? Near : LakeMap::Centre;
     float BestScore = -1;
-    for (int32 Try = 0; Try < (Range > 0 ? 10 : 60); ++Try)
+    for (int32 Try = 0; Try < (Range > 0 ? 10 : 120); ++Try)
     {
         const FVector2D P = Range > 0 ? Near + FVector2D(Random.FRandRange(-Range, Range), Random.FRandRange(-Range, Range))
                                       : FVector2D(Random.FRandRange(Lake.Min.X, Lake.Max.X), Random.FRandRange(Lake.Min.Y, Lake.Max.Y));
-        if (LakeMap::Depth(P.X, P.Y) < 35) continue;
+        // Not so close to the bank that the fish would be pushed back before reaching it (SteerBounds).
+        if (LakeMap::Depth(P.X, P.Y) < 45 || LakeMap::ShoreDistance(P.X, P.Y) < 300) continue;
+        // Somewhere it can swim to straight: not behind a point of land or the island.
+        if (Range > 0)
+        {
+            bool bOpen = true;
+            const int32 Checks = FMath::CeilToInt(FVector2D::Distance(Near, P) / 200);
+            for (int32 K = 1; K < Checks && bOpen; ++K)
+            {
+                const FVector2D Q = FMath::Lerp(Near, P, float(K) / Checks);
+                bOpen = LakeMap::ShoreDistance(Q.X, Q.Y) > 60 && LakeMap::Depth(Q.X, Q.Y) > 35;   // no land and no shoal on the way
+            }
+            if (!bOpen) continue;
+        }
         const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions) * Random.FRandRange(0.6f, 1.0f);
         if (Score > BestScore) { BestScore = Score; Best = P; }
     }
@@ -176,7 +269,9 @@ ALakeFish::ALakeFish()
 {
     PrimaryActorTick.bCanEverTick = true;
     bReplicates = true;
-    bAlwaysRelevant = true;   // every angler sees every fish
+    // Each angler gets the fish within 150 m; the lake holds hundreds.
+    bAlwaysRelevant = false;
+    SetNetCullDistanceSquared(FMath::Square(15000.0));
     SetReplicatingMovement(false);
     SetNetUpdateFrequency(12);
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
@@ -415,7 +510,7 @@ FVector ALakeFish::SteerBounds() const
     const float Shore = LakeMap::ShoreDistance(P.X, P.Y);
     const float Depth = LakeFish::SurfaceZ - BottomZ(P.X, P.Y);
     FVector Push = FVector::ZeroVector;
-    if (Shore < 200 || Depth < 35)
+    if (Shore < 200 || Depth < 30)
     {
         // Back towards deeper water.
         Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 60 * FMath::Max(1.0f, (200 - Shore) / 60);
@@ -436,7 +531,7 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     Energy = FMath::Clamp(Energy - DeltaSeconds * (0.0012f + 0.004f * Effort) + DeltaSeconds * Recovery, 0.0f, 1.0f);
     Hunger = FMath::Min(1.0f, Hunger + DeltaSeconds * 0.0035f * Activity);
     const float Dist = FVector::Dist(GetActorLocation(), RoamTarget);
-    if (Dist < 90) bAtSpot = true;
+    if (Dist < 150) bAtSpot = true;
     if (Goal == EFishGoal::Feed && bAtSpot)
     {
         // Grazers find food where they browse; perch without fry pick at the bottom.
@@ -470,7 +565,10 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         ChooseRoamTarget(bAtSpot && Goal != EFishGoal::Cruise);
         StateTime = 0;
     }
-    Desired = SteerRoam() + SteerSchool();
+    const FVector Roam = SteerRoam();
+    Desired = Roam + SteerSchool();
+    // Moving to a new place a fish may swim faster than it cruises (SteerRoam sets how fast).
+    MaxSpeed = FMath::Max(MaxSpeed, (float)Roam.Size());
     if (Goal == EFishGoal::Feed && Species == EFishSpecies::Pike) UpdatePikeAmbush(DeltaSeconds, Desired, MaxSpeed);
     if (!Life || SimTime < NextSign) return;
 
@@ -618,40 +716,95 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
         {
             State = EState::Nibble;
             StateTime = 0;
-            // Wary fish test the bait more often: low appetite, or bright sun on a glassy lake.
+            // How this fish will take it (wary in bright sun on a glassy lake, more so with a poor appetite).
             FFishConditions Conditions;
             const bool bBright = GetConditions(Conditions) && LakeFish::IsBrightCalm(Conditions);
-            const int32 Extra = (Activity < 0.6f) + (Activity < 0.35f) + bBright - (Activity > 1.2f);
-            NibblesLeft = FMath::Max(0, Random.RandRange(S.MinNibbles, S.MaxNibbles) + Extra);
-            NextThink = SimTime + Random.FRandRange(0.5f, 1.2f);
+            const FVector BaitAt = Angler->BaitLocation();
+            const bool bOnBottom = BaitAt.Z <= BottomZ(BaitAt.X, BaitAt.Y) + 8;
+            const float Size01 = FMath::Clamp((WeightKg - S.MinWeight) / (S.MaxWeight - S.MinWeight), 0.0f, 1.0f);
+            Bite = LakeFish::MakeBite(Species, Size01, Activity, bOnBottom, bBright, Random);
+            BiteIndex = -1;
+            BiteStepEnd = SimTime + Random.FRandRange(0.3f, 1.0f);
+            // A crucian rooting at the bait sends bubbles up beside the float.
+            if (Species == EFishSpecies::Crucian)
+                if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
+                    Life->EmitSign(ELakeSign::Bubbles, FVector(BaitAt.X + Random.FRandRange(-40, 40), BaitAt.Y + Random.FRandRange(-40, 40), LakeFish::SurfaceZ), 0.4f + WeightKg * 0.6f, Species, WeightKg);
         }
         return;
     }
-    if (State == EState::Nibble && SimTime >= NextThink)
+    if ((State == EState::Nibble || State == EState::Holding) && Angler && SimTime >= BiteStepEnd) NextBiteStep(Angler);
+}
+
+void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    ++BiteIndex;
+    if (!Bite.IsValidIndex(BiteIndex))
     {
-        NextThink = SimTime + Random.FRandRange(0.7f, 1.6f);
-        const float Like = LakeFish::BaitInterest(Species, Angler->Bait, 0.5f);
-        if (NibblesLeft > 0)
+        // Done: a fish still only testing loses interest; one holding the bait spits it (the angler's timer).
+        BiteStepEnd = TNumericLimits<float>::Max();
+        if (State == EState::Nibble)
         {
-            Angler->OnFishNibble(this);
-            --NibblesLeft;
-            // A fish that does not like the bait much often gives up after tasting it.
-            if (Random.FRand() > FMath::Min(1.0f, (0.55f + Like * 0.45f) * FMath::Lerp(0.75f, 1.1f, FMath::Clamp(Activity, 0.0f, 1.0f))))
-            {
-                Angler->ReleaseBaitClaim(this);
-                IgnoreBaitUntil.Add(Angler, SimTime + 30);
-                State = EState::Roam;
-                ChooseRoamTarget();
-            }
-            return;
+            Angler->OnBiteMotion(this, FBiteStep());
+            Angler->ReleaseBaitClaim(this);
+            IgnoreBaitUntil.Add(Angler, SimTime + 30);
+            State = EState::Roam;
+            ChooseRoamTarget();
         }
-        Angler->OnFishTake(this);
+        return;
+    }
+    const FBiteStep Step = Bite[BiteIndex];
+    BiteStepEnd = SimTime + Step.Duration;
+    if (Step.bTake && State == EState::Nibble)
+    {
+        // It takes: the angler may strike for as long as it keeps the bait in its mouth.
+        float Window = 0;
+        for (int32 I = BiteIndex; I < Bite.Num(); ++I) if (Bite[I].bTake) Window += Bite[I].Duration;
+        Angler->OnFishTake(this, Window);
         State = EState::Holding;
         StateTime = 0;
-        // Swim off with the bait: away from the angler, slowly.
-        const FVector Away = (GetActorLocation() - Angler->GetActorLocation()).GetSafeNormal2D();
-        RoamTarget = GetActorLocation() + (Away + FVector(Random.FRandRange(-0.6f, 0.6f), Random.FRandRange(-0.6f, 0.6f), 0)).GetSafeNormal() * 300;
-        RoamTarget.Z = GetActorLocation().Z;
+    }
+    Angler->OnBiteMotion(this, Step);
+    if (State == EState::Holding)
+    {
+        // Where it goes with the bait: up (lifting it), aside, or down and away.
+        const FVector P = GetActorLocation();
+        const FVector Away = (P - Angler->GetActorLocation()).GetSafeNormal2D();
+        const FVector Side = FVector::CrossProduct(Away, FVector::UpVector) * (Random.FRand() < 0.5f ? 1 : -1);
+        switch (Step.Motion)
+        {
+        case EBiteMotion::Lift:
+        {
+            // Rising with the bait high enough to lift the shot off it: the float loses its load.
+            const float Rise = FMath::Clamp(LakeFish::SurfaceZ - 15 - P.Z, 0.0f, 8 + 9 * Step.Amount);
+            RoamTarget = P + Side * 10 + FVector(0, 0, Rise);
+            HoldSpeed = FMath::Max(0.25f, Rise / FMath::Max(Step.Duration * 0.8f, 0.3f) / S.CruiseSpeed);
+            break;
+        }
+        case EBiteMotion::Drift:
+            RoamTarget = P + (Side * 0.8f + Away * 0.4f).GetSafeNormal() * 250;
+            HoldSpeed = 0.6f;
+            break;
+        default:
+            RoamTarget = P + (Away + Side * Random.FRandRange(-0.5f, 0.5f)).GetSafeNormal() * 400;
+            RoamTarget.Z = FMath::Max(BottomZ(RoamTarget.X, RoamTarget.Y) + 10, P.Z - 60);
+            HoldSpeed = FMath::Clamp(Step.Amount / S.CruiseSpeed * 0.6f, 0.6f, 2.5f);
+            break;
+        }
+        return;
+    }
+    // A fish that does not like the bait much often gives up after tasting it.
+    if (Step.Motion != EBiteMotion::None)
+    {
+        const float Like = LakeFish::BaitInterest(Species, Angler->Bait, 0.5f);
+        if (Random.FRand() > FMath::Min(1.0f, (0.55f + Like * 0.45f) * FMath::Lerp(0.75f, 1.1f, FMath::Clamp(Activity, 0.0f, 1.0f))))
+        {
+            Angler->OnBiteMotion(this, FBiteStep());
+            Angler->ReleaseBaitClaim(this);
+            IgnoreBaitUntil.Add(Angler, SimTime + 30);
+            State = EState::Roam;
+            ChooseRoamTarget();
+        }
     }
 }
 
@@ -782,7 +935,8 @@ void ALakeFish::Simulate(float DeltaSeconds)
         break;
     }
     case EState::Holding:
-        Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * S.CruiseSpeed * 0.6f;
+        Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * S.CruiseSpeed * HoldSpeed;
+        MaxSpeed = FMath::Max(S.CruiseSpeed, S.CruiseSpeed * HoldSpeed);
         break;
     case EState::Hooked:
     {

@@ -51,40 +51,94 @@ for (int i = 0; i < 5; i++) {
 float wet = 1 - saturate((P.z + 22) / 7);   // last ~7 cm above the waterline at Z=-25
 """
 
-# Six directional waves (deep-water dispersion, slowed for a calm lake) plus distance fade.
-WAVES = """
-float2 dirs[6] = { float2(1,0.2), float2(0.7,0.7), float2(-0.3,1), float2(0.9,-0.45), float2(-0.8,0.55), float2(0.15,-1) };
-float lens[6] = { 340, 190, 120, 75, 41, 23 };
-float steep[6] = { 0.018, 0.02, 0.022, 0.024, 0.02, 0.016 };  // calm morning surface
-// Wind (MPC_Weather.Wind) raises the waves, longer ones the most; calm leaves a mirror.
-float rough = lerp(0.35, 2.6, W);
-float2 g = 0;
-for (int i = 0; i < 6; i++) {
-    float2 d = normalize(dirs[i]);
-    float k = 6.2831853 / lens[i];
-    float w = sqrt(980.0 * k) * 0.55;
-    g += d * steep[i] * rough * (i < 3 ? 1.0 + W : 1.0) * cos(dot(d, P.xy) * k - T * w);
+# The lake surface by the weather (MPC_Weather): Wind 0..1 (12 m/s), WindDirX/Y (where it blows),
+# Rain 0..1, Wetness (how long it has rained). Returns float4(normal, roughness).
+#  calm      - a mirror with a faint long swell;
+#  light air - patches of ripples ("cat's paws") drifting downwind between glassy streaks;
+#  breeze    - ripples everywhere, wavelets running downwind, reflections broken, far water matt;
+#  strong    - short steep waves (whitecaps come from WATER_FOAM);
+#  rain      - drizzle: sparse rings; downpour: dense splashes and a grey, matt surface.
+# Waves travel at their real speed (gravity and surface tension); what is too fine to draw far
+# away becomes roughness instead.
+WATER_COMMON = """
+float2 wd = normalize(float2(X, Y) + float2(1e-4, 0));
+float dist = distance(P, C);
+// Gusts: slow noise drifting downwind. In light air it leaves bare patches between ripples.
+float2 gp = (P.xy - wd * T * lerp(60.0, 420.0, W)) / 2600.0;
+float gust = 0.0, ga = 0.5;
+for (int o = 0; o < 3; o++)
+{
+    float2 c = floor(gp), f = frac(gp);
+    f = f * f * (3.0 - 2.0 * f);
+    float h00 = frac(sin(dot(c, float2(127.1, 311.7))) * 43758.5453);
+    float h10 = frac(sin(dot(c + float2(1, 0), float2(127.1, 311.7))) * 43758.5453);
+    float h01 = frac(sin(dot(c + float2(0, 1), float2(127.1, 311.7))) * 43758.5453);
+    float h11 = frac(sin(dot(c + float2(1, 1), float2(127.1, 311.7))) * 43758.5453);
+    gust += ga * lerp(lerp(h00, h10, f.x), lerp(h01, h11, f.x), f.y);
+    gp = gp * 2.13 + 5.7;
+    ga *= 0.5;
 }
-float fade = lerp(1.0, 0.15, saturate(distance(P, C) / 4000));
-g *= fade;
-// Rain (MPC_Weather.Rain): every 30 cm cell gets drops at its own moments; each sends out a ring.
-if (R > 0.01) {
-    float near = 1.0 - saturate(distance(P, C) / 2500);
-    for (int l = 0; l < 3; l++) {
-        float2 q = P.xy / 30.0 + float2(l * 0.37, l * 0.61);
+gust /= 0.875;
+float patch = lerp(smoothstep(0.5, 0.72, gust), 0.55 + 0.45 * gust, smoothstep(0.2, 0.55, W));
+"""
+WATER_SURFACE = WATER_COMMON + """
+float lens[8] = { 420, 240, 140, 85, 52, 31, 19, 11 };
+float angs[8] = { 0, 28, -32, 12, -48, 55, -18, 75 };       // degrees off the wind
+float phase[8] = { 0.0, 1.7, 4.1, 2.3, 5.2, 0.9, 3.6, 2.8 };
+float2 g = 0;
+float lost = 0;      // slope too fine to draw at this distance: it becomes roughness
+for (int i = 0; i < 8; i++)
+{
+    float a = radians(angs[i]);
+    float2 d = float2(wd.x * cos(a) - wd.y * sin(a), wd.x * sin(a) + wd.y * cos(a));
+    float k = 6.2831853 / lens[i];
+    float w = sqrt(980.0 * k + 74.0 * k * k * k);           // gravity-capillary dispersion
+    // Long waves need a strong, steady wind; ripples answer every breath of it.
+    float s = i < 2 ? 0.07 * pow(W, 1.6)
+            : i < 5 ? 0.05 * W * lerp(0.6, 1.0, patch)
+            : 0.045 * saturate(W * 5.0) * patch;
+    // Detail fades out with distance, the shortest first.
+    float keep = 1.0 - saturate(dist / (lens[i] * 25.0));
+    g += d * s * keep * cos(dot(d, P.xy) * k - w * T + phase[i]);
+    lost += s * (1.0 - keep);
+}
+// Even a calm lake breathes: a faint long swell.
+g += float2(0.6, 0.8) * 0.004 * cos(dot(float2(0.6, 0.8), P.xy) * 0.0105 - T * 0.9);
+// Rain: every cell of a grid gets drops at its own moments; each sends out a ring. Drizzle lights
+// a few cells, a downpour nearly all of them, at three scales.
+float rainRough = 0;
+if (R > 0.01)
+{
+    float near = 1.0 - saturate(dist / 2500);
+    for (int l = 0; l < 3; l++)
+    {
+        float cell = l == 0 ? 30.0 : l == 1 ? 18.0 : 45.0;
+        float2 q = P.xy / cell + float2(l * 0.37, l * 0.61);
         float2 c = floor(q);
         float h = frac(sin(dot(c + l * 7.1, float2(12.9898, 78.233))) * 43758.5453);
         float h2 = frac(h * 17.31 + 0.13);
-        if (h2 > R) continue;
-        float t = frac(T * 1.3 + h);
+        if (h2 > R * R * 0.9 + 0.1 * R) continue;
+        float t = frac(T * (1.1 + 0.6 * h) + h);
         float2 v = q - (c + 0.25 + 0.5 * float2(h, frac(h * 7.7)));
         float d = length(v);
         float ring = d - t * 0.45;
         float wave = sin(ring * 45.0) * exp(-ring * ring * 300.0) * (1.0 - t);
         g += (v / max(d, 1e-3)) * wave * 0.5 * near;
     }
+    rainRough = 0.35 * R * R + 0.05 * R;
 }
-return normalize(float3(-g, 1));
+float rough = 0.02 + lost * 3.0 + 0.04 * W + rainRough;
+return float4(normalize(float3(-g, 1)), saturate(rough));
+"""
+# Whitecaps in a strong wind: streaks of foam along the wind on the crests, in the gusts.
+WATER_FOAM = WATER_COMMON + """
+if (W < 0.55) return 0;
+float2 side = float2(-wd.y, wd.x);
+float along = dot(P.xy, wd), across = dot(P.xy, side);
+float crest = sin(along * 6.2831853 / 240.0 - T * 4.0 + sin(across * 0.004) * 2.0) * 0.5 + 0.5;
+float streak = frac(sin(floor(across / 35.0) * 12.9898) * 43758.5453);
+float foam = smoothstep(0.82, 0.97, crest) * smoothstep(0.55, 0.9, gust) * step(0.45, streak);
+return foam * smoothstep(0.55, 0.9, W) * (1.0 - saturate(distance(P, C) / 9000)) * 0.8;
 """
 
 weather = unreal.load_asset('/Game/Weather/MPC_Weather')
@@ -107,17 +161,25 @@ for name, rgb in palette.items():
         # UE5 Single Layer Water: depth absorption, scattering, Lumen reflections.
         mat.set_editor_property('shading_model', unreal.MaterialShadingModel.MSM_SINGLE_LAYER_WATER)
         camera = expression(mat, unreal.MaterialExpressionCameraPositionWS)
-        rain = expression(mat, unreal.MaterialExpressionCollectionParameter, collection=weather, parameter_name='Rain')
-        wind = expression(mat, unreal.MaterialExpressionCollectionParameter, collection=weather, parameter_name='Wind')
-        normal = custom(mat, WAVES, [('P', position), ('T', time), ('C', camera), ('R', rain), ('W', wind)])
+        param = lambda n: expression(mat, unreal.MaterialExpressionCollectionParameter, collection=weather, parameter_name=n)
+        rain, wind, wx, wy, wetness = param('Rain'), param('Wind'), param('WindDirX'), param('WindDirY'), param('Wetness')
+        inputs = [('P', position), ('T', time), ('C', camera), ('R', rain), ('W', wind), ('X', wx), ('Y', wy)]
+        surface = custom(mat, WATER_SURFACE, inputs, unreal.CustomMaterialOutputType.CMOT_FLOAT4)
+        normal = expression(mat, unreal.MaterialExpressionComponentMask, r=True, g=True, b=True, a=False)
+        rough = expression(mat, unreal.MaterialExpressionComponentMask, r=False, g=False, b=False, a=True)
+        connect(surface, '', normal, '')
+        connect(surface, '', rough, '')
         lib.connect_material_property(normal, '', unreal.MaterialProperty.MP_NORMAL)
-        base = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.01, 0.013, 0.012, 1))
-        lib.connect_material_property(base, '', unreal.MaterialProperty.MP_BASE_COLOR)
-        rough = expression(mat, unreal.MaterialExpressionConstant, r=0.035)
         lib.connect_material_property(rough, '', unreal.MaterialProperty.MP_ROUGHNESS)
+        # Foam: the surface colour (it tints single-layer water everywhere, so it stays dark) turns
+        # white only on the foam.
+        foam = custom(mat, WATER_FOAM, inputs, unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+        base = custom(mat, 'return lerp(float3(0.01, 0.013, 0.012), float3(0.6, 0.62, 0.63), saturate(F));', [('F', foam)])
+        lib.connect_material_property(base, '', unreal.MaterialProperty.MP_BASE_COLOR)
         out = expression(mat, unreal.MaterialExpressionSingleLayerWaterMaterialOutput)
-        # Peaty forest lake: red absorbed fast, greenish scattering (coefficients per metre).
-        scatter = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.010, 0.022, 0.016, 1))
+        # Peaty forest lake: red absorbed fast, greenish scattering (coefficients per metre);
+        # after long rain the runoff clouds it a little.
+        scatter = custom(mat, 'return float3(0.010, 0.022, 0.016) * (1.0 + 1.5 * Wt) + float3(0.004, 0.004, 0.002) * Wt;', [('Wt', wetness)])
         absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.55, 0.20, 0.26, 1))
         connect(scatter, '', out, 'ScatteringCoefficients')
         connect(absorb, '', out, 'AbsorptionCoefficients')

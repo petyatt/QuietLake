@@ -95,7 +95,7 @@ private:
     bool bLoggedClock = false;
     // Last values given to the sky, so it is only touched when something visibly changes.
     FVector LastSunDir = FVector::ZeroVector;
-    float LastSun = -1, LastSunTemp = -1, LastSunAngle = -1, LastMoon = -1, LastSky = -1, LastMie = -1, LastRayleigh = -1, LastFog = -1, LastCloud = -1;
+    float LastSun = -1, LastSunTemp = -1, LastSunAngle = -1, LastMoon = -1, LastSky = -1, LastMie = -1, LastRayleigh = -1, LastFog = -1, LastCloud = -1, LastSunInFog = -1, LastDayTint = -1;
     float Wetness = 0;
     UPROPERTY() TObjectPtr<class UDirectionalLightComponent> Sun;
     UPROPERTY() TObjectPtr<class UDirectionalLightComponent> Moon;

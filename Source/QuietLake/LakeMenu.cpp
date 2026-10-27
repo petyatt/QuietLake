@@ -289,7 +289,7 @@ void ALakePlayerController::BeginPlay()
     if (!IsLocalController()) return;
     ApplyVolume(LoadVolume());
     // Automated preview runs go straight into the game.
-    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview"))) { bStarted = true; return; }
+    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview"))) { bStarted = true; return; }
     // A slow flight around the lake behind the menu.
     MenuCamera = GetWorld()->SpawnActor<ACameraActor>();
     if (MenuCamera) MenuCamera->GetCameraComponent()->SetFieldOfView(60);
@@ -363,7 +363,8 @@ void ALakePlayerController::Tick(float DeltaSeconds)
     {
         OrbitAngle += DeltaSeconds * 0.025f;
         const FVector Centre(LakeMap::Centre, LakeMap::SurfaceZ);
-        const FVector Eye = Centre + FVector(FMath::Cos(OrbitAngle) * 4300, FMath::Sin(OrbitAngle) * 5400, 450);
+        // A slow circle over the middle reach: the island, the wooded north bank and the long water.
+        const FVector Eye = Centre + FVector(FMath::Cos(OrbitAngle) * 7000, FMath::Sin(OrbitAngle) * 4500, 650);
         MenuCamera->SetActorLocationAndRotation(Eye, (Centre + FVector(0, 0, 150) - Eye).Rotation());
         if (GetViewTarget() != MenuCamera) SetViewTarget(MenuCamera);
     }

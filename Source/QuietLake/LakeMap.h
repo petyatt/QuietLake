@@ -2,29 +2,27 @@
 #include "CoreMinimal.h"
 
 /**
- * The pond and the land around it: shoreline, lake bed, terrain relief, the places on the bank
- * (pier, gaps in the reeds, village, snags, lily beds) and the kinds of water fish live in.
+ * The lake and the land around it: shoreline, lake bed, terrain relief, the places on the bank
+ * (fishing spots, pier, dam, island, snags, lily beds) and the kinds of water fish live in.
  * Pure deterministic functions, identical on every machine, used by the environment builder,
  * the fish, the angler and the tests. Distances in cm unless a name says metres.
  *
- * Layout: an overgrown mid-Russian pond about 120 x 150 m with a long weedy backwater to the
- * north-east, a village bank with a pier and a boat landing on the west shore, clay bluffs on the
- * south-east and north shores, meadow, hills and terraced ground behind, forest all around.
+ * Layout: a long village lake, about 860 m from west to east and 30-220 m across, winding along
+ * a valley. An old earth dam closes the west end (the deepest water, 7-8 m, lies before it); the
+ * wide middle reach holds a wooded island, a hole and an underwater hump; the lake narrows to a
+ * shallow reedy upper end where a brook comes in. A long weedy backwater runs north into the
+ * forest; a shallow bay with the pier and boats opens to the south; a snaggy forest cove and a
+ * ravine cove break the banks. The north and east banks are forested hills with ravines and a
+ * clay bluff; the south-west and the dam are open hilly meadow, with a plateau left for a village.
  */
 namespace LakeMap
 {
     constexpr float SurfaceZ = -25.0f;
-    inline const FVector2D Centre(6100.0f, 0.0f);
+    /** A point of open water in the middle reach, between the island and the south bank. */
+    inline const FVector2D Centre(8000.0f, 1000.0f);
 
-    /** Distance from Centre to the waterline in the direction Angle (radians, atan2 of Y, X). */
-    QUIETLAKE_API float ShoreRadius(float Angle);
-    QUIETLAKE_API float AngleOf(float X, float Y);
-    /** 0 at the centre, 1 on the waterline, above 1 on land. */
-    QUIETLAKE_API float Radius(float X, float Y);
-    /** Signed distance to the waterline: positive in the water, negative on land. */
+    /** Signed distance to the nearest waterline (the lake's or the island's): positive in the water. */
     QUIETLAKE_API float ShoreDistance(float X, float Y);
-    /** Point on the ray from Centre at the given fraction of the shore radius. */
-    QUIETLAKE_API FVector2D PointAt(float Angle, float R);
     /** Terrain or lake bed height. */
     QUIETLAKE_API float Ground(float X, float Y);
     QUIETLAKE_API bool IsWater(float X, float Y);
@@ -33,30 +31,48 @@ namespace LakeMap
     /** Unit 2D direction towards deeper water. */
     QUIETLAKE_API FVector2D DeeperDirection(float X, float Y);
 
-    /** The waterline as a closed polyline with outward normals, about every metre. */
-    struct FShorePoint { FVector2D Location, Outward; float Angle; };
+    /** Points on every waterline about a metre apart (unordered), with the normal pointing onto the land. */
+    struct FShorePoint { FVector2D Location, Outward; bool bIsland = false; };
     QUIETLAKE_API const TArray<FShorePoint>& Shoreline();
-    /** The waterline point in the direction Angle from the centre. */
-    QUIETLAKE_API FShorePoint ShoreAt(float Angle);
+    /** The waterline point nearest to P. */
+    QUIETLAKE_API FShorePoint NearestShore(const FVector2D& P);
 
-    /** Gaps in the reed belt where the angler can stand and cast. */
-    struct FOpening { float Angle, HalfWidth; const TCHAR* Name; };
-    QUIETLAKE_API TConstArrayView<FOpening> Openings();
-    /** 1 inside an opening of the reed belt, 0 away from it. */
-    QUIETLAKE_API float OpeningAmount(float Angle);
-    /** Height (m) of the clay bluff on this stretch of shore, 0 where the bank is low. */
-    QUIETLAKE_API float BluffHeight(float Angle);
-    /** 1 in the north-east backwater. */
+    /** Places on the bank cleared for fishing: no reeds or tall grass, boards at the water. */
+    struct FSpot
+    {
+        const TCHAR* Name;         // shown to the player
+        FVector2D Location;        // on the waterline
+        FVector2D Outward;         // onto the bank
+        float HalfWidth;           // of the clearing along the bank (cm)
+        bool bBoards;              // boards and rod stakes at the water's edge
+    };
+    QUIETLAKE_API TConstArrayView<FSpot> Spots();
+    /** 1 in the clearing of a fishing spot (and the lane cast from it), 0 away from them. */
+    QUIETLAKE_API float SpotAmount(const FVector2D& P);
+    /** The fishing spot whose clearing P is in, or null. */
+    QUIETLAKE_API const FSpot* SpotAt(const FVector2D& P);
+
+    /** Height (m) of the clay bluff at the bank nearest to P, 0 where the bank is low. */
+    QUIETLAKE_API float BluffHeight(const FVector2D& P);
+    /** 1 in the warm weedy shallows: the backwater, the upper end and the south bay. */
     QUIETLAKE_API float BackwaterAmount(float X, float Y);
+    /** 1 where the forest grows (the north and east), 0 in the open meadow (south-west, the dam, the village plateau). */
+    QUIETLAKE_API float ForestAmount(const FVector2D& P);
 
-    /** Where the angler starts: on the bank in the main opening, facing the water. */
+    /** Where the angler starts: on the bank at the camp, facing the water. */
     QUIETLAKE_API FVector2D StartSpot(FVector2D* OutFacing = nullptr);
 
     struct FPier { FVector2D Root, Dir; float Length, Width; };
     QUIETLAKE_API const FPier& Pier();
     QUIETLAKE_API bool OnPier(const FVector& P);
-    /** Middle of the village clearing behind the boat landing. */
+    /** The boat landing next to the pier. */
+    QUIETLAKE_API FShorePoint Landing();
+    /** The level plateau above the south bay kept for the village. */
     QUIETLAKE_API FVector2D VillageCentre();
+    /** The earth dam across the west end: crest line, height of the crest above the water (m), the spillway. */
+    struct FDam { FVector2D A, B; float CrestM; FVector2D Spillway; };
+    QUIETLAKE_API const FDam& Dam();
+    QUIETLAKE_API FVector2D IslandCentre();
 
     /** Fallen trees lying from the bank into the water: cover for perch and pike. */
     struct FSnag { FVector Root, Tip; float Radius; };
@@ -70,15 +86,10 @@ namespace LakeMap
     struct FZones { float Shallows = 0, ReedEdge = 0, DropOff = 0, Cover = 0, Deep = 0, Open = 0; };
     QUIETLAKE_API FZones ZonesAt(float X, float Y);
 
-    /** Dirt roads through the forest far from the lake, and footpaths to the lake and to each fishing spot. */
-    struct FTrack { TArray<FVector2D> Points; float Width; bool bRoad; };
-    /** Roads first, then paths; points about every metre. */
-    QUIETLAKE_API const TArray<FTrack>& Tracks();
-    /** Distance (cm) from the edge of the nearest road or path, negative inside it; bRoad tells which. */
-    QUIETLAKE_API float TrackClearance(float X, float Y, bool* bRoad = nullptr);
-
+    /** Extent of the generated terrain. */
+    inline const FBox2D TerrainBounds(FVector2D(-62000, -58000), FVector2D(72000, 46000));
     /** Playable ground; walking past it brings the angler back. */
     QUIETLAKE_API bool InPlayArea(float X, float Y);
-    /** Extent of the generated terrain. */
-    inline const FBox2D TerrainBounds(FVector2D(-16000, -24000), FVector2D(30000, 26000));
+    /** Bounding box of the water. */
+    QUIETLAKE_API FBox2D LakeBounds();
 }

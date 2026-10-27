@@ -288,13 +288,13 @@ void ALakeLife::SpawnFry()
 {
     Fry.Reset();
     const TArray<LakeMap::FShorePoint>& Shore = LakeMap::Shoreline();
-    for (int32 Try = 0; Try < 80 && Fry.Num() < 16; ++Try)
+    for (int32 Try = 0; Try < 600 && Fry.Num() < 40; ++Try)
     {
         const LakeMap::FShorePoint& Point = Shore[Random.RandRange(0, Shore.Num() - 1)];
         const FVector Spot = FrySpotNear(Point.Location - Point.Outward * Random.FRandRange(300, 1100), 400);
         if (!FryCanBe(FVector2D(Spot))) continue;
         bool bCrowded = false;
-        for (const FFryShoal& Other : Fry) bCrowded |= FVector::Dist2D(Other.Location, Spot) < 1500;
+        for (const FFryShoal& Other : Fry) bCrowded |= FVector::Dist2D(Other.Location, Spot) < 2500;
         if (bCrowded) continue;
         FFryShoal Shoal;
         Shoal.Location = Spot;

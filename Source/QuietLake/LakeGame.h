@@ -26,6 +26,11 @@ public:
     UPROPERTY(Replicated) EBait Bait = EBait::Worm;
     /** Incremented on every nibble so clients can twitch the bobber. */
     UPROPERTY(Replicated) uint8 NibbleCounter = 0;
+    /** What the float is doing now (a fish at the bait), replicated so every machine animates it. */
+    UPROPERTY(Replicated) EBiteMotion BiteMotion = EBiteMotion::None;
+    UPROPERTY(Replicated) float BiteStart = 0;        // server time
+    UPROPERTY(Replicated) float BiteDuration = 1;
+    UPROPERTY(Replicated) float BiteAmount = 0;
     // Cast and rod state, replicated so every machine can animate the rod and line itself.
     UPROPERTY(Replicated) bool bCharging = false;          // LMB held: the rod sweeps forward, laying the line out
     UPROPERTY(Replicated) float ChargeServerStart = 0;
@@ -66,9 +71,13 @@ public:
     bool ClaimBait(ALakeFish* Fish);
     void ReleaseBaitClaim(ALakeFish* Fish);
     void OnFishNibble(ALakeFish* Fish);
-    void OnFishTake(ALakeFish* Fish);
+    /** The fish takes: the float may be struck for Window seconds (< 0: a default by species). */
+    void OnFishTake(ALakeFish* Fish, float Window = -1);
+    /** The float starts a new motion of the bite. */
+    void OnBiteMotion(ALakeFish* Fish, const FBiteStep& Step);
 private:
     friend class FLakeFishingTest;
+    friend class FLakeBitePatternsTest;
     friend class FLakeFishBehaviourTest;
     void SelectBait(EBait NewBait);
     void BaitWorm() { SelectBait(EBait::Worm); }
