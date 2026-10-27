@@ -184,6 +184,17 @@ public:
     void ApplyLineForce(FVector Force);
     /** The fish got off: lost bait, broken line or released. */
     void Release(float SpookSeconds);
+    /** It let go of the bait it held (the angler did not strike): swims off, wary of that bait for a while. */
+    void DropBait();
+    /** Drawn out of the water on the line (server): from now on the angler's rod carries it. */
+    void LiftOut();
+    bool IsLifted() const { return bLifted; }
+    /**
+     * Out of the water on the line: placed on every machine from the rod's simulated hook. It hangs
+     * from its mouth along the line, swings with it and thrashes; still in the water it is drawn
+     * mouth first.
+     */
+    void HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds);
     bool IsHooked() const { return State == EState::Hooked; }
     float StaminaFraction() const { return Stamina / FMath::Max(0.01f, MaxStamina); }
     FVector MouthLocation() const;
@@ -237,6 +248,11 @@ private:
     UPROPERTY(Replicated) FRotator NetRotation;
     UPROPERTY(Replicated) float NetEffort = 0;   // 0..1, drives the tail beat on clients
     UPROPERTY(Replicated) EFishGoal Goal = EFishGoal::Cruise;
+    UPROPERTY(Replicated) bool bLifted = false;  // out of the water on an angler's line
+    // Hanging on the line (cosmetic, every machine).
+    float HangTime = 0, HangEffort = 0;
+    FVector HangForward = FVector::ForwardVector;
+    uint64 LastHangFrame = 0;
 
     EState State = EState::Roam;
     int32 School = -1;

@@ -43,6 +43,13 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     // Lifting the rig out takes a few seconds; skip to its end.
     auto Settle = [Fisher]()
     {
+        // Lifting a fish out ends with it in the hand.
+        if (Fisher->FishingState == 4)
+        {
+            Fisher->LandServerTime -= ALakeCharacter::LandTime;
+            Fisher->UpdateLanding();
+            return;
+        }
         if (!Fisher->bRetrieving) return;
         Fisher->RetrieveServerTime -= ALakeCharacter::RetrieveTime;
         Fisher->UpdateRetrieve();
@@ -96,6 +103,12 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
         if (IsValid(Perch)) Perch->Simulate(0.05f);
     }
     AddInfo(TEXT("Fight ended: ") + Fisher->Status);
+    TestTrue(TEXT("A tired perch is lifted out of the water"), Fisher->FishingState == 4 && IsValid(Perch) && Perch->IsLifted());
+    TestEqual(TEXT("A fish counts only once in the hand"), Fisher->CatchCount, 0);
+    Fisher->NextActionTime = 0;
+    Fisher->ServerFish_Implementation();
+    Fisher->ServerCancel_Implementation();
+    TestEqual(TEXT("Input does not interrupt the lift"), Fisher->FishingState, 4);
     Settle();
     TestEqual(TEXT("Controlled reeling lands the perch"), Fisher->CatchCount, 1);
     TestEqual(TEXT("Successful catch ends cast"), Fisher->FishingState, 0);
@@ -137,9 +150,12 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->OnFishTake(Roach);
     TestEqual(TEXT("Take sinks the bobber"), Fisher->FishingState, 2);
     Fisher->Escape();
-    Settle();
     TestEqual(TEXT("Missed take awards no fish"), Fisher->CatchCount, 1);
-    TestEqual(TEXT("Missed take ends cast"), Fisher->FishingState, 0);
+    TestTrue(TEXT("Missed take leaves the rig fishing"), Fisher->FishingState == 1 && !Fisher->bRetrieving && Fisher->HasBaitInWater());
+    TestTrue(TEXT("The fish lets go of the bait"), Roach->IsFree());
+    Fisher->ServerCancel_Implementation();
+    Settle();
+    TestEqual(TEXT("The rig can then be lifted out"), Fisher->FishingState, 0);
     Cast();
     Fisher->ServerCancel_Implementation();
     TestTrue(TEXT("Cancel starts lifting the rig"), Fisher->bRetrieving);

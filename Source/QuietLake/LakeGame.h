@@ -49,6 +49,9 @@ public:
     UPROPERTY(Replicated) float CastFlight = 1;
     UPROPERTY(Replicated) float CastPower = 0;
     UPROPERTY(Replicated) float StrikeServerTime = -100;
+    /** State 4: a tired fish lifted out of the water on the line and swung to the hand. */
+    UPROPERTY(Replicated) float LandServerTime = -100;
+    static constexpr float LandTime = 4.0f;
     UPROPERTY(Replicated) float HookDepth = 100;            // rig in the water: bobber to hook
     /** Bobber-to-hook distance the angler has set (cm); the bait sinks this deep, or lies on the bottom. */
     UPROPERTY(Replicated) float FloatDepth = 100;
@@ -123,6 +126,9 @@ private:
     /** Slowly raise the rod and draw the rig out; the cast ends when the rod is up. */
     void StartRetrieve(const FString& Message, const FString& EndMessage);
     void UpdateRetrieve();
+    /** Lift the tired fish out of the water: it hangs on the line and swings to the angler's hand. */
+    void StartLanding(class ALakeFish* Fish);
+    void UpdateLanding();
     bool TakeRodFromStand();
     FString RetrieveEndMessage;
     UFUNCTION(Server, Reliable) void ServerRelease();

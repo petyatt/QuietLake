@@ -293,6 +293,7 @@ void ALakeFish::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
     DOREPLIFETIME(ALakeFish, NetRotation);
     DOREPLIFETIME(ALakeFish, NetEffort);
     DOREPLIFETIME(ALakeFish, Goal);
+    DOREPLIFETIME(ALakeFish, bLifted);
 }
 
 void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int32 InSchool)
@@ -836,8 +837,68 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
 
 void ALakeFish::ApplyLineForce(FVector Force) { PendingLineForce = Force; }
 
+void ALakeFish::DropBait()
+{
+    if (State != EState::Nibble && State != EState::Holding) return;
+    if (ALakeCharacter* Angler = TargetAngler.Get())
+    {
+        IgnoreBaitUntil.Add(Angler, SimTime + 40);
+        Angler->ReleaseBaitClaim(this);
+    }
+    TargetAngler = nullptr;
+    Bite.Reset();
+    BiteIndex = -1;
+    BiteStepEnd = 0;
+    State = EState::Roam;
+    StateTime = 0;
+    ChooseRoamTarget();
+}
+
+void ALakeFish::LiftOut()
+{
+    bLifted = true;
+    HangTime = 0;
+    HangForward = GetActorForwardVector();
+    Vel = FVector::ZeroVector;
+    PendingLineForce = FVector::ZeroVector;
+}
+
+void ALakeFish::HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds)
+{
+    LastHangFrame = GFrameCounter;
+    const float Dt = FMath::Min(DeltaSeconds, 0.05f);
+    HangTime += Dt;
+    const float Len = LakeFish::LengthCm(Species, WeightKg);
+    FVector Up = LineUp.GetSafeNormal();
+    if (Up.IsNearlyZero()) Up = FVector::UpVector;
+    // In the water it is drawn mouth first along the line, lying flat; clear of the water its
+    // weight hangs below the hook, head up along the line.
+    const float Out = FMath::Clamp((Mouth.Z - (LakeFish::SurfaceZ - 6)) / (Len * 0.8f), 0.0f, 1.0f);
+    const FVector Drawn = Up.GetSafeNormal2D();
+    if (!Drawn.IsNearlyZero()) HangForward = FMath::VInterpNormalRotationTo(HangForward, Drawn, Dt, 90.0f);
+    FVector Flat = HangForward.GetSafeNormal2D();
+    if (Flat.IsNearlyZero()) Flat = FVector::ForwardVector;
+    const FVector Axis = FMath::Lerp(Flat + FVector(0, 0, 0.25f), Up * 1.25f, Out).GetSafeNormal();
+    // Out of the water it fights in bouts: hard thrashing, then a moment hanging still.
+    const float Bout = FMath::Sin(HangTime * 2.3f + Phase) * FMath::Sin(HangTime * 0.9f + 1.0f);
+    const float Want = Out < 0.3f ? 0.85f : Bout > -0.15f ? 1.0f : 0.25f;
+    HangEffort = FMath::FInterpTo(HangEffort, Want, Dt, 6.0f);
+    // The body bends from side to side around the hook and slowly turns on the line.
+    const float Bend = FMath::DegreesToRadians((5 + 18 * HangEffort) * Out * FMath::Sin(HangTime * (8 + 6 * HangEffort) + Phase));
+    const float Twist = FMath::DegreesToRadians(50 * Out * FMath::Sin(HangTime * 0.7f + Phase));
+    const FQuat Base = FRotationMatrix::MakeFromXZ(Axis, FMath::Lerp(FVector::UpVector, -Flat, Out)).ToQuat();
+    const FQuat Pose = Base * FQuat(FVector::ForwardVector, Twist) * FQuat(FVector::UpVector, Bend);
+    SetActorLocationAndRotation(Mouth - Pose.GetForwardVector() * Len * 0.42f, Pose);
+}
+
 void ALakeFish::Release(float SpookSeconds)
 {
+    if (bLifted)
+    {
+        // Dropped back: it falls where it was drawn out.
+        bLifted = false;
+        SetActorLocation(FVector(NetLocation));
+    }
     const FVector From = TargetAngler.IsValid() ? TargetAngler->GetActorLocation() : GetActorLocation();
     if (TargetAngler.IsValid()) IgnoreBaitUntil.Add(TargetAngler, SimTime + 60);
     State = EState::Roam;
@@ -1006,7 +1067,8 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
     // The material bends the body by sin(u - Time * Rate + Phase). Every change of these values
     // rebuilds the fish's render state, so they change only in steps of effort, and the phase is
     // shifted so the tail carries on smoothly at the new rate.
-    const float E = FMath::RoundToFloat((HasAuthority() ? Effort : NetEffort) * 8) / 8;
+    const bool bHanging = bLifted || GFrameCounter - LastHangFrame < 3;
+    const float E = FMath::RoundToFloat((bHanging ? HangEffort : HasAuthority() ? Effort : NetEffort) * 8) / 8;
     const float Beat = S.TailBeat * (0.6f + 2.2f * E), Amp = 0.03f + 0.06f * E;
     if (Beat != LastBeat)
     {
@@ -1022,7 +1084,9 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
 void ALakeFish::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
-    if (HasAuthority())
+    // Out of the water on a line the angler's rod places the fish (HangOnLine).
+    const bool bHanging = bLifted || GFrameCounter - LastHangFrame < 3;
+    if (HasAuthority() && !bHanging)
     {
         // Fixed sub-steps keep the swimming model stable at low frame rates; far from every
         // player a few coarse steps are enough.
@@ -1033,7 +1097,7 @@ void ALakeFish::Tick(float DeltaSeconds)
         NetRotation = GetActorRotation();
         NetEffort = Effort;
     }
-    else
+    else if (!bHanging)
     {
         // Smooth between network updates.
         SetActorLocation(FMath::VInterpTo(GetActorLocation(), FVector(NetLocation), DeltaSeconds, 6));

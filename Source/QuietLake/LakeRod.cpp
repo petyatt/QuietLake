@@ -292,7 +292,11 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
     const FVector Away = In.Facing.GetSafeNormal2D(), Side(-Away.Y, Away.X, 0);
     bool bHookHeld = false;
     FVector HookTarget = HookPos;
-    if (In.LineFish && In.FishingState >= 2)
+    // Lifting a fish out: the fish is a heavy weight on the end of the line.
+    const bool bFishOut = In.FishingState == 4 && In.FishGrams > 0;
+    if (!bFishOut) LandLine = -1;
+    const float WholeLine = MainLength + LeaderLength;
+    if (In.LineFish && (In.FishingState == 2 || In.FishingState == 3))
     {
         bHookHeld = true;
         HookTarget = In.LineFish->MouthLocation();
@@ -409,6 +413,13 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             HookPrev = HookPos;
             HookPos = FMath::Lerp(HookPos, HookTarget, 0.08f);
         }
+        else if (bFishOut)
+        {
+            // Still in the water the fish is nearly weightless and the water holds it back hard;
+            // in the air it swings on the line like a pendulum, the thrashing body slowing the swing.
+            const bool bFishWet = ALakeEnvironment::IsWater(HookPos) && HookPos.Z < LakeFish::SurfaceZ - 3;
+            Integrate(HookPos, HookPrev, FMath::Pow(bFishWet ? 0.02f : 0.45f, H), FVector(0, 0, -Gravity * (bFishWet ? 0.15f : 1.0f)));
+        }
         else
         {
             const bool bHookWet = ALakeEnvironment::IsWater(HookPos) && HookPos.Z < LakeFish::SurfaceZ;
@@ -429,7 +440,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         }
 
         // --- line and stick constraints, by mass ---
-        const float WK = 1 / KeelMass, WT = 1 / TipMass, WS = 1 / ShotMass, WH = bHookHeld ? 0.0f : 1 / HookMass;
+        const float WK = 1 / KeelMass, WT = 1 / TipMass, WS = 1 / ShotMass, WH = bHookHeld ? 0.0f : bFishOut ? 1 / In.FishGrams : 1 / HookMass;
         for (int32 Pass = 0; Pass < 8; ++Pass)
         {
             Rope(FloatK, WK, FloatT, WT, FloatLength, true);
@@ -437,6 +448,27 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             Rope(ShotPos, WS, HookPos, WH, ShotToHook);
             FVector Held = TipPos;
             Rope(Held, 0, FloatK, WK + WT, MainLength);      // the rod tip holds; the whole float follows
+        }
+        if (bFishOut)
+        {
+            // The rod holds the fish's whole weight: the hook stays within the line's reach of the tip.
+            // A line stretched in the fight (the rod's give) comes back at a walking pace, so the fish
+            // is drawn in instead of flung out.
+            if (LandLine < 0) LandLine = FMath::Max(WholeLine, FVector::Dist(TipPos, HookPos));
+            LandLine = FMath::Max(WholeLine, LandLine - 250.0f * H);
+            FVector Held = TipPos;
+            Rope(Held, 0, HookPos, 1, LandLine);
+            // A thrashing fish on a 6 m line never flies: its speed is limited.
+            const FVector Moved = HookPos - HookPrev;
+            if (Moved.Size() > 450.0f * H) HookPrev = HookPos - Moved.GetSafeNormal() * 450.0f * H;
+            // At the end the free hand takes the fish as it swings within reach.
+            const float Reach = FMath::Lerp(70.0f, 260.0f, In.HandAlpha);
+            if (In.HandAlpha > 0 && FVector::Dist(HookPos, In.HandPoint) < Reach)
+            {
+                const float Take = 1 - FMath::Exp(-4.0f * In.HandAlpha * H);
+                HookPos = FMath::Lerp(HookPos, In.HandPoint, Take);
+                HookPrev = FMath::Lerp(HookPrev, HookPos, Take);
+            }
         }
         // In the air the line runs through both of the float's rings: it hangs along the line.
         if (Wet <= 0.02f)
@@ -460,8 +492,9 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         {
             FVector& Prev = P == &FloatK ? FloatKPrev : P == &FloatT ? FloatTPrev : P == &ShotPos ? ShotPrev : HookPrev;
             if (FVector::Dist(*P, Prev) > MaxStep) Prev = *P - (*P - Prev).GetSafeNormal() * MaxStep;
-            // Ground and lake bed: what lies on the bottom stays put.
-            const float Floor = ALakeEnvironment::GroundHeight(P->X, P->Y) + 0.5f;
+            // Ground and lake bed: what lies on the bottom stays put. A fish hanging over the bank
+            // rests its body on the ground below the hook.
+            const float Floor = ALakeEnvironment::GroundHeight(P->X, P->Y) + (bFishOut && P == &HookPos && !ALakeEnvironment::IsWater(*P) ? In.FishLength * 0.8f : 0.5f);
             if (P->Z < Floor) { P->Z = Floor; Prev = FMath::Lerp(Prev, *P, 0.5f); Prev.Z = Floor; }
         }
     }
@@ -516,6 +549,7 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
         const float MainLength = LineLength - FMath::Clamp(In.HookDepth, 5.0f, 520.0f);
         const bool bTaut = FVector::Dist(BobberPos, Tip()) > MainLength * 0.985f;
         if (In.FishingState == 3) TipLoad = ToRig * (1500.0f + In.Tension * 75000.0f);
+        else if (In.FishingState == 4) TipLoad = (HookPos - Tip()).GetSafeNormal() * (2500.0f + In.FishGrams * 30.0f);   // the fish's weight bends the rod
         else if (bTaut) TipLoad = ToRig * (bBobberInWater ? 2500.0f : In.bSweeping ? 6000.0f : 4000.0f);
     }
     SimulateBlank(In.Hold, TipLoad, DeltaSeconds);

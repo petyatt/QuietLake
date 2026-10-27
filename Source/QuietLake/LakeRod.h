@@ -26,6 +26,11 @@ struct FRodInput
     FVector StandBase = FVector::ZeroVector;
     float StandYaw = 0;
     class ALakeFish* LineFish = nullptr;          // fish holding the bait or hooked
+    // Lifting a fish out (state 4): it hangs on the hook with its weight; at the end the angler's
+    // free hand takes it.
+    float FishGrams = 0, FishLength = 0;
+    FVector HandPoint = FVector::ZeroVector;
+    float HandAlpha = 0;
 };
 
 /**
@@ -61,6 +66,8 @@ public:
     FVector FloatTip() const { return FloatT; }
     FVector ShotLocation() const { return ShotPos; }
     FVector FloatKeel() const { return FloatK; }
+    /** Up along the line from the hook towards the rod tip: a fish hanging on it points this way. */
+    FVector HookLineUp() const { return (Tip() - HookPos).GetSafeNormal(); }
 
 private:
     /** A thin, nearly weightless and inextensible line between two pinned ends. */
@@ -106,5 +113,6 @@ private:
     FVector FloatK = FVector::ZeroVector, FloatKPrev = FVector::ZeroVector, FloatT = FVector::ZeroVector, FloatTPrev = FVector::ZeroVector;
     FVector ShotPos = FVector::ZeroVector, ShotPrev = FVector::ZeroVector;
     EBiteMotion LastBiteMotion = EBiteMotion::None;
+    float LandLine = -1;                          // lifting a fish out: tip-to-hook reach, easing to the line's length
     bool bInitialised = false;
 };
