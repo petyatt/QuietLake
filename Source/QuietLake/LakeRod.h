@@ -99,7 +99,7 @@ private:
     UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> Baits;
     UPROPERTY() TObjectPtr<class UStaticMeshComponent> Stand;
 
-    bool bCastLaunched = false, bBobberInWater = false;
+    bool bCastLaunched = false, bCastLanded = false, bBobberInWater = false;
     TArray<FVector> Points;                       // blank: from the handle end to the tip
     FVector Deflection = FVector::ZeroVector, DeflectionVelocity = FVector::ZeroVector;
     FVector RestTipPrev = FVector::ZeroVector, RestTipPrev2 = FVector::ZeroVector, LastTip = FVector::ZeroVector;
@@ -118,6 +118,7 @@ private:
     FVector ShotPos = FVector::ZeroVector, ShotPrev = FVector::ZeroVector;
     EBiteMotion LastBiteMotion = EBiteMotion::None;
     float LandLine = -1;
+    float CastLine = -1;                          // a cast: tip-to-float line let out while the rig flies, taken back in after
     bool bCatchLaunched = false;
     FVector CatchStart = FVector::ZeroVector;     // where the shot was when the free hand began to bring it in                          // lifting a fish out: tip-to-hook reach, easing to the line's length
     bool bInitialised = false;

@@ -399,7 +399,64 @@ void ALakeCharacter::RunPreviews()
         for (int32 I = 0; I < 50; ++I)
             At(46.0f + I * 0.04f, [this] { AddMovementInput(-GetActorRightVector(), 1.0f); });
         At(47.0f, [Shot] { Shot(TEXT("Cast_Walk.png")); });
-        At(50.0f, [] { FPlatformMisc::RequestExit(false); });
+        // A deep setting at the deepest fishing spot (the float standing on a long leader), then the
+        // same set deeper than the water (the shot on the bottom, the float lying): it should land
+        // and settle, not bounce.
+        At(50.0f, [this]
+        {
+            const LakeMap::FSpot* Deepest = nullptr;
+            float Most = 0;
+            for (const LakeMap::FSpot& S : LakeMap::Spots())
+            {
+                const FVector2D Out = S.Location - S.Outward * 700;
+                const float Water = LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(Out.X, Out.Y);
+                if (Water > Most) { Most = Water; Deepest = &S; }
+            }
+            const FVector2D Spot = Deepest->Location + Deepest->Outward * 60;
+            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+                PC->SetControlRotation(FRotator(-12, FMath::RadiansToDegrees(FMath::Atan2(-Deepest->Outward.Y, -Deepest->Outward.X)), 0));
+            RodKind = ERodKind::Medium;
+            FloatDepth = FMath::Clamp(FMath::RoundToFloat(Most - 40), 100.0f, 300.0f);
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEEP spot %s, %.0f cm of water 7 m out, depth set %.0f cm"), Deepest->Name, Most, FloatDepth);
+        });
+        At(52.0f, Side);
+        At(52.5f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(52.5f + CastLoad + 0.1f, [this] { ServerRelease_Implementation(); });
+        At(53.6f, [this, LookFrom]
+        {
+            LookFrom(FloatPosition + GetActorRightVector() * 220 - GetActorForwardVector() * 140 + FVector(0, 0, 90), FloatPosition, 45);
+        });
+        At(56.0f, [Shot] { Shot(TEXT("Cast_Deep.png")); });
+        for (int32 I = 0; I <= 100; ++I)
+            At(53.1f + I * 0.05f, [this, I]
+            {
+                if (!RodVisual) return;
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEEP t=%.2f float %.1f antenna %.1f tilt %.0f shot %.0f hook %.0f (water %.0f) tip above water %.0f, tip to float %.0f"), I * 0.05f,
+                    RodVisual->BobberLocation().Z - LakeFish::SurfaceZ, RodVisual->FloatTip().Z - LakeFish::SurfaceZ, RodVisual->GetBiteTilt(),
+                    RodVisual->ShotLocation().Z - LakeFish::SurfaceZ, RodVisual->HookLocation().Z - LakeFish::SurfaceZ,
+                    LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(FloatPosition.X, FloatPosition.Y), RodVisual->Tip().Z - LakeFish::SurfaceZ,
+                    FVector::Dist(RodVisual->Tip(), RodVisual->FloatKeel()));
+            });
+        At(58.6f, [this] { ServerCancel_Implementation(); });
+        At(59.0f, [this] { FloatDepth = MaxDepth; });
+        At(61.5f, Side);
+        At(62.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(62.0f + CastLoad + 0.1f, [this] { ServerRelease_Implementation(); });
+        At(63.1f, [this, LookFrom]
+        {
+            LookFrom(FloatPosition + GetActorRightVector() * 220 - GetActorForwardVector() * 140 + FVector(0, 0, 90), FloatPosition, 45);
+        });
+        At(66.0f, [Shot] { Shot(TEXT("Cast_DeepLying.png")); });
+        for (int32 I = 0; I <= 100; ++I)
+            At(62.6f + I * 0.05f, [this, I]
+            {
+                if (!RodVisual) return;
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LYING t=%.2f float %.1f antenna %.1f tilt %.0f tip above water %.0f, tip to keel %.0f (line %.0f), float to its place %.0f, place from angler %.0f"), I * 0.05f,
+                    RodVisual->BobberLocation().Z - LakeFish::SurfaceZ, RodVisual->FloatTip().Z - LakeFish::SurfaceZ, RodVisual->GetBiteTilt(), RodVisual->Tip().Z - LakeFish::SurfaceZ,
+                    FVector::Dist(RodVisual->Tip(), RodVisual->FloatKeel()), ALakeRod::LineLength - HookDepth, FVector::Dist2D(RodVisual->FloatKeel(), FloatPosition), FVector::Dist2D(FloatPosition, GetActorLocation()));
+            });
+        At(68.0f, [] { FPlatformMisc::RequestExit(false); });
     }
 }
 #endif

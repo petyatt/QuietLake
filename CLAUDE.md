@@ -51,7 +51,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-LakePreview` | места озера с воздуха и с берега, затем рыбака: заброс, поплавок, рогатка | `LakeEnvironment.cpp`, `LakePreviews.cpp` |
 | `-BitePreview` | каждое движение поплавка при поклёвке крупным планом | `LakePreviews.cpp` |
 | `-LandPreview` | рыба на леске выходит из воды и попадает в руку | `LakePreviews.cpp` |
-| `-CastPreview` | заброс с руки сбоку и вблизи, ранний и ближний заброс, тяжёлое и лёгкое удилища, вынимание с ловлей рукой | `LakePreviews.cpp` |
+| `-CastPreview` | заброс с руки сбоку и вблизи, ранний и ближний заброс, тяжёлое и лёгкое удилища, вынимание с ловлей рукой, ходьба с оснасткой, глубокий спуск и спуск глубже воды | `LakePreviews.cpp` |
 | `-LifePreview` | знаки на воде, малёк, панель F3, время кадра | `LakeLife.cpp` |
 | `-WeatherPreview` | погода и время суток | `LakeWeather.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |

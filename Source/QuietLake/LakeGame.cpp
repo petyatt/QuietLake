@@ -316,7 +316,7 @@ float ALakeCharacter::WaitElevation(float Pitch, float Depth) const
     const float MainLine = ALakeRod::LineLength - Depth;
     const float Free = ALakeRod::RodLength - ALakeRod::GripPoint;
     const float Hand = GetActorLocation().Z + 4 - LakeFish::SurfaceZ;
-    const float MaxSin = FMath::Clamp((0.85f * MainLine - Hand) / Free, -0.14f, 1.0f);
+    const float MaxSin = FMath::Clamp((0.85f * MainLine - Hand) / Free, -0.45f, 1.0f);   // from a high bank the tip goes down towards the water
     return FMath::Min(20 + 0.3f * Pitch, FMath::RadiansToDegrees(FMath::Asin(MaxSin)));
 }
 void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, FVector& OutGrip, float& OutStiffness, float& OutYaw) const
@@ -345,12 +345,14 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         Elevation = WaitElevation(Pitch, HookDepth);
         Grip = Waiting;
         if (Since >= 0 && Since < 1.5f) Stiffness = 3.5f;   // after the cast the heavy pole settles slowly
-        const float Push = 0.3f * RodHeft(), Settle = CastFlight + 0.4f;
+        // The rod reaches the waiting angle by the time the rig lands: with a deep setting the line to
+        // the float is short, and only a lowered rod lets the float reach the water where it was cast.
+        const float Push = 0.3f * RodHeft(), Settle = FMath::Max(Push + 0.15f, CastFlight * 0.8f);
         if (Since >= 0 && Since < Settle && !bRetrieving && FishingState == EFishingState::Waiting)
         {
             // Let go: the rod is pushed forward and down at once, the loaded tip throwing the rig
             // out ahead; then it follows the rig down to the waiting angle as it lands.
-            constexpr float PushElevation = 38;
+            const float PushElevation = FMath::Min(38.0f, Elevation + 15.0f);
             if (Since < Push)
             {
                 const float A = FMath::InterpEaseOut(0.0f, 1.0f, Since / Push, 2.0f);

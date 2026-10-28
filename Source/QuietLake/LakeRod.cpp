@@ -211,21 +211,23 @@ namespace
 {
     // --- the float rig, in grams and centimetres -------------------------------------------------
     // A 4.8 g pole float (balsa body, a thin antenna) loaded by a shot 10 cm above the hook so that
-    // about 2.5 cm of antenna shows when everything hangs free. Buoyancy comes from the float's
-    // real shape (the model's profile), in slices along its axis.
+    // it sits in the water to the widest part of its body: the upper half of the body and the whole
+    // antenna show when everything hangs free. Buoyancy comes from the float's real shape (the
+    // model's profile), in slices along its axis.
     constexpr float FloatLength = (3.5f + 7.5f) * BobberScale;   // keel eye to antenna tip
     constexpr float FloatPivot = 3.5f * BobberScale;             // keel to the model's origin
     constexpr float FloatMass = 1.2f;
     constexpr float FloatCentre = 3.8f;                          // its centre of mass, from the keel
     constexpr float BodyCapacity = 4.5f, AntennaCapacity = 0.27f;// water displaced when under
-    constexpr float ShotMass = 3.66f, HookMass = 0.15f;      // lead weighs 9% less in water
+    // Water displaced to the widest part of the body (2.35 g) = float + shot (9% lighter in water) + half the hook.
+    constexpr float ShotMass = 1.2f, HookMass = 0.15f;
     constexpr float ShotAboveHook = 10.0f;
-    // Loaded, the float's keel eye sits this deep (2.5 cm of antenna showing): the leader is that
-    // much shorter than the set depth, so the bait hangs exactly where the angler set it.
-    constexpr float KeelDepth = FloatLength - 2.5f;
+    // Loaded, the float's keel eye sits this deep (the waterline at the model's origin): the leader
+    // is that much shorter than the set depth, so the bait hangs exactly where the angler set it.
+    constexpr float KeelDepth = FloatPivot;
     constexpr float KeelMass = FloatMass * (1 - FloatCentre / FloatLength), TipMass = FloatMass * FloatCentre / FloatLength;
 
-    struct FFloatSlice { float S, Volume; };
+    struct FFloatSlice { float S, Volume, Radius; };
     const TArray<FFloatSlice>& FloatSlices()
     {
         static const TArray<FFloatSlice> Slices = []
@@ -248,7 +250,7 @@ namespace
                 const float Z = S / BobberScale - 3.5f;
                 const float R = Radius(Z) * BobberScale;
                 const float V = PI * R * R * FloatLength / N;
-                Out.Add({ S, V });
+                Out.Add({ S, V, R });
                 (Z <= 2.2f ? Body : Antenna) += V;
             }
             // The model is drawn larger than a real float; scale the volumes to the float's capacity.
@@ -363,14 +365,22 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
     {
         return A * FMath::Square(1 - U) + Mid * (2 * U * (1 - U)) + B * (U * U);
     };
+    // The rig comes down: whatever speed the guided flight left in it is lost in the splash, so
+    // the line does not swing it back up.
+    if (bCastLaunched && !bFlying && !bCastLanded)
+    {
+        bCastLanded = true;
+        FloatKPrev = FloatK; FloatTPrev = FloatT; ShotPrev = ShotPos; HookPrev = HookPos;
+    }
     if (bFlying && !bCastLaunched)
     {
         bCastLaunched = true;
+        bCastLanded = false;
         FlightStart = FloatK;
         HookFlightStart = HookPos;
         FlightApex = Body + FVector(0, 0, 200) + Away * 260;
     }
-    if (In.SinceCast < 0) bCastLaunched = false;
+    if (In.SinceCast < 0) { bCastLaunched = false; CastLine = -1; }
     const bool bInAirCast = bFlying;   // thrown out on the line: little air drag
     // The rig in the angler's left hand (ready to cast, or drawn back for it): the fingers hold the
     // shot, the hook hangs just below it, and the line to the rod tip is kept taut.
@@ -403,7 +413,9 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             for (const FFloatSlice& Slice : Slices)
             {
                 const float Z = FloatK.Z + Axis.Z * Slice.S;
-                const float Thick = FMath::Abs(Axis.Z) * FloatLength / Slices.Num() + 0.3f;
+                // The slice's height in the water: its length when the float stands, its diameter when
+                // it lies, so a lying float settles smoothly instead of all its slices going under at once.
+                const float Thick = FMath::Abs(Axis.Z) * FloatLength / Slices.Num() + 2 * Slice.Radius * FMath::Sqrt(FMath::Max(0.0f, 1 - Axis.Z * Axis.Z)) + 0.3f;
                 const float Under = FMath::Clamp((Surface - Z) / Thick + 0.5f, 0.0f, 1.0f);
                 const float B = Slice.Volume * Under;
                 LiftK += B * (1 - Slice.S / FloatLength);
@@ -476,6 +488,12 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
                 HookPos += (Curve(HookFlightStart, FlightApex + Away * 40, In.HookLanding, T / HookFlight) - HookPos) * Follow;
         }
 
+        // A cast: while the rig flies the line never snatches it back (the rod is still coming down,
+        // and with a deep setting the line to the float is short); once it has landed the slack is
+        // taken in at most 0.8 m/s, so the float settles or slides gently instead of jumping.
+        if (bFlying) CastLine = FMath::Max(MainLength, FVector::Dist(TipPos, FloatK));
+        else if (CastLine >= 0) { CastLine -= 80.0f * H; if (CastLine <= MainLength) CastLine = -1; }
+        const float TipToFloat = CastLine >= 0 ? FMath::Max(MainLength, CastLine) : MainLength;
         // --- line and stick constraints, by mass ---
         const float WK = 1 / KeelMass, WT = 1 / TipMass, WS = bShotHeld ? 0.0f : 1 / ShotMass, WH = bHookHeld ? 0.0f : bFishOut ? 1 / In.FishGrams : 1 / HookMass;
         for (int32 Pass = 0; Pass < 8; ++Pass)
@@ -484,7 +502,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             Rope(FloatK, WK, ShotPos, WS, ToShot);
             Rope(ShotPos, WS, HookPos, WH, ShotToHook);
             FVector Held = TipPos;
-            Rope(Held, 0, FloatK, WK + WT, MainLength);      // the rod tip holds; the whole float follows
+            Rope(Held, 0, FloatK, WK + WT, TipToFloat);      // the rod tip holds; the whole float follows
         }
         if (bFishOut)
         {
@@ -585,7 +603,9 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
     Time += DeltaSeconds;
     // A new depth slides the float along the line instead of teleporting it.
     const float TargetLeader = FMath::Clamp(Input.HookDepth, 5.0f, 520.0f);
-    LeaderNow = bInitialised ? FMath::FInterpConstantTo(LeaderNow, TargetLeader, FMath::Min(DeltaSeconds, 1 / 30.0f), 120.0f) : TargetLeader;
+    // (Only while the rig is out of the water: once cast the leader is exactly the set depth, so the
+    // line never shortens under a float already lying on the water.)
+    LeaderNow = bInitialised && Input.FishingState == EFishingState::Idle ? FMath::FInterpConstantTo(LeaderNow, TargetLeader, FMath::Min(DeltaSeconds, 1 / 30.0f), 120.0f) : TargetLeader;
     FRodInput In = Input;
     In.HookDepth = LeaderNow;
     // The line pulls the tip: the float rig's weight, the water's drag on it, the fish while fighting.
