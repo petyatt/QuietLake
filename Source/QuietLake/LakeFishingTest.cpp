@@ -4,6 +4,7 @@
 #include "LakeFish.h"
 #include "LakeMap.h"
 #include "LakeLife.h"
+#include "LakeWeather.h"
 #include "Misc/AutomationTest.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -590,6 +591,79 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
     LiftOut();
     const float Click = Throw(0, 0);
     TestTrue(FString::Printf(TEXT("A bare click still casts, short (%.0f cm)"), Click), Fisher->FishingState == EFishingState::Waiting && Fisher->CastResult == ECastResult::Early && Click <= Early + 1);
+    LiftOut();
+    World->DestroyWorld(false);
+    return true;
+}
+
+// Wind: it drifts a float whose bait hangs free downwind until the line holds it; a rig on the bottom stays put.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeWindDriftTest, "QuietLake.Fishing.WindDrift", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeWindDriftTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FVector2D Facing;
+    const FVector2D Edge = LakeMap::StartSpot(&Facing) + Facing * 90;
+    const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+    ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Edge, 100), FRotator(0, Yaw, 0));
+    APlayerController* Controller = World->SpawnActor<APlayerController>();
+    Controller->Possess(Fisher);
+    Controller->SetControlRotation(FRotator(-12, Yaw, 0));
+    ALakeWeather* Weather = World->SpawnActor<ALakeWeather>();
+    FLakeWeatherState Breeze;
+    Breeze.Wind = 0.5f;             // 6 m/s
+    Breeze.WindYaw = Yaw + 90;      // across the cast
+    Weather->SetWeatherNow(Breeze);
+    const FVector Downwind = FRotator(0, Breeze.WindYaw, 0).Vector();
+    auto Cast = [&](float Depth)
+    {
+        Fisher->FloatDepth = Depth;
+        Fisher->NextActionTime = 0;
+        Fisher->ServerFish_Implementation();
+        Fisher->ChargeServerStart -= ALakeCharacter::CastLoad;
+        Fisher->ServerRelease_Implementation();
+        Fisher->BaitActiveTime = 0;
+        Fisher->CastServerTime -= 5;
+        for (int32 Pose = 0; Pose < 60; ++Pose) Fisher->UpdateRodPose(0.05f);
+    };
+    auto Blow = [&](float Seconds)
+    {
+        for (float T = 0; T < Seconds; T += 0.1f) { Fisher->DriftFloat(0.1f); Fisher->ConstrainFloat(); }
+    };
+    auto LiftOut = [&]()
+    {
+        Fisher->ServerCancel_Implementation();
+        if (Fisher->bRetrieving) { Fisher->RetrieveServerTime -= ALakeCharacter::RetrieveTime; Fisher->UpdateRetrieve(); }
+    };
+    // A shallow bait hangs free: the float drifts downwind, and the line holds it within reach.
+    Cast(20);
+    TestTrue(TEXT("Cast for the drift"), Fisher->FishingState == EFishingState::Waiting);
+    const FVector Start = Fisher->FloatPosition;
+    Blow(5);
+    const float Early = FVector::DotProduct(Fisher->FloatPosition - Start, Downwind);
+    TestTrue(FString::Printf(TEXT("A fresh breeze drifts a free float downwind (%.0f cm in 5 s)"), Early), Early > 15 && Early < 80);
+    Blow(60);
+    const FVector Tip = Fisher->RodTip();
+    const float MainLine = ALakeRod::LineLength - Fisher->HookDepth;
+    const float Reach = FMath::Sqrt(FMath::Max(0.0f, MainLine * MainLine - FMath::Square(FMath::Max(0.0f, Tip.Z - LakeFish::SurfaceZ))));
+    TestTrue(FString::Printf(TEXT("The line holds the drifting float (%.0f cm from the tip, reach %.0f)"), FVector::Dist2D(Fisher->FloatPosition, Tip), Reach),
+        FVector::Dist2D(Fisher->FloatPosition, Tip) <= Reach + 5 && Fisher->FishingState == EFishingState::Waiting);
+    TestTrue(TEXT("The bait follows the float"), FVector::Dist2D(Fisher->BaitLocation(), Fisher->FloatPosition) < 1);
+    LiftOut();
+    // The bait on the bottom anchors the rig.
+    Cast(ALakeCharacter::MaxDepth);
+    Fisher->ConstrainFloat();       // the short line first draws the float within its reach
+    const FVector Anchored = Fisher->FloatPosition;
+    Blow(20);
+    TestTrue(TEXT("A rig on the bottom stays put in the wind"), FVector::Dist2D(Fisher->FloatPosition, Anchored) < 1);
+    LiftOut();
+    // No wind, no drift.
+    FLakeWeatherState Calm = Breeze;
+    Calm.Wind = 0;
+    Weather->SetWeatherNow(Calm);
+    Cast(20);
+    const FVector Still = Fisher->FloatPosition;
+    Blow(20);
+    TestTrue(TEXT("In a calm the float stays"), FVector::Dist2D(Fisher->FloatPosition, Still) < 1);
     LiftOut();
     World->DestroyWorld(false);
     return true;

@@ -29,7 +29,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting);
+Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
@@ -52,6 +52,8 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-BitePreview` | каждое движение поплавка при поклёвке крупным планом | `LakePreviews.cpp` |
 | `-LandPreview` | рыба на леске выходит из воды и попадает в руку | `LakePreviews.cpp` |
 | `-CastPreview` | заброс с руки сбоку и вблизи, ранний и ближний заброс, тяжёлое и лёгкое удилища, вынимание с ловлей рукой, ходьба с оснасткой, глубокий спуск и спуск глубже воды | `LakePreviews.cpp` |
+| `-RodPreview` | удилище: изгиб кончика при забросе лёгким, средним и тяжёлым, при вываживании | `LakePreviews.cpp` |
+| `-LinePreview` | боковой ветер у лагеря сверху: парус лески, снос поплавка, оснастка на дне стоит | `LakePreviews.cpp` |
 | `-LifePreview` | знаки на воде, малёк, панель F3, время кадра | `LakeLife.cpp` |
 | `-WeatherPreview` | погода и время суток | `LakeWeather.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
@@ -65,8 +67,8 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   поза удилища), `ALakeEnvironment` (объявление), `ALakeGameMode`.
 - `LakePreviews.cpp` — сценарии `-LakePreview`, `-BitePreview`, `-LandPreview`.
 - `LakeHUD.h/.cpp` — экран: карточка статуса, полосы натяжения и заброса, погода, панель F3.
-- `LakeRod.h/.cpp` — удочка только для вида (`ALakeRod`): изгиб удилища, леска, физический поплавок,
-  дробь, крючок, рыба на леске. Считается на каждой машине из реплицируемого состояния рыбака
+- `LakeRod.h/.cpp` — удочка только для вида (`ALakeRod`): физическое удилище (цепочка с упругостью),
+  физическая основная леска (ветер, вода), физический поплавок, дробь, крючок, рыба на леске. Считается на каждой машине из реплицируемого состояния рыбака
   (`FRodInput`), по сети не передаётся.
 - `LakeFish.h/.cpp` — рыба: виды, наживки, поклёвки (`MakeBite`), плавание, распорядок, вываживание.
   Здесь же общие перечисления, включая `EFishingState`.

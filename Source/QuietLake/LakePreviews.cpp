@@ -458,5 +458,150 @@ void ALakeCharacter::RunPreviews()
             });
         At(68.0f, [] { FPlatformMisc::RequestExit(false); });
     }
+    // -LinePreview: a fresh cross wind at the camp: the line blown out in a belly, the float
+    // drifting downwind until the line holds it; then a rig with the bait on the bottom staying put.
+    if (FParse::Param(FCommandLine::Get(), TEXT("LinePreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        auto Shot = [](const TCHAR* Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
+        auto LookFrom = [this](FVector From, FVector Target, float Fov)
+        {
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
+        };
+        At(4.0f, [this]
+        {
+            FVector2D Facing;
+            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
+            const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Breeze;
+                Breeze.Cloud = 0.3f; Breeze.Fog = 0; Breeze.Rain = 0; Breeze.Wind = 0.55f; Breeze.WindYaw = Yaw + 90;
+                Weather->SetWeatherNow(Breeze);
+                Weather->SetHours(9.0f);
+            }
+            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetControlRotation(FRotator(-12, Yaw, 0));
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+            FloatDepth = 20;
+        });
+        At(5.5f, [this, LookFrom]
+        {
+            LookFrom(GetActorLocation() + FVector(0, 0, 750) - GetActorForwardVector() * 250 - GetActorRightVector() * 100,
+                     GetActorLocation() + GetActorForwardVector() * 500 + GetActorRightVector() * 150 + FVector(0, 0, -100), 70);
+        });
+        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(6.6f, [this] { ServerRelease_Implementation(); });
+        At(10.0f, [Shot] { Shot(TEXT("Line_Belly.png")); });
+        At(25.0f, [Shot] { Shot(TEXT("Line_Drift.png")); });
+        At(31.0f, [this] { ServerCancel_Implementation(); });
+        At(34.0f, [this] { FloatDepth = MaxDepth; });
+        At(36.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(36.6f, [this] { ServerRelease_Implementation(); });
+        At(48.0f, [Shot] { Shot(TEXT("Line_Anchored.png")); });
+        for (int32 I = 0; I <= 84; ++I)
+            At(7.0f + I * 0.5f, [this, I]
+            {
+                if (!RodVisual) return;
+                auto Rel = [this](FVector P)
+                {
+                    const FVector D = P - GetActorLocation();
+                    return FString::Printf(TEXT("(%.0f, %.0f)"), FVector::DotProduct(D, GetActorForwardVector()), FVector::DotProduct(D, GetActorRightVector()));
+                };
+                int32 OnWater = 0;
+                const float Belly = RodVisual->LineBelly(&OnWater);
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LINE t=%.1f state=%d float at %s shown %s, belly %.0f cm, %d of 41 line points on the water, wind %.1f m/s"), 7.0f + I * 0.5f, (int32)FishingState,
+                    *Rel(FloatPosition), *Rel(RodVisual->BobberLocation()), Belly, OnWater, ALakeWeather::Get(GetWorld()) ? ALakeWeather::Get(GetWorld())->WindVelocity().Size() / 100 : 0.0f);
+            });
+        At(50.0f, [] { FPlatformMisc::RequestExit(false); });
+    }
+    // -RodPreview: the blank at work, filmed from the side: a cast with each rod (light, medium,
+    // heavy) with the tip's bend logged through the draw, the release and the swing after it, then
+    // a perch struck and played (the rod bending under the line's pull).
+    if (FParse::Param(FCommandLine::Get(), TEXT("RodPreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        auto Shot = [](const TCHAR* Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
+        auto LookFrom = [this](FVector From, FVector Target, float Fov)
+        {
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
+        };
+        At(4.0f, [this]
+        {
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Calm;
+                Calm.Cloud = 0.3f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.0f; Calm.WindYaw = 40;
+                Weather->SetWeatherNow(Calm);
+                Weather->SetHours(9.0f);
+            }
+            FVector2D Facing;
+            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
+            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetControlRotation(FRotator(-12, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+            FloatDepth = 40;
+        });
+        At(5.5f, [this, LookFrom]
+        {
+            LookFrom(GetActorLocation() + GetActorRightVector() * 650 + GetActorForwardVector() * 220 + FVector(0, 0, 200),
+                     GetActorLocation() + GetActorForwardVector() * 220 + FVector(0, 0, 280), 75);
+        });
+        struct FTry { float At; ERodKind Rod; const TCHAR* Name; };
+        const FTry Tries[] = { { 6.0f, ERodKind::Light, TEXT("light") }, { 14.0f, ERodKind::Medium, TEXT("medium") }, { 22.0f, ERodKind::Heavy, TEXT("heavy") } };
+        for (const FTry& Try : Tries)
+        {
+            At(Try.At - 1.0f, [this, Try] { RodKind = Try.Rod; });
+            At(Try.At, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+            At(Try.At + 0.8f, [this] { ServerRelease_Implementation(); });
+            At(Try.At + 5.0f, [this] { ServerCancel_Implementation(); });
+            for (int32 I = 0; I <= 150; ++I)
+                At(Try.At - 0.5f + I * 0.02f, [this, Try, I]
+                {
+                    if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_ROD %s t=%.2f bend %.1f cm tip above water %.0f"), Try.Name, -0.5f + I * 0.02f, RodVisual->TipBend(), RodVisual->Tip().Z - LakeFish::SurfaceZ);
+                });
+        }
+        At(14.75f, [Shot] { Shot(TEXT("Rod_Draw.png")); });
+        At(15.05f, [Shot] { Shot(TEXT("Rod_Whip.png")); });
+        // A perch struck and played on the medium rod.
+        At(29.0f, [this] { RodKind = ERodKind::Medium; });
+        At(30.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(30.8f, [this] { ServerRelease_Implementation(); });
+        At(33.0f, [this]
+        {
+            const FVector Bait = BaitLocation();
+            ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(Bait, FRotator(0, GetActorRotation().Yaw + 90, 0));
+            Fish->Setup(EFishSpecies::Perch, 0.6f, Bait, -1);
+            OnFishTake(Fish);
+            NextActionTime = 0;
+            ServerFish_Implementation();
+        });
+        At(35.0f, [Shot] { Shot(TEXT("Rod_Fight.png")); });
+        At(37.0f, [Shot] { Shot(TEXT("Rod_Fight2.png")); });
+        for (int32 I = 0; I <= 70; ++I)
+            At(33.0f + I * 0.1f, [this, I]
+            {
+                if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_RODFIGHT t=%.1f state=%d tension %.2f bend %.1f cm"), I * 0.1f, (int32)FishingState, Tension, RodVisual->TipBend());
+            });
+        At(41.0f, [] { FPlatformMisc::RequestExit(false); });
+    }
 }
 #endif

@@ -212,6 +212,22 @@ FFishConditions ALakeWeather::FishConditions() const
     return C;
 }
 
+FVector ALakeWeather::WindVelocity() const
+{
+    const float T = ServerNow();
+    const float Gust = 1 + 0.3f * FMath::Sin(T * 0.37f) * FMath::Sin(T * 1.13f + 1.0f);
+    return FRotator(0, Current().WindYaw, 0).Vector() * WindSpeed() * 100 * Gust;
+}
+
+void ALakeWeather::SetWeatherNow(const FLakeWeatherState& State)
+{
+    From = To = State;
+    BlendStart = ServerNow() - 1;
+    BlendSeconds = 0.01f;
+    NextChange = ServerNow() + Random.FRandRange(240, 480);
+    ForceNetUpdate();
+}
+
 void ALakeWeather::SetWeather(const FLakeWeatherState& State, float Seconds, float Delay)
 {
     From = Current();

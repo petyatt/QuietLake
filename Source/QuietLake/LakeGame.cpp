@@ -303,6 +303,7 @@ void ALakeCharacter::Tick(float DeltaSeconds)
         LineFish = FishingState >= EFishingState::Fight ? HookedFish.Get() : FishingState == EFishingState::Bite ? BaitFish.Get() : nullptr;
     }
     if (FishingState != EFishingState::Fight || !HasAuthority()) UpdateRodPose(DeltaSeconds);
+    if (HasAuthority() && FishingState == EFishingState::Waiting && !bRetrieving && ServerNow() >= BaitActiveTime + 1.0f) DriftFloat(DeltaSeconds);
     if (HasAuthority() && (FishingState == EFishingState::Waiting || FishingState == EFishingState::Bite) && ServerNow() >= BaitActiveTime + 1.0f) ConstrainFloat();
     if (HasAuthority() && FishingState == EFishingState::Fight) UpdateFight(DeltaSeconds);
     if (HasAuthority() && bRetrieving) UpdateRetrieve();
@@ -347,7 +348,7 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         if (Since >= 0 && Since < 1.5f) Stiffness = 3.5f;   // after the cast the heavy pole settles slowly
         // The rod reaches the waiting angle by the time the rig lands: with a deep setting the line to
         // the float is short, and only a lowered rod lets the float reach the water where it was cast.
-        const float Push = 0.3f * RodHeft(), Settle = FMath::Max(Push + 0.15f, CastFlight * 0.8f);
+        const float Push = 0.6f * FMath::Max(1.0f, RodHeft()), Settle = FMath::Max(Push + 0.15f, CastFlight * 0.8f);
         if (Since >= 0 && Since < Settle && !bRetrieving && FishingState == EFishingState::Waiting)
         {
             // Let go: the rod is pushed forward and down at once, the loaded tip throwing the rig
@@ -355,7 +356,8 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
             const float PushElevation = FMath::Min(38.0f, Elevation + 15.0f);
             if (Since < Push)
             {
-                const float A = FMath::InterpEaseOut(0.0f, 1.0f, Since / Push, 2.0f);
+                // A smooth push: the rod speeds up and slows down, so the blank whips but is not jerked.
+                const float A = FMath::InterpEaseInOut(0.0f, 1.0f, Since / Push, 2.0f);
                 Elevation = FMath::Lerp(HandElevation, PushElevation, A);
                 Grip = FMath::Lerp(Hand, Forward, A);
                 Stiffness = 14;
@@ -480,6 +482,7 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     In.HookLanding = CastHookLanding;
     In.Facing = FRotator(0, GetActorRotation().Yaw, 0).Vector();
     In.Tension = Tension;
+    if (const ALakeWeather* Weather = ALakeWeather::Get(GetWorld())) In.Wind = Weather->WindVelocity();
     In.Nibbles = NibbleCounter;
     In.BiteMotion = BiteMotion;
     In.BiteElapsed = Now - BiteStart;
@@ -509,6 +512,9 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     In.RetrieveT = bRetrieving ? FMath::Clamp((Now - RetrieveServerTime) / RetrieveTime, 0.0f, 1.0f) : -1.0f;
     In.RodHeft = RodHeft();
     const float Draw = FMath::SmoothStep(0.0f, CastLoadTime(), SwingTime(Now));
+    // Let go, the fingers release the line over a moment, so the loaded tip unbends smoothly.
+    const float DrawAtRelease = FMath::SmoothStep(0.0f, CastLoadTime(), CastServerTime - ChargeServerStart);
+    In.CastDraw = bCharging ? Draw : FishingState == EFishingState::Waiting && SinceCast >= 0 && SinceCast < 0.15f ? DrawAtRelease * (1 - SinceCast / 0.15f) : 0.0f;
     In.HandPoint = GetActorLocation() + GetActorForwardVector() * FMath::Lerp(40.0f, 12.0f, Draw) - GetActorRightVector() * 22 + FVector(0, 0, FMath::Lerp(45.0f, 30.0f, Draw));
     const float LandAlpha = FishingState == EFishingState::Landing ? FMath::SmoothStep(0.55f, 0.85f, (Now - LandServerTime) / LandTime) : 0.0f;
     if (FishingState == EFishingState::Landing && LineFish)
@@ -604,6 +610,23 @@ bool ALakeCharacter::TakeRodFromStand()
 FVector ALakeCharacter::RodTip() const
 {
     return RodHold().TransformPosition(FVector(ALakeRod::RodLength, 0, 0));
+}
+void ALakeCharacter::DriftFloat(float DeltaSeconds)
+{
+    // The wind drives the surface water and catches the line lying on it: a float with the bait
+    // hanging free drifts downwind (about 7 cm/s in a fresh 5 m/s breeze) until the line holds it
+    // (ConstrainFloat); a rig with the bait or the shot on the bottom stays put, and it never drifts
+    // into the shallows.
+    const ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
+    if (!Weather) return;
+    const float Water = LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(FloatPosition.X, FloatPosition.Y);
+    if (FloatDepth > Water - 5) return;
+    FVector Drift = Weather->WindVelocity() * DriftShare;
+    Drift.Z = 0;
+    const FVector Next = FloatPosition + Drift * DeltaSeconds;
+    if (!ALakeEnvironment::IsWater(Next) || LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(Next.X, Next.Y) < FloatDepth + 10) return;
+    FloatPosition = Next;
+    PlaceBait();
 }
 void ALakeCharacter::ConstrainFloat()
 {

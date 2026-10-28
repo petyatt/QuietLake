@@ -102,6 +102,7 @@ private:
     friend class FLakeBitePatternsTest;
     friend class FLakeFishBehaviourTest;
     friend class FLakeCastingTest;
+    friend class FLakeWindDriftTest;
     void SelectBait(EBait NewBait);
     void BaitWorm() { SelectBait(EBait::Worm); }
     void BaitMaggot() { SelectBait(EBait::Maggot); }
@@ -134,6 +135,9 @@ private:
     FTransform RodHold() const;
     FTransform StandHold() const;
     void ConstrainFloat();
+    /** Server: the wind drifts a free-hanging rig downwind until the line holds it. */
+    void DriftFloat(float DeltaSeconds);
+    static constexpr float DriftShare = 0.015f;   // of the wind's speed
     // Weighted rod pose (springs), the same on server and clients.
     float RodElevation = 45, RodElevationSpeed = 0, RodYaw = 0, RodYawSpeed = 0;
     FVector RodGrip = FVector(28, 20, 10), RodGripSpeed = FVector::ZeroVector;

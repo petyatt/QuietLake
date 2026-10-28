@@ -50,6 +50,8 @@ public:
     float TemperatureC() const;
     /** Wind speed in m/s. */
     float WindSpeed() const { return Current().Wind * 12.0f; }
+    /** The wind at the water (cm/s, blowing towards WindYaw) with slow gusts: what the line feels. */
+    FVector WindVelocity() const;
     /** "Туман · штиль" and the like, for the HUD. */
     FString Describe() const;
     /** Direction towards the sun (world space, X east, -Y north) and its elevation in degrees. */
@@ -71,6 +73,8 @@ public:
     void SetHours(float NewHours);
     /** Blend to State over BlendSeconds, starting after Delay (a front: the pressure falls first). */
     void SetWeather(const FLakeWeatherState& State, float BlendSeconds, float Delay = 0);
+    /** This weather at once, with no blend (previews and tests). */
+    void SetWeatherNow(const FLakeWeatherState& State);
 
 private:
     float ServerNow() const;
