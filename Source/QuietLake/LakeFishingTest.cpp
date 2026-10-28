@@ -31,14 +31,15 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(Back(0), FRotator(0, FacingYaw, 0));
     APlayerController* Controller = World->SpawnActor<APlayerController>();
     Controller->Possess(Fisher);
-    // A cast is LMB held for the full sweep and released; the bait fishes once the float lands.
+    // A cast is LMB held until the rod tip is loaded, then released; the bait fishes once the float lands.
     auto Cast = [Fisher]()
     {
         Fisher->NextActionTime = 0;
         Fisher->ServerFish_Implementation();
-        Fisher->ChargeServerStart -= ALakeCharacter::ChargeTime;
+        Fisher->ChargeServerStart -= ALakeCharacter::CastLoad;
         Fisher->ServerRelease_Implementation();
         Fisher->BaitActiveTime = 0;
+        Fisher->CastServerTime -= 5;   // the test world's clock stands still: the stroke is over, the rig has landed
     };
     // Lifting the rig out takes a few seconds; skip to its end.
     auto Settle = [Fisher]()
@@ -57,14 +58,16 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Controller->SetControlRotation(FRotator(0, FacingYaw + 180, 0));
     Cast();
     TestTrue(TEXT("Cast toward land rejected"), Fisher->FishingState == EFishingState::Idle);
-    TestFalse(TEXT("Backswing ends after a rejected cast"), Fisher->bCharging);
-    Controller->SetControlRotation(FRotator(0, FacingYaw, 0));
+    TestFalse(TEXT("Casting ends after a rejected cast"), Fisher->bCharging);
+    // Looking down at the water near the bank lays the float there.
+    Controller->SetControlRotation(FRotator(-25, FacingYaw, 0));
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    TestTrue(TEXT("Pressing LMB starts the sweep"), Fisher->bCharging && Fisher->FishingState == EFishingState::Idle);
-    Fisher->ChargeServerStart -= ALakeCharacter::ChargeTime * 0.5f;
+    TestTrue(TEXT("Pressing LMB takes the rig in hand"), Fisher->bCharging && Fisher->FishingState == EFishingState::Idle);
+    Fisher->ChargeServerStart -= ALakeCharacter::CastLoad;
     Fisher->ServerRelease_Implementation();
-    const float HalfCast = FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
+    const float NearCast = FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
+    Controller->SetControlRotation(FRotator(0, FacingYaw, 0));
     Fisher->BaitActiveTime = 0;
     TestTrue(TEXT("Cast toward water accepted"), Fisher->FishingState == EFishingState::Waiting);
     TestTrue(TEXT("Bait hangs in the water"), ALakeEnvironment::IsWater(Fisher->BaitLocation()) && Fisher->BaitLocation().Z < LakeFish::SurfaceZ);
@@ -78,7 +81,7 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Early strike ends cast"), Fisher->FishingState == EFishingState::Idle);
     Cast();
     const float FullCast = FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
-    TestTrue(FString::Printf(TEXT("Holding LMB longer casts farther (%.0f vs %.0f cm)"), FullCast, HalfCast), FullCast > HalfCast + 100 && FullCast < 1000);
+    TestTrue(FString::Printf(TEXT("Looking farther casts farther (%.0f vs %.0f cm)"), FullCast, NearCast), FullCast > NearCast + 100 && FullCast < 1000);
     Fisher->ServerCancel_Implementation();
     Settle();
 
@@ -522,7 +525,7 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     Fisher->Bait = EBait::Bread;
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    Fisher->ChargeServerStart -= ALakeCharacter::ChargeTime;
+    Fisher->ChargeServerStart -= ALakeCharacter::CastLoad;
     Fisher->ServerRelease_Implementation();
     Fisher->BaitActiveTime = 0;
     TestTrue(TEXT("Cast for the crucian"), Fisher->FishingState == EFishingState::Waiting);
@@ -542,6 +545,52 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     AddInfo(FString::Printf(TEXT("Crucian take shown as motion %d; the float trembled first: %d"), (int32)FirstTake, Seen.Contains(EBiteMotion::Tremble)));
     TestTrue(TEXT("The crucian tests the bait first: the float trembles"), Seen.Contains(EBiteMotion::Tremble));
     TestTrue(TEXT("Its take lifts the float or leads it off"), FirstTake == EBiteMotion::Lift || FirstTake == EBiteMotion::Drift);
+    World->DestroyWorld(false);
+    return true;
+}
+
+// Casting from the hand: the rod tip must be loaded first; the float goes where the angler looks.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeCastingTest, "QuietLake.Fishing.Casting", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeCastingTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FVector2D Facing;
+    const FVector2D Edge = LakeMap::StartSpot(&Facing) + Facing * 90;
+    const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+    ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Edge, 100), FRotator(0, Yaw, 0));
+    APlayerController* Controller = World->SpawnActor<APlayerController>();
+    Controller->Possess(Fisher);
+    // LMB held for Held seconds while looking Pitch degrees down: how far out the float went.
+    auto Throw = [&](float Held, float Pitch)
+    {
+        Controller->SetControlRotation(FRotator(Pitch, Yaw, 0));
+        Fisher->NextActionTime = 0;
+        Fisher->ServerFish_Implementation();
+        Fisher->ChargeServerStart -= Held;
+        Fisher->ServerRelease_Implementation();
+        Fisher->BaitActiveTime = 0;
+        return FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
+    };
+    auto LiftOut = [&]()
+    {
+        Fisher->ServerCancel_Implementation();
+        if (Fisher->bRetrieving) { Fisher->RetrieveServerTime -= ALakeCharacter::RetrieveTime; Fisher->UpdateRetrieve(); }
+    };
+    const FVector Ahead(Facing, 0);
+    const float Clean = Throw(ALakeCharacter::CastLoad, 0);
+    TestTrue(TEXT("Let go with the tip loaded, the cast is clean"), Fisher->FishingState == EFishingState::Waiting && Fisher->CastResult == ECastResult::Good && Fisher->HasBaitInWater());
+    TestTrue(TEXT("A clean cast lays the rig out: the hook lands beyond the float"), FVector::DotProduct(FVector(Fisher->CastHookLanding) - Fisher->FloatPosition, Ahead) > 30);
+    LiftOut();
+    const float Near = Throw(ALakeCharacter::CastLoad, -30);
+    TestTrue(FString::Printf(TEXT("Looking nearer lays the float nearer (%.0f vs %.0f cm)"), Near, Clean), Fisher->CastResult == ECastResult::Good && Near < Clean - 150);
+    LiftOut();
+    const float Early = Throw(0.1f, 0);
+    TestTrue(FString::Printf(TEXT("Let go too soon, the rig falls short in a heap (%.0f cm)"), Early),
+        Fisher->CastResult == ECastResult::Early && Early < Clean - 100 && FVector::Dist2D(FVector(Fisher->CastHookLanding), Fisher->FloatPosition) < 30);
+    LiftOut();
+    const float Click = Throw(0, 0);
+    TestTrue(FString::Printf(TEXT("A bare click still casts, short (%.0f cm)"), Click), Fisher->FishingState == EFishingState::Waiting && Fisher->CastResult == ECastResult::Early && Click <= Early + 1);
+    LiftOut();
     World->DestroyWorld(false);
     return true;
 }

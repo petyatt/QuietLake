@@ -29,7 +29,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns);
+Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
@@ -40,10 +40,10 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor
 `& C:\Fish\Tools\TestNetwork.ps1`.
 
 Превью — сценарии, которые сами снимают кадры в `Saved/*.png`, пишут замеры строками `QUIET_LAKE_*`
-в лог и закрывают игру:
+в лог и закрывают игру (`MSYS_NO_PATHCONV=1` обязателен, иначе Git Bash испортит путь карты `/Engine/Maps/Entry`):
 
 ```bash
-"/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/QuietLake.uproject /Engine/Maps/Entry -game -windowed -ResX=1280 -ResY=720 -LandPreview -nosound -log=Land.log
+MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/QuietLake.uproject /Engine/Maps/Entry -game -windowed -ResX=1280 -ResY=720 -LandPreview -nosound -log=Land.log
 ```
 
 | Флаг | Что показывает | Где код |
@@ -51,6 +51,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor
 | `-LakePreview` | места озера с воздуха и с берега, затем рыбака: заброс, поплавок, рогатка | `LakeEnvironment.cpp`, `LakePreviews.cpp` |
 | `-BitePreview` | каждое движение поплавка при поклёвке крупным планом | `LakePreviews.cpp` |
 | `-LandPreview` | рыба на леске выходит из воды и попадает в руку | `LakePreviews.cpp` |
+| `-CastPreview` | заброс с руки сбоку и вблизи, ранний и ближний заброс, тяжёлое и лёгкое удилища, вынимание с ловлей рукой | `LakePreviews.cpp` |
 | `-LifePreview` | знаки на воде, малёк, панель F3, время кадра | `LakeLife.cpp` |
 | `-WeatherPreview` | погода и время суток | `LakeWeather.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
@@ -82,7 +83,10 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor
   (удочку, поплавок, рыбу на леске, знаки на воде).
 - Цикл ловли — `EFishingState`: `Idle` → `Waiting` (наживка в воде) → `Bite` (рыба держит наживку,
   время на подсечку) → `Fight` → `Landing` (рыба на леске в воздухе, засчитывается в руке).
-  `bRetrieving` — снасть поднимается из воды в состоянии `Waiting`.
+  `bRetrieving` — снасть поднимается из воды в состоянии `Waiting`. Заброс — с руки: `bCharging` — ЛКМ
+  зажата, оснастка в левой руке; сервер решает точку (куда смотрит игрок) и качество (`CastResult`),
+  удочка на каждой машине ведёт оснастку туда по кривым. Вес удилища (`ERodKind`, `RodHeft`) замедляет
+  и смягчает все движения.
 - Рыба видна игроку в радиусе 150 м (`NetCullDistance`), вдали её симуляция грубее.
 - Новые превью: добавить ветку в `ALakeCharacter::RunPreviews` (или `RunPreview` у нужного актора)
   и флаг в список пропуска меню в `LakeMenu.cpp`.

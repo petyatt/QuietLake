@@ -289,7 +289,7 @@ void ALakePlayerController::BeginPlay()
     if (!IsLocalController()) return;
     ApplyVolume(LoadVolume());
     // Automated preview runs go straight into the game.
-    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview"))) { bStarted = true; return; }
+    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CastPreview"))) { bStarted = true; return; }
     // A slow flight around the lake behind the menu.
     MenuCamera = GetWorld()->SpawnActor<ACameraActor>();
     if (MenuCamera) MenuCamera->GetCameraComponent()->SetFieldOfView(60);

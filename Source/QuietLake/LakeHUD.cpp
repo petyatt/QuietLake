@@ -40,7 +40,7 @@ void ALakeHUD::DrawHUD()
     const bool bUrgent = Fisher->FishingState >= EFishingState::Bite;
     const float Age = Now - StatusTime;
     const float Alpha = bUrgent ? 1.0f : FMath::Clamp((6.0f - Age) / 1.0f, 0.0f, 1.0f);
-    FString Info = FString::Printf(TEXT("Улов: %d   ·   Наживка: %s   ·   Глубина: %.0f см"), Fisher->CatchCount, LakeFish::BaitName(Fisher->Bait), Fisher->FloatDepth);
+    FString Info = FString::Printf(TEXT("Улов: %d   ·   Наживка: %s   ·   Глубина: %.0f см   ·   Удилище: %s"), Fisher->CatchCount, LakeFish::BaitName(Fisher->Bait), Fisher->FloatDepth, ALakeCharacter::RodName(Fisher->RodKind));
     // The name of the fishing spot the angler stands at.
     if (const LakeMap::FSpot* Spot = LakeMap::SpotAt(FVector2D(Fisher->GetActorLocation()))) Info = FString::Printf(TEXT("%s   ·   %s"), Spot->Name, *Info);
     const float Pad = 14 * S, X = 28 * S;
@@ -69,13 +69,27 @@ void ALakeHUD::DrawHUD()
             : FString::Printf(TEXT("Натяжение %.0f%%   ·   до рыбы %.1f м"), Fisher->Tension * 100, Fisher->FishDistance / 100);
         Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
     }
-    // Casting power while swinging.
+    // Casting: a small mark on the water where the float will go (red over land), and at the bottom
+    // how far the rod tip is loaded: it fills while the hand draws the rig back and turns green
+    // when the cast is ready.
     if (Fisher->bCharging)
     {
-        const float Power = Fisher->CastCharge(Fisher->ServerNow());
-        DrawRect(FLinearColor(0, 0, 0, 0.4f), BarX, BarY, BarW, BarH);
-        DrawRect(FLinearColor(0.95f, 0.75f, 0.2f), BarX, BarY, BarW * Power, BarH);
-        const FString Label = TEXT("Дальность заброса");
+        const FVector Aim = Fisher->CastAimPoint();
+        FVector2D P;
+        if (APlayerController* Viewer = GetOwningPlayerController(); Viewer && Viewer->ProjectWorldLocationToScreen(Aim, P))
+        {
+            const FLinearColor Mark = ALakeEnvironment::IsWater(Aim) ? FLinearColor(1, 1, 1, 0.7f) : FLinearColor(1.0f, 0.35f, 0.3f, 0.8f);
+            const float R = 7 * S, T = 1.5f * S;
+            DrawRect(Mark, P.X - R, P.Y - R, 2 * R, T);
+            DrawRect(Mark, P.X - R, P.Y + R - T, 2 * R, T);
+            DrawRect(Mark, P.X - R, P.Y - R, T, 2 * R);
+            DrawRect(Mark, P.X + R - T, P.Y - R, T, 2 * R);
+        }
+        const float Load = FMath::Min(Fisher->SwingTime(Fisher->ServerNow()) / Fisher->CastLoadTime(), 1.0f);
+        const float W = BarW * 0.5f, X0 = (Canvas->ClipX - W) / 2;
+        DrawRect(FLinearColor(0, 0, 0, 0.4f), X0, BarY, W, BarH * 0.5f);
+        DrawRect(Load >= 1 ? FLinearColor(0.4f, 0.9f, 0.5f, 0.9f) : FLinearColor(1, 1, 1, 0.75f), X0, BarY, W * Load, BarH * 0.5f);
+        const FString Label = Load >= 1 ? TEXT("Удилище согнулось — отпустите ЛКМ") : TEXT("Оснастка в руке…");
         Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
     }
     // Bottom right: the time of day, the weather and the air temperature.
@@ -104,13 +118,10 @@ void ALakeHUD::DrawHUD()
     const float HintAlpha = FMath::Clamp((15.0f - (Now - PlayStart)) / 2.0f, 0.0f, 1.0f);
     if (HintAlpha > 0)
     {
-        const FString Hint = TEXT("ЛКМ (держать) — заброс   ·   ПКМ — вытащить   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   1/2/3 — наживка   ·   Esc — меню");
+        const FString Hint = TEXT("ЛКМ (держать) — оснастка в руке, отпустить — заброс   ·   ПКМ — вытащить   ·   Q — удилище   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   1/2/3 — наживка   ·   Esc — меню");
         Text(Hint, FLinearColor(0.85f, 0.87f, 0.85f, 0.75f * HintAlpha), Canvas->ClipX - Width(Hint, 0.75f) - 28 * S, WeatherTop - 30 * S, 0.75f);
     }
     if (bShowLife) DrawLifePanel(S);
-    // A small dot in the centre for aiming the cast (first person only).
-    if (!Fisher->bThirdPerson)
-        DrawRect(FLinearColor(1, 1, 1, 0.55f), Canvas->ClipX / 2 - 1.5f * S, Canvas->ClipY / 2 - 1.5f * S, 3 * S, 3 * S);
 }
 void ALakeHUD::DrawLifePanel(float S)
 {

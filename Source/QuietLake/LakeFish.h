@@ -31,6 +31,10 @@ enum class EFishingState : uint8
     Landing,    // a tired fish lifted out of the water on the line and swung to the hand
 };
 
+/** How the cast went: let go with the rod tip loaded the rig lays out straight; too soon it falls short in a heap. */
+UENUM()
+enum class ECastResult : uint8 { Good, Early };
+
 UENUM()
 enum class EBiteMotion : uint8
 {

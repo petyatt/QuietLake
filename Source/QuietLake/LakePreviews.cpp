@@ -75,14 +75,14 @@ void ALakeCharacter::RunPreviews()
             NextActionTime = 0;
             ServerFish_Implementation();
         });
-        At(58.0f, [Shot] { Shot(TEXT("Fisher_Sweep.png")); });
+        At(57.6f, [Shot] { Shot(TEXT("Fisher_Sweep.png")); });
         for (int32 I = 0; I <= 30; ++I)
             At(57.0f + I * 0.1f, [this, I]
             {
                 if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CAST t=%.1f float=%s tip=%s"), I * 0.1f, *RodVisual->BobberLocation().ToString(), *RodVisual->Tip().ToString());
             });
-        At(59.0f, [this] { ServerRelease_Implementation(); });
-        At(59.4f, [Shot] { Shot(TEXT("Fisher_Cast.png")); });
+        At(57.0f + CastLoad, [this] { ServerRelease_Implementation(); });
+        At(58.4f, [Shot] { Shot(TEXT("Fisher_Cast.png")); });
         At(61.5f, [Shot] { Shot(TEXT("Fisher_Waiting.png")); });
         auto LookFrom = [this](FVector From, FVector At)
         {
@@ -152,8 +152,8 @@ void ALakeCharacter::RunPreviews()
         });
         // Sound the depth first, as anglers do, then set the bait just on the bottom (the shot
         // hanging 8 cm above it) and cast to the same place: the classic setting for a lift bite.
-        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); ChargeServerStart -= ChargeTime * 0.7f; });
-        At(6.3f, [this] { ServerRelease_Implementation(); });
+        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(6.0f + CastLoad, [this] { ServerRelease_Implementation(); });
         At(8.5f, [this]
         {
             const float Water = LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(FloatPosition.X, FloatPosition.Y);
@@ -161,8 +161,8 @@ void ALakeCharacter::RunPreviews()
             ServerCancel_Implementation();
             FloatDepth = FMath::Clamp(FMath::RoundToFloat(Water + 2), MinDepth, MaxDepth);
         });
-        At(12.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); ChargeServerStart -= ChargeTime * 0.7f; });
-        At(12.3f, [this] { ServerRelease_Implementation(); });
+        At(12.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(12.0f + CastLoad, [this] { ServerRelease_Implementation(); });
         At(16.0f, [this]
         {
             if (!RodVisual) return;
@@ -251,8 +251,8 @@ void ALakeCharacter::RunPreviews()
             }
             FloatDepth = 60;
         });
-        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); ChargeServerStart -= ChargeTime * 0.35f; });
-        At(6.3f, [this] { ServerRelease_Implementation(); });
+        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(6.0f + CastLoad, [this] { ServerRelease_Implementation(); });
         At(9.0f, [this]
         {
             const FVector Bait = BaitLocation();
@@ -297,6 +297,104 @@ void ALakeCharacter::RunPreviews()
                     FVector::Dist(RodVisual->Tip(), RodVisual->HookLocation()), *(RodVisual->FloatKeel() - GetActorLocation()).ToCompactString(), *(RodVisual->ShotLocation() - GetActorLocation()).ToCompactString());
             });
         At(15.0f, [] { FPlatformMisc::RequestExit(false); });
+    }
+    // -CastPreview: casts from the hand at the camp on a clear morning, filmed from the side: a
+    // clean one (the rig in the hand, the swing, the rig in the air, the landing close up, the float
+    // standing up), one let go too soon and a clean one aimed nearer; the rig's path and each
+    // result are logged.
+    if (FParse::Param(FCommandLine::Get(), TEXT("CastPreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        auto Shot = [](const TCHAR* Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
+        auto LookFrom = [this](FVector From, FVector Target, float Fov)
+        {
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
+        };
+        auto Side = [this, LookFrom]
+        {
+            LookFrom(GetActorLocation() + GetActorRightVector() * 750 + GetActorForwardVector() * 350 + FVector(0, 0, 120),
+                     GetActorLocation() + GetActorForwardVector() * 350 + FVector(0, 0, 150), 70);
+        };
+        At(4.0f, [this]
+        {
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Calm;
+                Calm.Cloud = 0.3f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.03f; Calm.WindYaw = 40;
+                Weather->SetWeather(Calm, 1);
+                Weather->SetHours(9.0f);
+            }
+            FVector2D Facing;
+            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
+            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetControlRotation(FRotator(-12, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+            FloatDepth = 30;
+        });
+        At(5.5f, Side);
+        struct FTry { float At; float Held; float Pitch; ERodKind Rod; };
+        const FTry Tries[] = {
+            { 6.0f, CastLoad + 0.1f, -12, ERodKind::Medium },     // clean, as far as the rod reaches
+            { 14.0f, 0.12f, -12, ERodKind::Medium },              // let go too soon: short, in a heap
+            { 22.0f, CastLoad + 0.1f, -30, ERodKind::Medium },    // clean, nearer: looking down at the water
+            { 30.0f, CastLoad * 1.5f, -12, ERodKind::Heavy },     // a heavy fibreglass pole: slower, softer
+            { 38.0f, CastLoad + 0.1f, -12, ERodKind::Light },     // a light carbon pole: quick
+        };
+        for (const FTry& Try : Tries)
+        {
+            At(Try.At - 0.5f, [this, Try]
+            {
+                RodKind = Try.Rod;
+                if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(Try.Pitch, GetActorRotation().Yaw, 0));
+            });
+            At(Try.At, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+            At(Try.At + Try.Held, [this] { ServerRelease_Implementation(); });
+            At(Try.At + Try.Held + 1.7f, [this]
+            {
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CASTRESULT result=%d severity=%.2f out=%.0f cm hook beyond float=%.0f cm: %s"), (int32)CastResult, CastSeverity,
+                    FVector::Dist2D(FloatPosition, GetActorLocation()), FVector::DotProduct(FVector(CastHookLanding) - FloatPosition, GetActorForwardVector()), *Status);
+            });
+            At(Try.At + Try.Held + 4.0f, [this] { ServerCancel_Implementation(); });
+        }
+        // The clean cast, shot by shot.
+        At(6.5f, [Shot] { Shot(TEXT("Cast_Hold.png")); });
+        At(6.75f, [Shot] { Shot(TEXT("Cast_Swing.png")); });
+        At(7.0f, [Shot] { Shot(TEXT("Cast_Air.png")); });
+        At(7.05f, [this, LookFrom]
+        {
+            LookFrom(FloatPosition + GetActorRightVector() * 260 - GetActorForwardVector() * 160 + FVector(0, 0, 110), FloatPosition + GetActorForwardVector() * 50, 50);
+        });
+        At(7.55f, [Shot] { Shot(TEXT("Cast_Land.png")); });
+        At(9.5f, [Shot] { Shot(TEXT("Cast_Stand.png")); });
+        At(10.0f, Side);
+        At(12.6f, [Shot] { Shot(TEXT("Cast_Catch.png")); });
+        At(14.5f, [Shot] { Shot(TEXT("Cast_Early.png")); });
+        At(23.3f, [Shot] { Shot(TEXT("Cast_Near.png")); });
+        At(30.6f, [Shot] { Shot(TEXT("Cast_HeavyHold.png")); });
+        At(31.15f, [Shot] { Shot(TEXT("Cast_HeavySwing.png")); });
+        At(38.75f, [Shot] { Shot(TEXT("Cast_LightSwing.png")); });
+        for (int32 I = 0; I <= 800; ++I)
+            At(6.0f + I * 0.05f, [this, I]
+            {
+                if (!RodVisual) return;
+                auto Rel = [this](FVector P)
+                {
+                    const FVector D = P - GetActorLocation();
+                    return FString::Printf(TEXT("(%.0f, %.0f, %.0f)"), FVector::DotProduct(D, GetActorForwardVector()), FVector::DotProduct(D, GetActorRightVector()), D.Z);
+                };
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CASTPATH t=%.2f swing=%d tip %s float %s shot %s hook %s"), 6.0f + I * 0.05f, bCharging ? 1 : 0,
+                    *Rel(RodVisual->Tip()), *Rel(RodVisual->BobberLocation()), *Rel(RodVisual->ShotLocation()), *Rel(RodVisual->HookLocation()));
+            });
+        At(46.0f, [] { FPlatformMisc::RequestExit(false); });
     }
 }
 #endif

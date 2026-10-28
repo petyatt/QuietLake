@@ -14,8 +14,10 @@ struct FRodInput
     float HookDepth = 100;        // leader length under the bobber
     float SinceCast = -1;         // seconds since the line was released, < 0 if not casting
     float CastFlight = 1;         // seconds the bobber flies down onto the water
-    bool bSweeping = false;       // LMB held: the line is laid out ahead of the lowering rod
-    float SweepAngle = -90;       // line angle below the horizon during the sweep (deg)
+    bool bSwinging = false;       // LMB held for a cast: the hook held in the hand
+    float HookHold = 0;           // 0..1: how firmly the angler's left hand has the rig (1: in the hand)
+    float RodHeft = 1;            // how sluggish the rod is: 1 medium, less for a light rod, more for a heavy one
+    FVector HookLanding = FVector::ZeroVector;    // where the hook comes down (beyond the float when laid out straight)
     FVector Facing = FVector::ForwardVector;
     float Tension = 0;
     uint8 Nibbles = 0;
@@ -26,8 +28,8 @@ struct FRodInput
     FVector StandBase = FVector::ZeroVector;
     float StandYaw = 0;
     class ALakeFish* LineFish = nullptr;          // fish holding the bait or hooked
-    // Lifting a fish out (Landing): it hangs on the hook with its weight; at the end the angler's
-    // free hand takes it.
+    // The angler's free hand: it holds the hook for the cast, and takes a fish lifted out
+    // (Landing), where the fish hangs on the hook with its weight.
     float FishGrams = 0, FishLength = 0;
     FVector HandPoint = FVector::ZeroVector;
     float HandAlpha = 0;
@@ -101,6 +103,7 @@ private:
     FVector Deflection = FVector::ZeroVector, DeflectionVelocity = FVector::ZeroVector;
     FVector RestTipPrev = FVector::ZeroVector, RestTipPrev2 = FVector::ZeroVector, LastTip = FVector::ZeroVector;
     FVector BobberPos, BobberPrev, HookPos, HookPrev, FlightStart, FlightVelocity;
+    FVector HookFlightStart = FVector::ZeroVector, FlightApex = FVector::ZeroVector;   // the cast's arcs: the hook's start, the high point both pass near
     float Time = 0, NibbleTime = -10;
     float LeaderNow = 100;
     float SinkNow = 0;                            // how far a taking fish has drawn the float under (cm)                        // float-to-hook distance as shown, easing to the set depth
@@ -115,4 +118,5 @@ private:
     EBiteMotion LastBiteMotion = EBiteMotion::None;
     float LandLine = -1;                          // lifting a fish out: tip-to-hook reach, easing to the line's length
     bool bInitialised = false;
+    float Heft = 1;                               // the rod's weight (see FRodInput::RodHeft)
 };

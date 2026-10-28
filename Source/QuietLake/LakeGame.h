@@ -5,6 +5,11 @@
 #include "LakeFish.h"
 #include "LakeGame.generated.h"
 
+/** The pole in the angler's hands. All are 6 m long; the weight changes how they move: a light
+ *  carbon pole swings quick and easy, a heavy fibreglass one slowly, lagging and springing more. */
+UENUM()
+enum class ERodKind : uint8 { Light, Medium, Heavy, Count UMETA(Hidden) };
+
 UCLASS()
 class QUIETLAKE_API ALakeCharacter : public ACharacter
 {
@@ -31,22 +36,37 @@ public:
     UPROPERTY(Replicated) float BiteDuration = 1;
     UPROPERTY(Replicated) float BiteAmount = 0;
     // Cast and rod state, replicated so every machine can animate the rod and line itself.
-    UPROPERTY(Replicated) bool bCharging = false;          // LMB held: the rod sweeps forward, laying the line out
-    UPROPERTY(Replicated) float ChargeServerStart = 0;
+    UPROPERTY(Replicated) bool bCharging = false;          // LMB held for a cast: the rig held in the hand, the rod tip loading
+    UPROPERTY(Replicated) float ChargeServerStart = 0;     // when LMB was pressed
     UPROPERTY(Replicated) bool bRetrieving = false;        // the rod is being raised, drawing the rig out of the water
     UPROPERTY(Replicated) float RetrieveServerTime = -100;
     UPROPERTY(Replicated) float RetrieveFromElevation = 20;
-    /** Seconds of holding LMB for the longest cast, and of lifting the rig out of the water. */
-    static constexpr float ChargeTime = 2.0f;
+    /** Seconds of lifting the rig out of the water. */
     static constexpr float RetrieveTime = 2.5f;
-    /** 0..1: how far the casting sweep has gone. */
-    float CastCharge(float Now) const { return bCharging ? FMath::Clamp((Now - ChargeServerStart) / ChargeTime, 0.0f, 1.0f) : 0.0f; }
-    /** Angle of the line below the horizon (deg) during the sweep: hanging straight down at the start. */
-    static float SweepLineAngle(float Charge) { return FMath::Lerp(-88.0f, -14.0f, FMath::InterpEaseInOut(0.0f, 1.0f, Charge, 1.8f)); }
-    static float SweepElevation(float Idle, float Charge) { return FMath::Lerp(Idle, 18.0f, FMath::InterpEaseInOut(0.0f, 1.0f, Charge, 1.6f)); }
-    UPROPERTY(Replicated) float CastServerTime = -100;
+    /**
+     * The cast from the hand: holding LMB the angler takes the rig in the left hand and draws it
+     * back to the hip, bending the rod tip; let go, the loaded tip swings the rig out in front. Let
+     * go before the tip is loaded (CastLoad seconds) the rig falls short in a heap.
+     */
+    static constexpr float CastLoad = 0.5f;          // for the medium rod; see CastLoadTime
+    UPROPERTY(Replicated) ERodKind RodKind = ERodKind::Medium;
+    static float RodGrams(ERodKind Kind);
+    static const TCHAR* RodName(ERodKind Kind);
+    /** How sluggish the rod is: 1 for the medium rod, more for a heavier one (square root of the weight ratio). */
+    float RodHeft() const { return FMath::Sqrt(RodGrams(RodKind) / RodGrams(ERodKind::Medium)); }
+    /** Seconds until the rod tip is loaded for the cast: a heavier rod bends slower. */
+    float CastLoadTime() const { return CastLoad * RodHeft(); }
+    UPROPERTY(Replicated) ECastResult CastResult = ECastResult::Good;
+    UPROPERTY(Replicated) float CastSeverity = 0;            // 0..1: how much too soon the rig was let go
+    UPROPERTY(Replicated) FVector_NetQuantize10 CastHookLanding;   // where the hook came down (beyond the float when laid out straight)
+    /** Seconds since LMB was pressed for the cast (0 when not casting). */
+    float SwingTime(float Now) const { return bCharging ? FMath::Max(0.0f, Now - ChargeServerStart) : 0.0f; }
+    /** How far (cm, from the angler) a cast can lay the float now. */
+    float CastReach() const;
+    /** Where a clean cast would lay the float: the water point the angler looks at, within reach. */
+    FVector CastAimPoint() const;
+    UPROPERTY(Replicated) float CastServerTime = -100;      // when the cast was released
     UPROPERTY(Replicated) float CastFlight = 1;
-    UPROPERTY(Replicated) float CastPower = 0;
     UPROPERTY(Replicated) float StrikeServerTime = -100;
     /** Landing: when the tired fish was lifted out of the water on the line, to be swung to the hand. */
     UPROPERTY(Replicated) float LandServerTime = -100;
@@ -81,6 +101,7 @@ private:
     friend class FLakeFishingTest;
     friend class FLakeBitePatternsTest;
     friend class FLakeFishBehaviourTest;
+    friend class FLakeCastingTest;
     void SelectBait(EBait NewBait);
     void BaitWorm() { SelectBait(EBait::Worm); }
     void BaitMaggot() { SelectBait(EBait::Maggot); }
@@ -96,13 +117,19 @@ private:
     void ToggleRod();
     void ToggleView();
     void ToggleLifePanel();
+    void NextRod() { ServerNextRod(); }
+    /** Q: take the next rod (only with no line out). */
+    UFUNCTION(Server, Reliable) void ServerNextRod();
     /** -LakePreview, -BitePreview, -LandPreview: scripted scenes, filmed and logged (LakePreviews.cpp). */
     void RunPreviews();
     UFUNCTION(Server, Reliable) void ServerToggleRod();
-    void DoCast(float Power);
+    /** LMB pressed with nothing out: the rig taken in the hand. */
+    void StartCast();
+    /** LMB released after Held seconds: the loaded tip swings the rig out; too soon, it falls short in a heap. */
+    void DoCast(float Held);
     /** Rod elevation while waiting (deg): with a deep float the main line is short, so the tip goes down to the water. */
     float WaitElevation(float Pitch, float Depth) const;
-    void RodPoseTarget(float Pitch, float Now, float& OutElevation, FVector& OutGrip, float& OutStiffness) const;
+    void RodPoseTarget(float Pitch, float Now, float& OutElevation, FVector& OutGrip, float& OutStiffness, float& OutYaw) const;
     void UpdateRodPose(float DeltaSeconds);
     FTransform RodHold() const;
     FTransform StandHold() const;
