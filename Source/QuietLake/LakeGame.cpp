@@ -345,14 +345,26 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         Elevation = WaitElevation(Pitch, HookDepth);
         Grip = Waiting;
         if (Since >= 0 && Since < 1.5f) Stiffness = 3.5f;   // after the cast the heavy pole settles slowly
-        if (Since >= 0 && Since < CastFlight && !bRetrieving && FishingState == EFishingState::Waiting)
+        const float Push = 0.3f * RodHeft(), Settle = CastFlight + 0.4f;
+        if (Since >= 0 && Since < Settle && !bRetrieving && FishingState == EFishingState::Waiting)
         {
-            // Let go: the loaded tip swings the rig out and the rod follows it down in one smooth
-            // motion, reaching the waiting angle as the rig lands, so the line lays it out straight.
-            const float A = FMath::InterpEaseInOut(0.0f, 1.0f, FMath::Clamp(Since / CastFlight, 0.0f, 1.0f), 2.0f);
-            Elevation = FMath::Lerp(HandElevation, Elevation, A);
-            Grip = FMath::Lerp(Hand, FMath::Lerp(Forward, Waiting, A), A);
-            Stiffness = 8;
+            // Let go: the rod is pushed forward and down at once, the loaded tip throwing the rig
+            // out ahead; then it follows the rig down to the waiting angle as it lands.
+            constexpr float PushElevation = 38;
+            if (Since < Push)
+            {
+                const float A = FMath::InterpEaseOut(0.0f, 1.0f, Since / Push, 2.0f);
+                Elevation = FMath::Lerp(HandElevation, PushElevation, A);
+                Grip = FMath::Lerp(Hand, Forward, A);
+                Stiffness = 14;
+            }
+            else
+            {
+                const float A = FMath::SmoothStep(Push, Settle, Since);
+                Elevation = FMath::Lerp(PushElevation, Elevation, A);   // Elevation is the waiting angle here
+                Grip = FMath::Lerp(Forward, Waiting, A);
+                Stiffness = 7;
+            }
         }
         if (bRetrieving)
         {
@@ -484,10 +496,15 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     if (!bRodOnStand && StandAlpha <= 0)
     {
         if (bCharging || FishingState == EFishingState::Idle) HookHold = 1;
-        else if (FishingState == EFishingState::Waiting && bRetrieving) HookHold = FMath::SmoothStep(0.55f, 0.9f, (Now - RetrieveServerTime) / RetrieveTime);
+        else if (FishingState == EFishingState::Waiting && bRetrieving)
+        {
+            const float R = (Now - RetrieveServerTime) / RetrieveTime;
+            HookHold = R >= 0.95f ? 1.0f : 0.99f * FMath::SmoothStep(0.45f, 0.95f, R);
+        }
         else if (FishingState == EFishingState::Waiting && SinceCast >= 0 && SinceCast < 0.2f) HookHold = 1 - SinceCast / 0.2f;
     }
     In.HookHold = HookHold;
+    In.RetrieveT = bRetrieving ? FMath::Clamp((Now - RetrieveServerTime) / RetrieveTime, 0.0f, 1.0f) : -1.0f;
     In.RodHeft = RodHeft();
     const float Draw = FMath::SmoothStep(0.0f, CastLoadTime(), SwingTime(Now));
     In.HandPoint = GetActorLocation() + GetActorForwardVector() * FMath::Lerp(40.0f, 12.0f, Draw) - GetActorRightVector() * 22 + FVector(0, 0, FMath::Lerp(45.0f, 30.0f, Draw));
@@ -517,7 +534,8 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
         Pose.Right.Down = -RodUp;
         Pose.Right.Pole = GetActorLocation() + Right * 60 - Up * 60 - Fwd * 20;
         Pose.Right.Alpha = HandsAlpha;
-        Pose.Left.Point = FMath::Lerp(Hold.TransformPosition(FVector(5, 0, 0)), RodVisual->HookLocation(), FMath::Max(LandAlpha, HookHold));
+        // The free hand: on the fish's mouth when it is lifted out, otherwise on the shot it holds.
+        Pose.Left.Point = FMath::Lerp(Hold.TransformPosition(FVector(5, 0, 0)), LandAlpha > 0 ? RodVisual->HookLocation() : RodVisual->ShotLocation(), FMath::Max(LandAlpha, HookHold));
         Pose.Left.Axis = Axis;
         Pose.Left.Down = -RodUp;
         Pose.Left.Pole = GetActorLocation() - Right * 60 - Up * 60 - Fwd * 20;

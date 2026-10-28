@@ -367,7 +367,7 @@ void ALakeCharacter::RunPreviews()
         }
         // The clean cast, shot by shot.
         At(6.5f, [Shot] { Shot(TEXT("Cast_Hold.png")); });
-        At(6.75f, [Shot] { Shot(TEXT("Cast_Swing.png")); });
+        At(6.72f, [Shot] { Shot(TEXT("Cast_Push.png")); });
         At(7.0f, [Shot] { Shot(TEXT("Cast_Air.png")); });
         At(7.05f, [this, LookFrom]
         {
@@ -382,7 +382,7 @@ void ALakeCharacter::RunPreviews()
         At(30.6f, [Shot] { Shot(TEXT("Cast_HeavyHold.png")); });
         At(31.15f, [Shot] { Shot(TEXT("Cast_HeavySwing.png")); });
         At(38.75f, [Shot] { Shot(TEXT("Cast_LightSwing.png")); });
-        for (int32 I = 0; I <= 800; ++I)
+        for (int32 I = 0; I <= 880; ++I)
             At(6.0f + I * 0.05f, [this, I]
             {
                 if (!RodVisual) return;
@@ -394,7 +394,12 @@ void ALakeCharacter::RunPreviews()
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CASTPATH t=%.2f swing=%d tip %s float %s shot %s hook %s"), 6.0f + I * 0.05f, bCharging ? 1 : 0,
                     *Rel(RodVisual->Tip()), *Rel(RodVisual->BobberLocation()), *Rel(RodVisual->ShotLocation()), *Rel(RodVisual->HookLocation()));
             });
-        At(46.0f, [] { FPlatformMisc::RequestExit(false); });
+        // Walking along the bank with the rig in hand: the float should stay on the line, not dangle.
+        At(45.5f, Side);
+        for (int32 I = 0; I < 50; ++I)
+            At(46.0f + I * 0.04f, [this] { AddMovementInput(-GetActorRightVector(), 1.0f); });
+        At(47.0f, [Shot] { Shot(TEXT("Cast_Walk.png")); });
+        At(50.0f, [] { FPlatformMisc::RequestExit(false); });
     }
 }
 #endif

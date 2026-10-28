@@ -15,7 +15,8 @@ struct FRodInput
     float SinceCast = -1;         // seconds since the line was released, < 0 if not casting
     float CastFlight = 1;         // seconds the bobber flies down onto the water
     bool bSwinging = false;       // LMB held for a cast: the hook held in the hand
-    float HookHold = 0;           // 0..1: how firmly the angler's left hand has the rig (1: in the hand)
+    float HookHold = 0;           // 0..1: how firmly the angler's left hand has the rig (1: the shot held in the fingers)
+    float RetrieveT = -1;         // drawing the rig out of the water: 0..1 of the way, < 0 when not
     float RodHeft = 1;            // how sluggish the rod is: 1 medium, less for a light rod, more for a heavy one
     FVector HookLanding = FVector::ZeroVector;    // where the hook comes down (beyond the float when laid out straight)
     FVector Facing = FVector::ForwardVector;
@@ -116,7 +117,9 @@ private:
     FVector FloatK = FVector::ZeroVector, FloatKPrev = FVector::ZeroVector, FloatT = FVector::ZeroVector, FloatTPrev = FVector::ZeroVector;
     FVector ShotPos = FVector::ZeroVector, ShotPrev = FVector::ZeroVector;
     EBiteMotion LastBiteMotion = EBiteMotion::None;
-    float LandLine = -1;                          // lifting a fish out: tip-to-hook reach, easing to the line's length
+    float LandLine = -1;
+    bool bCatchLaunched = false;
+    FVector CatchStart = FVector::ZeroVector;     // where the shot was when the free hand began to bring it in                          // lifting a fish out: tip-to-hook reach, easing to the line's length
     bool bInitialised = false;
     float Heft = 1;                               // the rod's weight (see FRodInput::RodHeft)
 };
