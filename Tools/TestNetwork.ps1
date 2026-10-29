@@ -41,6 +41,24 @@ try {
     }
     if (-not $seen) { throw 'Fish did not replicate to both clients; inspect Saved/NetworkTest logs' }
     Write-Output ('PASS: both clients see fish: ' + ($counts -join ', '))
+    # Fish swim smoothly on the clients: no steps between network updates (ALakeLife::LogShownMotion).
+    $smooth = $false
+    for ($i = 0; $i -lt 90; $i++) {
+        $lines = foreach ($number in 1,2) {
+            Select-String -Path (Join-Path $logs "Client$number.log") -Pattern 'QUIET_LAKE_FISH_SMOOTH .* accel p50=(\d+) p99=(\d+) .* turn-accel p50=(\d+) p99=(\d+)' | Select-Object -Last 1
+        }
+        if (@($lines | Where-Object { $_ }).Count -eq 2) { $smooth = $true; break }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $smooth) { throw 'Clients logged no fish motion; inspect Saved/NetworkTest logs' }
+    foreach ($line in $lines) {
+        Write-Output ('Client fish motion: ' + ($line.Line -replace '^.*QUIET_LAKE_FISH_SMOOTH ', ''))
+        $p99 = [int]$line.Matches[0].Groups[2].Value
+        $turn99 = [int]$line.Matches[0].Groups[4].Value
+        if ($p99 -gt 600) { throw "Fish motion on a client is jerky (p99 acceleration $p99 cm/s2)" }
+        if ($turn99 -gt 1500) { throw "Fish turns on a client are jerky (p99 turn acceleration $turn99 deg/s2)" }
+    }
+    Write-Output 'PASS: fish swim smoothly on both clients'
 } finally {
     foreach ($process in $processes) {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }

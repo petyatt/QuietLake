@@ -12,6 +12,7 @@ struct FHandGrip
     FVector Down = -FVector::UpVector;     // direction the fingers wrap towards
     FVector Pole = FVector::ZeroVector;    // where the elbow should point
     float Alpha = 0;                       // 0 = animation only, 1 = hand fully on the grip
+    float Pinch = 0;                       // 0 = support the rod, 1 = pinch the line
 };
 
 /** Game-thread inputs, filled by the character every frame. */
@@ -40,10 +41,12 @@ struct FFisherAnimProxy : public FAnimInstanceProxy
     virtual bool Evaluate(FPoseContext& Output) override;
 
 private:
-    struct FCsGrip { FVector Point, Axis, Down, Pole; float Alpha = 0; };
+    struct FCsGrip { FVector Point, Axis, Down, Pole; float Alpha = 0, Pinch = 0; };
     void Sample(const class UAnimSequence* Sequence, float Time, FPoseContext& Pose) const;
     void SolveArm(FComponentSpacePoseContext& Pose, FName Upper, FName Lower, FName Hand,
                   FName Index, FName Middle, FName Pinky, const FCsGrip& Grip) const;
+    /** Close the fingers (and the thumb) of one hand around what it holds, Amount 0..1. */
+    void CurlFingers(FCompactPose& Pose, const TCHAR* Side, float Sign, float Amount, float Pinch = 0) const;
 
     const UAnimSequence* Idle = nullptr;
     const UAnimSequence* Walk = nullptr;

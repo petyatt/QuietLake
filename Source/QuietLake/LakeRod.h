@@ -14,13 +14,12 @@ struct FRodInput
     float HookDepth = 100;        // leader length under the bobber
     float SinceCast = -1;         // seconds since the line was released, < 0 if not casting
     float CastFlight = 1;         // seconds the bobber flies down onto the water
-    bool bSwinging = false;       // LMB held for a cast: the hook held in the hand
+    bool bSwinging = false;       // LMB held for a cast: the rig held in the hand
+    bool bRigFlying = false;      // let go and not yet down on the water (the server says when it lands)
     float HookHold = 0;           // 0..1: how firmly the angler's left hand has the rig (1: the shot held in the fingers)
-    float RetrieveT = -1;         // drawing the rig out of the water: 0..1 of the way, < 0 when not
     float RodHeft = 1;            // how sluggish the rod is: 1 medium, less for a light rod, more for a heavy one
     float CastDraw = 0;           // 0..1: how far the hand has drawn the rig back for the cast (it loads the tip)
     FVector Wind = FVector::ZeroVector;   // at the water, cm/s (the weather's, with gusts)
-    FVector HookLanding = FVector::ZeroVector;    // where the hook comes down (beyond the float when laid out straight)
     FVector Facing = FVector::ForwardVector;
     float Tension = 0;
     uint8 Nibbles = 0;
@@ -39,9 +38,9 @@ struct FRodInput
 };
 
 /**
- * Visual rod, line, float rig and bait of one angler. Purely cosmetic and simulated locally on
- * every machine from the angler's replicated state, so the cast, the bend and the line look
- * the same everywhere without streaming any of it over the network.
+ * Rod, line, float rig and bait of one angler, simulated locally from replicated input.
+ * The server also runs this simulation to decide physical splashdown and catching the rig;
+ * clients render their own simulation and receive the authoritative fishing state.
  *  - The blank bends as one elastic cantilever driven by the hand's motion and the line's pull.
  *  - Main line and leader are light, inextensible, slightly stiff verlet chains with strong air
  *    drag, drawn as thin cylinders; slack main line lies on the water.
@@ -61,7 +60,7 @@ public:
     static constexpr float HandleLength = 44.0f;
     static constexpr float RodLength = 600.0f;
     static constexpr float LineLength = 600.0f;  // tip to hook: the same as the rod, so the rig never drags
-    static constexpr float GripPoint = 30.0f;    // right hand, from the butt
+    static constexpr float GripPoint = 12.0f;    // right hand, from the butt (at the end of the handle)
 
     FVector Tip() const { return Points.Num() ? Points.Last() : FVector::ZeroVector; }
     FVector HookLocation() const { return HookPos; }
@@ -71,6 +70,23 @@ public:
     FVector FloatTip() const { return FloatT; }
     FVector ShotLocation() const { return ShotPos; }
     FVector FloatKeel() const { return FloatK; }
+    /** The leader's shape (float to shot): how far it bows from straight and how far apart its ends are, cm. */
+    void LeaderShape(float& OutBow, float& OutChord, float& OutLength) const
+    {
+        OutBow = OutChord = OutLength = 0;
+        if (LeaderSim.P.Num() < 2) return;
+        const FVector A = LeaderSim.P[0], B = LeaderSim.P.Last();
+        OutChord = FVector::Dist(A, B);
+        const FVector Dir = (B - A).GetSafeNormal();
+        for (int32 I = 0; I < LeaderSim.P.Num(); ++I)
+        {
+            const FVector D = LeaderSim.P[I] - A;
+            OutBow = FMath::Max(OutBow, (D - Dir * FVector::DotProduct(D, Dir)).Size());
+            if (I > 0) OutLength += FVector::Dist(LeaderSim.P[I - 1], LeaderSim.P[I]);
+        }
+    }
+    /** The float has come down: on the water's surface, or on the ground. */
+    bool FloatDown() const;
     /** How far the tip is bent off the line of the butt (cm). */
     float TipBend() const
     {
@@ -82,19 +98,26 @@ public:
     /** The main line's belly: the farthest its points stray sideways from the straight tip-to-float
      *  line (cm, horizontally), and how many of its points lie on the water. */
     float LineBelly(int32* OutOnWater = nullptr) const;
+    /** The main line from the rod tip to the float, as simulated (for the waves it makes on the water). */
+    const TArray<FVector>& MainLinePoints() const { return MainSim.P; }
     /** Up along the line from the hook towards the rod tip: a fish hanging on it points this way. */
     FVector HookLineUp() const { return (Tip() - HookPos).GetSafeNormal(); }
 
 private:
-    /** A thin, nearly weightless and inextensible line between two pinned ends. */
+    /** A thin line as a chain of points, simulated with the rig (UpdateBobber). */
     struct FLineSim
     {
         TArray<FVector> P, Prev;
         FVector LastA = FVector::ZeroVector, LastB = FVector::ZeroVector;
     };
-    void SimulateLine(FLineSim& Line, FVector A, FVector B, float Length, float DeltaSeconds, bool bFloatsOnWater, bool bReset);
     void LayoutLine(const FLineSim& Line, const TArray<TObjectPtr<class UStaticMeshComponent>>& Segments, float Radius);
     FLineSim MainSim, LeaderSim, TailSim;
+    /** The live waves near the viewer (rendering machines only): the float rides them. */
+    TWeakObjectPtr<class ALakeRipples> Ripples;
+    float NextRipplesLookup = 0;
+    /** The guided cast: where the float left the hand, and where it was put on the previous step. */
+    FVector GuideFrom = FVector::ZeroVector, GuideLast = FVector::ZeroVector;
+    bool bGuiding = false;
     /** Once a frame: the blank's weights and stiffness for this rod, and where the hands are. */
     void PrepareBlank(const FTransform& Hold);
     /** One substep of the blank (S: 0..1 through the frame, moving the hands smoothly). */
@@ -115,7 +138,7 @@ private:
     UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> Baits;
     UPROPERTY() TObjectPtr<class UStaticMeshComponent> Stand;
 
-    bool bCastLaunched = false, bCastLanded = false, bBobberInWater = false;
+    bool bBobberInWater = false;
     TArray<FVector> Points;                       // blank: from the handle end to the tip
     // The blank as a chain of points (Points), each with its share of the rod's weight, kept straight
     // by its bending stiffness (stiff at the butt, soft at the tip).
@@ -126,9 +149,10 @@ private:
     FTransform HoldFrom, HoldTo;                  // the hands at the start and at the end of this frame
     FVector TipForce = FVector::ZeroVector;       // this frame's load on the tip (a fish, the cast draw), dyn
     float BlankDamp = 11;                         // 1/s
+    FVector TipAnchor = FVector::ZeroVector;      // the cast draw: the line holds the tip within TipReach of this point
+    float TipReach = -1;
     FVector LastTip = FVector::ZeroVector;
-    FVector BobberPos, BobberPrev, HookPos, HookPrev, FlightStart, FlightVelocity;
-    FVector HookFlightStart = FVector::ZeroVector, FlightApex = FVector::ZeroVector;   // the cast's arcs: the hook's start, the high point both pass near
+    FVector BobberPos, BobberPrev, HookPos, HookPrev;
     float Time = 0, NibbleTime = -10;
     float LeaderNow = 100;
     float SinkNow = 0;                            // how far a taking fish has drawn the float under (cm)                        // float-to-hook distance as shown, easing to the set depth
@@ -142,7 +166,6 @@ private:
     FVector ShotPos = FVector::ZeroVector, ShotPrev = FVector::ZeroVector;
     EBiteMotion LastBiteMotion = EBiteMotion::None;
     float LandLine = -1;
-    float CastLine = -1;                          // a cast: tip-to-float line let out while the rig flies, taken back in after
     bool bCatchLaunched = false;
     FVector CatchStart = FVector::ZeroVector;     // where the shot was when the free hand began to bring it in                          // lifting a fish out: tip-to-hook reach, easing to the line's length
     bool bInitialised = false;

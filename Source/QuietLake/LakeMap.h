@@ -3,7 +3,7 @@
 
 /**
  * The lake and the land around it: shoreline, lake bed, terrain relief, the places on the bank
- * (fishing spots, pier, dam, island, snags, lily beds) and the kinds of water fish live in.
+ * (fishing spots, pier, island, snags, lily beds) and the kinds of water fish live in.
  * Pure deterministic functions, identical on every machine, used by the environment builder,
  * the fish, the angler and the tests. Distances in cm unless a name says metres.
  *
@@ -19,7 +19,7 @@ namespace LakeMap
 {
     constexpr float SurfaceZ = -25.0f;
     /** A point of open water in the middle reach, between the island and the south bank. */
-    inline const FVector2D Centre(8000.0f, 1000.0f);
+    inline const FVector2D Centre(6000.0f, 750.0f);
 
     /** Signed distance to the nearest waterline (the lake's or the island's): positive in the water. */
     QUIETLAKE_API float ShoreDistance(float X, float Y);
@@ -56,7 +56,7 @@ namespace LakeMap
     QUIETLAKE_API float BluffHeight(const FVector2D& P);
     /** 1 in the warm weedy shallows: the backwater, the upper end and the south bay. */
     QUIETLAKE_API float BackwaterAmount(float X, float Y);
-    /** 1 where the forest grows (the north and east), 0 in the open meadow (south-west, the dam, the village plateau). */
+    /** 1 where the forest grows (the north and east), 0 in the open meadow (south-west, the west end, the village plateau). */
     QUIETLAKE_API float ForestAmount(const FVector2D& P);
 
     /** Where the angler starts: on the bank at the camp, facing the water. */
@@ -69,10 +69,10 @@ namespace LakeMap
     QUIETLAKE_API FShorePoint Landing();
     /** The level plateau above the south bay kept for the village. */
     QUIETLAKE_API FVector2D VillageCentre();
-    /** The earth dam across the west end: crest line, height of the crest above the water (m), the spillway. */
-    struct FDam { FVector2D A, B; float CrestM; FVector2D Spillway; };
-    QUIETLAKE_API const FDam& Dam();
     QUIETLAKE_API FVector2D IslandCentre();
+    /** The far end of the little bay at the west end, and a point beyond the rounded west end (its bank is the nearest shore). */
+    QUIETLAKE_API FVector2D WestBay();
+    QUIETLAKE_API FVector2D WestEnd();
 
     /** Fallen trees lying from the bank into the water: cover for perch and pike. */
     struct FSnag { FVector Root, Tip; float Radius; };

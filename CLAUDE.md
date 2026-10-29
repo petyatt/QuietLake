@@ -10,7 +10,8 @@
   Комментарии в коде — по-английски, коротко и по делу.
 - Коммитить только по просьбе пользователя.
 - Никогда не коммитить `Content/Fab`, `Content/Megaplant_Library`, `Content/Characters/Mannequins`
-  (они в `.gitignore`; восстанавливаются через Fab в редакторе и `Tools/CopyMannequin.ps1`).
+  (они в `.gitignore`; восстанавливаются через Fab в редакторе и `Tools/CopyMannequin.ps1`;
+  после восстановления Megaplant запустить `Tools/FixPineBark.py` питоном редактора).
 - Fab: только бесплатные лицензии; не входить в аккаунты и не вводить пароли за пользователя.
 - После изменения механики обновлять [WORLD.md](WORLD.md), а после проверки — раздел «Проверено …» в [README.md](README.md).
 
@@ -29,7 +30,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift);
+Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
@@ -48,18 +49,21 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 
 | Флаг | Что показывает | Где код |
 |---|---|---|
-| `-LakePreview` | места озера с воздуха и с берега, затем рыбака: заброс, поплавок, рогатка | `LakeEnvironment.cpp`, `LakePreviews.cpp` |
+| `-LakePreview` | места озера с воздуха и с берега, кусты и опушка вблизи, затем рыбака: заброс, поплавок, рогатка | `LakeEnvironment.cpp`, `LakePreviews.cpp` |
 | `-BitePreview` | каждое движение поплавка при поклёвке крупным планом | `LakePreviews.cpp` |
 | `-LandPreview` | рыба на леске выходит из воды и попадает в руку | `LakePreviews.cpp` |
 | `-CastPreview` | заброс с руки сбоку и вблизи, ранний и ближний заброс, тяжёлое и лёгкое удилища, вынимание с ловлей рукой, ходьба с оснасткой, глубокий спуск и спуск глубже воды | `LakePreviews.cpp` |
 | `-RodPreview` | удилище: изгиб кончика при забросе лёгким, средним и тяжёлым, при вываживании | `LakePreviews.cpp` |
+| `-LeaderPreview` | поводок крупным планом: оснастка в руке, замах, полёт, приводнение, лежащая снасть, подтяжка ЛКМ, вынимание; лог `QUIET_LAKE_LEADER` (`-Depth=`) | `LakePreviews.cpp` |
 | `-LinePreview` | боковой ветер у лагеря сверху: парус лески, снос поплавка, оснастка на дне стоит | `LakePreviews.cpp` |
 | `-LifePreview` | знаки на воде, малёк, панель F3, время кадра | `LakeLife.cpp` |
+| `-FishPreview` | плавание: пути рыб сверху, стаи, карась у дна, засада и бросок щуки под водой, разворот стаи от всплеска, размеры, рыба у поверхности; лог `QUIET_LAKE_FISH_MOTION`, `QUIET_LAKE_FISH_SMOOTH` | `LakeLife.cpp` |
+| `-WaterPreview` | вода с берега, с мостков, сверху и из-под воды при солнце, в пасмурно, вечером и ночью, рыбы на 15/40/80 см; `-WaterQuick` — только солнце | `LakeLife.cpp` |
 | `-WeatherPreview` | погода и время суток | `LakeWeather.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
 
 Скрипты ассетов в `Tools/`: `Generate*.py` запускаются Blender (`--background --factory-startup --python …`),
-`Create*.py` и `Import*.py` — питоном редактора: `UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -run=pythonscript -script=C:/Fish/Tools/<имя>.py`.
+`Create*.py` и `Import*.py` — питоном редактора (`CreateGrownPlants.py` готовит графы редактора растений, выгрузка — Ctrl+E в окне графа): `UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -run=pythonscript -script=C:/Fish/Tools/<имя>.py`.
 
 ## Код (`Source/QuietLake`)
 
@@ -70,9 +74,10 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 - `LakeRod.h/.cpp` — удочка только для вида (`ALakeRod`): физическое удилище (цепочка с упругостью),
   физическая основная леска (ветер, вода), физический поплавок, дробь, крючок, рыба на леске. Считается на каждой машине из реплицируемого состояния рыбака
   (`FRodInput`), по сети не передаётся.
-- `LakeFish.h/.cpp` — рыба: виды, наживки, поклёвки (`MakeBite`), плавание, распорядок, вываживание.
+- `LakeFish.h/.cpp` — рыба: виды и их походка (`FFishGait`), наживки, поклёвки (`MakeBite`), плавание (`Move`: повороты дугой, сглаженное желание), стая, распорядок, вываживание, сглаживание на клиентах (`FFishNetSmoothing`).
   Здесь же общие перечисления, включая `EFishingState`.
-- `LakeLife.h/.cpp` — «Живой пруд»: стаи, малёк, хищники, знаки на воде, панель F3.
+- `LakeRipples.h/.cpp` — живые волны у игрока: волновое уравнение на сетке вокруг камеры (`FLakeRippleSim`), источники — рыба у поверхности, поплавок, дождь (`ALakeRipples`), высоты уходят в материал воды текстурой.
+- `LakeLife.h/.cpp` — «Живой пруд»: стаи, малёк, хищники, знаки на воде, испуг от заброса и шагов (`Disturb`), замеры плавания, панель F3.
 - `LakeMap.h/.cpp` — форма озера (SDF), глубины, рельеф, места рыбалки, зоны.
 - `LakeEnvironment.cpp` — построение мира: рельеф, лес, трава, камыш, кувшинки, коряги, мостки, свет.
 - `LakeWeather.h/.cpp` — время суток, погода, экспозиция, туман, состояние воды, условия клёва.
@@ -85,9 +90,12 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   (удочку, поплавок, рыбу на леске, знаки на воде).
 - Цикл ловли — `EFishingState`: `Idle` → `Waiting` (наживка в воде) → `Bite` (рыба держит наживку,
   время на подсечку) → `Fight` → `Landing` (рыба на леске в воздухе, засчитывается в руке).
-  `bRetrieving` — снасть поднимается из воды в состоянии `Waiting`. Заброс — с руки: `bCharging` — ЛКМ
-  зажата, оснастка в левой руке; сервер решает точку (куда смотрит игрок) и качество (`CastResult`),
-  удочка на каждой машине ведёт оснастку туда по кривым. Вес удилища (`ERodKind`, `RodHeft`) замедляет
+  `bRetrieving` — снасть поднимается из воды в состоянии `Waiting`. Заброс автоматический: `bCharging` — ЛКМ зажата,
+  сила растёт (`CastCharge`, `CastChargeTime`); отпускание (`DoCast`) выбирает точку (`CastTargetFor`: куда
+  смотрит рыбак, дальность от силы, не дальше `CastReach`) в `FloatPosition`, `bRigFlying` — поплавок летит
+  к ней по дуге за `CastFlight` (`ALakeRod`), остальная снасть по физике; приводнение — по симуляции сервера
+  (`OnRigLanded`). ЛКМ после заброса — вытаскивание (`StartRetrieve`, `bRetrieveReturns`), ПКМ — подсечка
+  (`Strike`). Мышь ведёт удилище и камеру (`MoveRodAxis`); ловля оснастки рукой — `bRigInHand`. Вес удилища (`ERodKind`, `RodHeft`) замедляет
   и смягчает все движения.
 - Рыба видна игроку в радиусе 150 м (`NetCullDistance`), вдали её симуляция грубее.
 - Новые превью: добавить ветку в `ALakeCharacter::RunPreviews` (или `RunPreview` у нужного актора)

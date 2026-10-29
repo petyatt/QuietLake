@@ -130,10 +130,61 @@ struct FFishSpeciesInfo
     FFishHabitat RestHabitat;       // where it rests
 };
 
+/**
+ * How a species moves its body (see ALakeFish::Move). Turns are arcs: the turn rate is limited by
+ * the speed (no tighter than TurnRadius body lengths) plus what the fins give on the spot
+ * (HoverTurn), and it builds up and dies away with TurnAccel. Steering is smoothed over Response
+ * seconds, so a fish never twitches from one wish to the next. Wander: how much a fish meanders
+ * off its course (degrees) and how quickly (Hz). Gait: kick-and-glide (perch) - share of the
+ * stroke spent kicking (1 = steady swimming). Bigger fish of a species are slower to turn and to
+ * speed up (Agility); small ones are nimble.
+ */
+struct FFishGait
+{
+    float HoverTurn;     // deg/s turning with fins only, at a standstill
+    float TurnRadius;    // body lengths, tightest arc at cruise
+    float TurnAccel;     // deg/s^2
+    float Response;      // s
+    float WanderDeg, WanderHz;
+    float Kick;          // 0..1 share of the stroke spent kicking; 1 = steady
+    float KickPeriod;    // s, one kick and glide
+    float Spacing;       // body lengths between school mates
+};
+
+/** Smooths a fish's position and heading between network updates on clients (testable on its own). */
+struct QUIETLAKE_API FFishNetSmoothing
+{
+    /**
+     * A replicated snapshot arrived (Now: local game time; RealNow: local unclamped time, the
+     * world's real time, or Now when not given).
+     */
+    void Receive(const FVector& Location, const FVector& Velocity, const FRotator& Rotation, double Now, double RealNow = -1);
+    /** Advance the shown motion by Dt (Now: local time after the step). */
+    void Advance(float Dt, double Now);
+    FVector Location = FVector::ZeroVector, Velocity = FVector::ZeroVector;
+    FRotator Rotation = FRotator::ZeroRotator;
+    float YawRate = 0;              // deg/s, as shown
+    bool bReady = false;
+    /** Set when the shown motion started afresh after this machine stood still (the owner clears it). */
+    bool bRestarted = false;
+private:
+    FVector NetLocation = FVector::ZeroVector, NetVelocity = FVector::ZeroVector;
+    FRotator NetRotation = FRotator::ZeroRotator;
+    float NetYawRate = 0;
+    double LastReceive = -1, LastReceiveReal = -1;
+    FVector Offset = FVector::ZeroVector, OffsetVelocity = FVector::ZeroVector;   // shown minus predicted
+    float YawOffset = 0, YawOffsetRate = 0;
+};
+
 namespace LakeFish
 {
     QUIETLAKE_API const FFishSpeciesInfo& Info(EFishSpecies Species);
+    QUIETLAKE_API const FFishGait& Gait(EFishSpecies Species);
     QUIETLAKE_API const TCHAR* BaitName(EBait Bait);
+    /** 0..1: where a weight falls between the species' smallest and biggest fish. */
+    QUIETLAKE_API float Size01(EFishSpecies Species, float WeightKg);
+    /** Body depth and width relative to the model: big fish of a species are deeper-bodied. */
+    QUIETLAKE_API float Girth(EFishSpecies Species, float WeightKg);
     /** Length in cm of a fish of the given species and weight (Fulton's condition factor). */
     QUIETLAKE_API float LengthCm(EFishSpecies Species, float WeightKg);
     /** 0..1 how attractive this bait at this depth is to the species, before mood and fear. */
@@ -171,10 +222,14 @@ namespace LakeFish
 
 /**
  * A single fish. The server simulates it: steering behaviours pick a desired velocity
- * (wander in its habitat, school with its group, investigate bait, flee, fight on the line),
- * and a simple swimming model turns that into motion: limited thrust and turn rate,
- * quadratic water drag, mass from the fish's weight, and the water volume as hard bounds.
- * Clients only interpolate the replicated position.
+ * (meander through its habitat, school with its group, root at the bottom, lie in ambush,
+ * investigate bait, shy away, flee, fight on the line), the wish is smoothed, and a swimming
+ * model turns it into motion: thrust only along the body, turns as arcs with a turn rate that
+ * builds up and dies away, water drag that keeps the motion along the body, mass from the
+ * fish's weight, and the water volume as hard bounds. Clients extrapolate the replicated
+ * position with the replicated velocity and blend out the error (FFishNetSmoothing). Every
+ * machine bends the body from its own shown motion: tail beat from speed and effort, a C-curve
+ * into turns.
  */
 UCLASS()
 class QUIETLAKE_API ALakeFish : public AActor
@@ -235,6 +290,18 @@ public:
     void Dash(FVector Target, float Seconds);
     /** Eat: a mouthful of fry or a whole fish (0..1 of a full meal). */
     void Eat(float Meal);
+    /**
+     * Something disturbed the water at From (a rig landing, steps on the bank, a fish thrashing):
+     * Strength 0..1 at the fish. Weak: it turns and swims calmly away for a few seconds; strong
+     * (close): it bolts.
+     */
+    void Startle(FVector From, float Strength);
+    /** Shown turn rate (deg/s, positive to the right) and speed, on every machine. */
+    float ShownYawRate() const { return ShownTurn; }
+    float SpeedNow() const { return HasAuthority() ? (float)Vel.Size() : (float)Smooth.Velocity.Size(); }
+    /** 0..1 within the species: big fish are calmer and slower to turn. */
+    float SizeFraction() const { return Size01; }
+    float TurnRateNow() const { return YawRate; }
 
     // Exposed for tests: advance the simulation by a fixed step.
     void Simulate(float DeltaSeconds);
@@ -251,15 +318,26 @@ private:
     /** The fish this one follows: the school leader, or itself. */
     const ALakeFish* Leader() const;
     FVector SteerRoam() const;
-    FVector SteerSchool() const;
+    /** School mates: keep apart, line up, stay together, follow the leader. bFollow: steering of a follower. */
+    FVector SteerSchool(bool bFollow) const;
     FVector SteerBounds() const;
+    /** Slow off-course meandering, as a rotation of the wished direction. */
+    FVector Meander(const FVector& Desired) const;
+    /** Pick the spot a pike lies at and which way it faces (out into open water from its cover). */
+    void ChooseLie();
+    /** Crucian at its feeding spot: nose down in the silt, then a short shuffle to the next patch. */
+    void UpdateRooting(FVector& Desired, float& MaxSpeed);
     void UpdateBait(float DeltaSeconds);
     void Move(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds);
+    /** The old direct-turning model, kept for a fish fighting on the line (its fight is tuned to it). */
+    void MoveHooked(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds);
     void UpdateVisual(float DeltaSeconds);
+    UFUNCTION() void OnRep_NetLocation();
 
     UPROPERTY() TObjectPtr<class UStaticMeshComponent> Body;
 
-    UPROPERTY(Replicated) FVector_NetQuantize10 NetLocation;
+    UPROPERTY(ReplicatedUsing = OnRep_NetLocation) FVector_NetQuantize10 NetLocation;
+    UPROPERTY(Replicated) FVector_NetQuantize10 NetVelocity;
     UPROPERTY(Replicated) FRotator NetRotation;
     UPROPERTY(Replicated) float NetEffort = 0;   // 0..1, drives the tail beat on clients
     UPROPERTY(Replicated) EFishGoal Goal = EFishGoal::Cruise;
@@ -300,8 +378,39 @@ private:
     int32 BiteIndex = -1;
     float BiteStepEnd = 0;
     float HoldSpeed = 0.6f;           // swimming with the bait, fraction of the cruise speed
+    // Body motion (server).
+    float Yaw = 0, Pitch = 0, Roll = 0;   // degrees: the body's heading
+    float YawRate = 0;                // deg/s, builds up and dies away
+    FVector Wish = FVector::ZeroVector;   // smoothed desired velocity
+    float WishSpeedNow = 0;           // its smoothed size
+    FVector FaceDir = FVector::ZeroVector;// hovering: which way to turn the body (zero: keep)
+    float PitchBias = 0;              // nose down while rooting (degrees)
+    bool bPrecise = false;            // at the bait: may stop dead to aim the mouth
+    float Size01 = 0, Agility = 1;    // see LakeFish::Size01; nimbleness from size
+    float WanderSeed = 0;
+    // Shying away from a disturbance (still free: not a flight).
+    FVector AvoidFrom = FVector::ZeroVector;
+    float AvoidUntil = -1, AvoidStrength = 0;
+    // Dash at fry (perch rushing in with the school).
+    FVector DashTarget = FVector::ZeroVector;
+    float DashUntil = -1;
+    // Crucian rooting in the silt; pike lying in ambush.
+    bool bRooting = false;
+    float PhaseUntil = 0;             // rooting / shuffling switches at this SimTime
+    FVector LieFacing = FVector::ForwardVector;
+    float LieUntil = 0;               // pike: SimTime it moves to a new lie
+    float NextSurfaceSign = 0;
+    FVector SlotOffset = FVector::ZeroVector; // school follower: its place beside the leader (leader's frame)
+    // Shown motion (every machine).
+    FFishNetSmoothing Smooth;
+    FVector ShownPrevLocation = FVector::ZeroVector, ShownPrevVelocity = FVector::ZeroVector;
+    float ShownTurn = 0, ShownBend = 0, ShownPrevYaw = 0, ShownSpeed = 0, ShownPrevFrameTurn = 0, ShownWindow = 0;
+    float LastBend = 1000, LastGirth = -1;
+    bool bShownValid = false;
     void NextBiteStep(class ALakeCharacter* Angler);
     friend class FLakePondLifeTest;
+    friend class FLakeFishMotionTest;
+    friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;
     FRandomStream Random;

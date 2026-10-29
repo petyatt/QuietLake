@@ -4,6 +4,7 @@
 #include "BonePose.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "TwoBoneIK.h"
+#include "Misc/CommandLine.h"
 
 namespace
 {
@@ -40,6 +41,7 @@ void FFisherAnimProxy::PreUpdate(UAnimInstance* InAnimInstance, float DeltaSecon
         C.Down = ToComponent.TransformVectorNoScale(G.Down).GetSafeNormal();
         C.Pole = ToComponent.TransformPosition(G.Pole);
         C.Alpha = G.Alpha;
+        C.Pinch = G.Pinch;
         return C;
     };
     Right = Convert(Input.Right);
@@ -96,7 +98,30 @@ void FFisherAnimProxy::SolveArm(FComponentSpacePoseContext& Pose, FName Upper, F
 
     // The wrist sits behind the palm centre, a little to the side of the rod.
     const FVector N2 = FVector::CrossProduct(F2, S2);
-    const FVector WristTarget = Grip.Point - F2 * PalmLength * 0.55f - N2 * 2.5f;
+    FVector ContactOffset = F2 * PalmLength * 0.55f + N2 * 2.5f;
+    if (Hand == TEXT("hand_l"))
+    {
+        const FCompactPoseBoneIndex MiddleTip = Bone(TEXT("middle_03_l"));
+        if (MiddleTip.IsValid())
+        {
+            const FVector GripCentre = (Pose.Pose.GetComponentSpaceTransform(M).GetLocation()
+                + Pose.Pose.GetComponentSpaceTransform(MiddleTip).GetLocation()) * 0.5f;
+            ContactOffset = Delta.RotateVector(GripCentre - Wrist);
+        }
+    }
+    if (Grip.Pinch > 0)
+    {
+        const bool bLeft = Hand == TEXT("hand_l");
+        const FCompactPoseBoneIndex Finger = Bone(bLeft ? TEXT("index_03_l") : TEXT("index_03_r"));
+        const FCompactPoseBoneIndex Thumb = Bone(bLeft ? TEXT("thumb_03_l") : TEXT("thumb_03_r"));
+        if (Finger.IsValid() && Thumb.IsValid())
+        {
+            const FVector PinchPoint = (Pose.Pose.GetComponentSpaceTransform(Finger).GetLocation()
+                + Pose.Pose.GetComponentSpaceTransform(Thumb).GetLocation()) * 0.5f;
+            ContactOffset = FMath::Lerp(ContactOffset, Delta.RotateVector(PinchPoint - Wrist), Grip.Pinch);
+        }
+    }
+    const FVector WristTarget = Grip.Point - ContactOffset;
     AnimationCore::SolveTwoBoneIK(UT, LT, HT, Grip.Pole, WristTarget, false, 1.0, 1.15);
     HT.SetRotation(Delta * H0.GetRotation());
 
@@ -135,6 +160,17 @@ bool FFisherAnimProxy::Evaluate(FPoseContext& Output)
         Output.Curve.CopyFrom(Blended.Curve);
     }
 
+    // Set the fingers before IK so the line is placed at the actual pinch contact.
+    static float SignR = -1, SignL = -1;
+    static bool bParsed = false;
+    if (!bParsed)
+    {
+        bParsed = true;
+        FParse::Value(FCommandLine::Get(), TEXT("FingerR="), SignR);
+        FParse::Value(FCommandLine::Get(), TEXT("FingerL="), SignL);
+    }
+    CurlFingers(Output.Pose, TEXT("r"), SignR, Right.Alpha, Right.Pinch);
+    CurlFingers(Output.Pose, TEXT("l"), SignL, Left.Alpha, Left.Pinch);
     // --- upper body in component space ---
     FComponentSpacePoseContext CS(this);
     CS.Pose.InitPose(Output.Pose);
@@ -155,4 +191,32 @@ bool FFisherAnimProxy::Evaluate(FPoseContext& Output)
     SolveArm(CS, TEXT("upperarm_l"), TEXT("lowerarm_l"), TEXT("hand_l"), TEXT("index_01_l"), TEXT("middle_01_l"), TEXT("pinky_01_l"), Left);
     FCSPose<FCompactPose>::ConvertComponentPosesToLocalPoses(CS.Pose, Output.Pose);
     return true;
+}
+
+void FFisherAnimProxy::CurlFingers(FCompactPose& Pose, const TCHAR* Side, float Sign, float Amount, float Pinch) const
+{
+    if (Amount <= 0.001f) return;
+    const FBoneContainer& Bones = Pose.GetBoneContainer();
+    // The finger joints bend about their local Z axis (the mannequin's hands).
+    static const TCHAR* Fingers[] = { TEXT("index"), TEXT("middle"), TEXT("ring"), TEXT("pinky") };
+    static const float Bend[] = { 55.0f, 65.0f, 45.0f };
+    auto Turn = [&](const FString& Name, float Degrees)
+    {
+        const int32 Mesh = Bones.GetPoseBoneIndexForBoneName(FName(*Name));
+        if (Mesh == INDEX_NONE) return;
+        const FCompactPoseBoneIndex Index = Bones.MakeCompactPoseIndex(FMeshPoseBoneIndex(Mesh));
+        if (!Index.IsValid()) return;
+        FTransform& T = Pose[Index];
+        T.SetRotation(T.GetRotation() * FQuat(FVector(0, 0, 1), FMath::DegreesToRadians(Sign * Degrees * Amount)));
+    };
+    for (const TCHAR* Finger : Fingers)
+        for (int32 Joint = 0; Joint < 3; ++Joint)
+        {
+            const bool bIndex = FCString::Strcmp(Finger, TEXT("index")) == 0;
+            const float PinchBend[] = { 25.0f, 40.0f, 25.0f };
+            Turn(FString::Printf(TEXT("%s_%02d_%s"), Finger, Joint + 1, Side),
+                FMath::Lerp(Bend[Joint], bIndex ? PinchBend[Joint] : Bend[Joint] * 0.65f, Pinch));
+        }
+    Turn(FString::Printf(TEXT("thumb_02_%s"), Side), FMath::Lerp(25.0f, 45.0f, Pinch));
+    Turn(FString::Printf(TEXT("thumb_03_%s"), Side), FMath::Lerp(30.0f, 35.0f, Pinch));
 }

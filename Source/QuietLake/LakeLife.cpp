@@ -1,9 +1,14 @@
 #include "LakeLife.h"
+#include "LakeRipples.h"
 #include "LakeGame.h"
 #include "LakeHUD.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "DrawDebugHelpers.h"
+#include "Engine/PostProcessVolume.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -18,6 +23,7 @@
 #include "Sound/SoundBase.h"
 #include "TimerManager.h"
 #include "UnrealClient.h"
+#include "UObject/UObjectIterator.h"
 
 namespace
 {
@@ -76,6 +82,8 @@ void ALakeLife::BeginPlay()
     if (HasAuthority()) SpawnFry();
 #if !UE_BUILD_SHIPPING
     if (HasAuthority() && FParse::Param(FCommandLine::Get(), TEXT("LifePreview"))) RunPreview();
+    if (HasAuthority() && FParse::Param(FCommandLine::Get(), TEXT("FishPreview"))) RunFishPreview();
+    if (HasAuthority() && FParse::Param(FCommandLine::Get(), TEXT("WaterPreview"))) RunWaterPreview();
 #endif
 }
 
@@ -100,6 +108,18 @@ void ALakeLife::Tick(float DeltaSeconds)
     }
 #endif
     if (!bVisualsReady) SetupVisuals();
+    if (Underwater)
+    {
+        // (-FishPreview films the swimming from a few metres under water: there the murk stays off.)
+        static const bool bClearWater = FParse::Param(FCommandLine::Get(), TEXT("FishPreview"));
+        const FVector Eye = ViewLocation();
+        Underwater->BlendWeight = !bClearWater && LakeMap::IsWater(Eye.X, Eye.Y) && Eye.Z < LakeFish::SurfaceZ - 1 ? 1.0f : 0.0f;
+    }
+    if (GetWorld()->GetTimeSeconds() >= NextShownLog)
+    {
+        NextShownLog = GetWorld()->GetTimeSeconds() + 20;
+        LogShownMotion();
+    }
     UpdateJumps(GetWorld()->GetTimeSeconds());
     UpdateFryVisuals(DeltaSeconds);
 }
@@ -130,6 +150,8 @@ void ALakeLife::Step(float DeltaSeconds)
     for (TActorIterator<ALakeCharacter> It(GetWorld()); It; ++It) Players.Add(It->GetActorLocation());
     UpdateFry(DeltaSeconds);
     if (Time >= NextDetail) { NextDetail = Time + 0.5f; UpdateDetail(); }
+    if (Time >= NextSteps) { NextSteps = Time + 0.5f; UpdateFootsteps(); }
+    if (Time >= NextSample) { SampleMotion(Time - NextSample + 0.2f); NextSample = Time + 0.2f; }
     if (Time >= NextEvent) { NextEvent = Time + Random.FRandRange(6.0f, 14.0f); UpdateRandomEvents(); }
     if (Time >= NextLog) { NextLog = Time + 30; if (Time > 1) LogStats(); }
 }
@@ -197,11 +219,137 @@ void ALakeLife::MulticastSign_Implementation(const FLakeSign& Sign)
 void ALakeLife::Alarm(ALakeFish* Victim, float Radius)
 {
     if (!Victim) return;
+    // The nearest bolt; further off they only turn away (see ALakeFish::Startle).
     const FVector From = Victim->GetActorLocation();
     ForEachFishNear(From, Radius, [&](ALakeFish* Fish)
     {
-        if (Fish != Victim && Fish->Species != EFishSpecies::Pike && Fish->IsFree()) Fish->Spook(From, Random.FRandRange(2.0f, 4.0f));
+        if (Fish != Victim && Fish->Species != EFishSpecies::Pike && Fish->IsFree())
+            Fish->Startle(From, 1.0f - 0.6f * FVector::Dist(From, Fish->GetActorLocation()) / Radius);
     });
+}
+
+void ALakeLife::Disturb(const FVector& At, float Radius, float Strength)
+{
+    ForEachFishNear(At, Radius, [&](ALakeFish* Fish)
+    {
+        Fish->Startle(At, Strength * (1.0f - FVector::Dist(At, Fish->GetActorLocation()) / Radius));
+    });
+}
+
+void ALakeLife::UpdateFootsteps()
+{
+    // Steps on the bank carry into the water: walking by the edge makes the fish close in shy
+    // away, running or stamping along the pier makes them bolt. Standing still disturbs nothing.
+    for (TActorIterator<ALakeCharacter> It(GetWorld()); It; ++It)
+    {
+        const FVector P = It->GetActorLocation();
+        const float Speed = It->GetVelocity().Size2D();
+        if (Speed < 60) continue;
+        const bool bPier = LakeMap::OnPier(P);
+        const float Radius = (450 + Speed * 1.2f) * (bPier ? 1.2f : 1.0f);
+        Disturb(FVector(P.X, P.Y, LakeFish::SurfaceZ), Radius, FMath::Clamp(Speed / 350, 0.0f, 1.0f) * 0.5f * (bPier ? 1.5f : 1.0f));
+    }
+}
+
+void ALakeLife::SampleMotion(float DeltaSeconds)
+{
+    for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
+    {
+        ALakeFish* Fish = Weak.Get();
+        if (!Fish || !Fish->IsFree()) { LastTurn.Remove(Weak); continue; }
+        const FFishSpeciesInfo& S = LakeFish::Info(Fish->Species);
+        FMotionStats& M = Motion[(int32)Fish->Species];
+        const float Speed = Fish->Velocity().Size();
+        const float Turn = Fish->TurnRateNow();
+        M.Speed += Speed;
+        M.Turn += FMath::Abs(Turn);
+        M.MaxTurn = FMath::Max(M.MaxTurn, FMath::Abs(Turn));
+        if (const float* Before = LastTurn.Find(Weak))
+        {
+            const float TurnAccel = FMath::Abs(Turn - *Before) / FMath::Max(0.05f, DeltaSeconds);
+            M.TurnAccel += TurnAccel;
+            M.MaxTurnAccel = FMath::Max(M.MaxTurnAccel, TurnAccel);
+        }
+        LastTurn.Add(Weak, Turn);
+        ++M.Samples;
+        if (Speed < 0.15f * S.CruiseSpeed)
+        {
+            ++M.Still;
+            if (FMath::Abs(Turn) > 45) ++M.Spins;
+        }
+    }
+    // Schools: how far each fish is from its nearest mate (in body lengths) and how well they line up.
+    for (const TPair<int32, TArray<TWeakObjectPtr<ALakeFish>>>& School : Schools)
+    {
+        TArray<const ALakeFish*, TInlineAllocator<16>> Free;
+        for (const TWeakObjectPtr<ALakeFish>& Member : School.Value)
+            if (const ALakeFish* Fish = Member.Get(); Fish && Fish->IsFree()) Free.Add(Fish);
+        if (Free.Num() < 3) continue;
+        FVector Sum = FVector::ZeroVector;
+        float Speed = 0, Spacing = 0;
+        for (const ALakeFish* Fish : Free)
+        {
+            Sum += Fish->Velocity().GetSafeNormal();
+            Speed += Fish->Velocity().Size() / Free.Num();
+            float Nearest = 1e9f;
+            for (const ALakeFish* Other : Free)
+                if (Other != Fish) Nearest = FMath::Min(Nearest, (float)FVector::Dist(Fish->GetActorLocation(), Other->GetActorLocation()));
+            Spacing += Nearest / LakeFish::LengthCm(Fish->Species, Fish->WeightKg) / Free.Num();
+        }
+        if (Speed < 3) continue;
+        FMotionStats& M = Motion[(int32)Free[0]->Species];
+        M.Spacing += Spacing;
+        M.Order += Sum.Size() / Free.Num();
+        ++M.SchoolSamples;
+    }
+}
+
+void ALakeLife::LogMotion()
+{
+    for (int32 Sp = 0; Sp < (int32)EFishSpecies::Count; ++Sp)
+    {
+        FMotionStats& M = Motion[Sp];
+        if (M.Samples == 0) continue;
+        const FFishSpeciesInfo& S = LakeFish::Info((EFishSpecies)Sp);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_MOTION %s samples=%d speed=%.1f cm/s (cruise %.0f) still=%.0f%% turn mean=%.1f max=%.0f deg/s turn-accel mean=%.0f max=%.0f deg/s2 spins=%.2f%% school spacing=%.2f lengths order=%.2f"),
+            SpeciesNoun((EFishSpecies)Sp), M.Samples, M.Speed / M.Samples, S.CruiseSpeed, 100.0f * M.Still / M.Samples, M.Turn / M.Samples, M.MaxTurn,
+            M.TurnAccel / M.Samples, M.MaxTurnAccel, 100.0f * M.Spins / M.Samples,
+            M.SchoolSamples ? M.Spacing / M.SchoolSamples : 0.0, M.SchoolSamples ? M.Order / M.SchoolSamples : 0.0);
+        M = FMotionStats();
+    }
+}
+
+float ALakeLife::Percentile(const int32* Buckets, int32 Count, int32 Total, float P, float Step)
+{
+    const int32 Want = FMath::CeilToInt(Total * P);
+    int32 Seen = 0;
+    for (int32 I = 0; I < Count; ++I)
+    {
+        Seen += Buckets[I];
+        if (Seen >= Want) return (I + 0.5f) * Step;
+    }
+    return Count * Step;
+}
+
+void ALakeLife::RecordShownMotion(const FVector& Where, float Accel, float TurnAccel, EFishSpecies Species)
+{
+    // Only the fish this player can actually see swimming close by.
+    if (FVector::DistSquared(Where, ViewLocation()) > FMath::Square(5000.0f)) return;
+    ++Shown.Samples;
+    ++Shown.Accel[FMath::Clamp(FMath::FloorToInt(Accel / 50), 0, 63)];
+    ++Shown.Turn[FMath::Clamp(FMath::FloorToInt(TurnAccel / 50), 0, 63)];
+    Shown.MaxAccel = FMath::Max(Shown.MaxAccel, Accel);
+    Shown.MaxTurn = FMath::Max(Shown.MaxTurn, TurnAccel);
+}
+
+void ALakeLife::LogShownMotion()
+{
+    if (Shown.Samples < 100) return;
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_SMOOTH netmode=%d samples=%d accel p50=%.0f p99=%.0f max=%.0f cm/s2 turn-accel p50=%.0f p99=%.0f max=%.0f deg/s2"),
+        (int32)GetNetMode(), Shown.Samples,
+        Percentile(Shown.Accel, 64, Shown.Samples, 0.5f, 50), Percentile(Shown.Accel, 64, Shown.Samples, 0.99f, 50), Shown.MaxAccel,
+        Percentile(Shown.Turn, 64, Shown.Samples, 0.5f, 50), Percentile(Shown.Turn, 64, Shown.Samples, 0.99f, 50), Shown.MaxTurn);
+    Shown = FShownStats();
 }
 
 void ALakeLife::Devour(ALakeFish* Prey, ALakeFish* Predator)
@@ -258,6 +406,7 @@ void ALakeLife::LogStats()
     const int32* N = Counters.Signs;
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LIFE hour=%.1f fish=%d near=%d%s | signs rise %d bubbles %d swirl %d splash %d scatter %d jump %d | fry attacks %d pike strikes %d eaten %d"),
         Weather ? Weather->Hours() : -1.0f, AllFish.Num(), Near, *Line, N[0], N[1], N[2], N[3], N[4], N[5], Counters.FryAttacks, Counters.PikeStrikes, Counters.Eaten);
+    LogMotion();
 }
 
 // --- fry ----------------------------------------------------------------------------------
@@ -386,6 +535,12 @@ FVector ALakeLife::ViewLocation() const
 void ALakeLife::SetupVisuals()
 {
     bVisualsReady = true;
+    // Waves near the viewer: fish under the surface, floats and rain disturb the water.
+    // Only where something is drawn: a machine without rendering (-NullRHI test clients) would
+    // spend its cores on waves no one sees. QUIET_LAKE_NO_RIPPLES=1 leaves them out, to compare.
+    Ripples = ALakeRipples::Get(GetWorld());
+    if (!Ripples && FApp::CanEverRender() && FPlatformMisc::GetEnvironmentVariable(TEXT("QUIET_LAKE_NO_RIPPLES")).IsEmpty())
+        Ripples = GetWorld()->SpawnActor<ALakeRipples>();
     UStaticMesh* Plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
     UMaterialInterface* SignMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Life/M_WaterSign.M_WaterSign"));
     UMaterialInterface* SprayMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Life/M_WaterSpray.M_WaterSpray"));
@@ -424,6 +579,21 @@ void ALakeLife::SetupVisuals()
     Attenuation->Attenuation.AttenuationShapeExtents = FVector(500, 0, 0);
     Attenuation->Attenuation.FalloffDistance = 5000;
     Attenuation->Attenuation.DistanceAlgorithm = EAttenuationDistanceModel::NaturalSound;
+    // Under the water the view fades into murk within a couple of metres (M_Underwater); the volume
+    // is local to this machine and switched on only while its camera is below the surface.
+    if (UMaterialInterface* Murk = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Underwater.M_Underwater")))
+    {
+        FActorSpawnParameters Params;
+        Params.ObjectFlags |= RF_Transient;
+        Underwater = GetWorld()->SpawnActor<APostProcessVolume>(Params);
+        if (Underwater)
+        {
+            Underwater->bUnbound = true;
+            Underwater->Priority = 10;
+            Underwater->BlendWeight = 0;
+            Underwater->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1, Murk));
+        }
+    }
 }
 
 void ALakeLife::PlaySound(USoundBase* Sound, const FVector& Location, float Volume, float Pitch)
@@ -433,6 +603,43 @@ void ALakeLife::PlaySound(USoundBase* Sound, const FVector& Location, float Volu
 
 void ALakeLife::AddRing(ELakeSign Kind, const FVector& Location, float Size)
 {
+    // Near the viewer the water itself shows the sign: a push into the live waves (ALakeRipples)
+    // instead of a drawn ring. Bubbles stay drawn (they are bubbles, not waves); farther signs too.
+    if (Ripples && Kind != ELakeSign::Bubbles && Ripples->Covers(Location))
+    {
+        const float S = FMath::Clamp(Size, 0.1f, 2.5f);
+        auto Spray = [&](int32 Count, float Spread, float MaxDelay)
+        {
+            for (int32 I = 0; I < Count; ++I)
+            {
+                const float A = Random.FRandRange(0, 2 * PI), D = Spread * FMath::Sqrt(Random.FRand());
+                Ripples->Splash(Location + FVector(FMath::Cos(A) * D, FMath::Sin(A) * D, 0), Random.FRandRange(0.8f, 1.6f),
+                    Random.FRandRange(12.0f, 30.0f), Random.FRandRange(0.15f, MaxDelay));
+            }
+        };
+        switch (Kind)
+        {
+        case ELakeSign::Rise:       // a sip: a small dimple, then rings
+            Ripples->Splash(Location, 2.0f + 2.0f * S, 45.0f + 60.0f * S);
+            break;
+        case ELakeSign::Swirl:      // a heave of water from below, then wide rings
+            Ripples->Splash(Location, 5.0f + 8.0f * S, -(50.0f + 70.0f * S));
+            Ripples->Splash(Location + FVector(Random.FRandRange(-8, 8) * S, Random.FRandRange(-8, 8) * S, 0), 4.0f + 4.0f * S, 30.0f * S, 0.12f);
+            break;
+        case ELakeSign::Splash:     // a hole punched in the water, and the spray falling back around it
+            Ripples->Splash(Location, 4.0f + 5.0f * S, 110.0f + 120.0f * S);
+            Spray(FMath::RoundToInt(5 + 8 * S), 15.0f + 40.0f * S, 0.6f);
+            break;
+        case ELakeSign::Scatter:    // fry spraying out of the water over a metre or two
+            Ripples->Splash(Location, 6.0f, 60.0f * S);
+            Spray(FMath::RoundToInt(18 + 12 * S), 60.0f + 50.0f * S, 0.9f);
+            break;
+        default:
+            Ripples->Splash(Location, 2.0f + 2.0f * S, 30.0f * S);
+            break;
+        }
+        return;
+    }
     if (!Rings) return;
     // How far each kind spreads (cm): the material animates rings, bubbles and foam inside this square.
     float Radius = Size * (Kind == ELakeSign::Bubbles ? 70.0f : Kind == ELakeSign::Rise ? 110.0f : Kind == ELakeSign::Scatter ? 210.0f : 180.0f);
@@ -753,5 +960,487 @@ void ALakeLife::RunPreview()
         At(Begin + 88, [this] { LogStats(); });
     }
     At(34 + 4 * 90.0f + 2, [] { FPlatformMisc::RequestExit(false); });
+#endif
+}
+
+// --- fish preview ----------------------------------------------------------------------------
+
+void ALakeLife::RunFishPreview()
+{
+#if !UE_BUILD_SHIPPING
+    // -FishPreview: how the fish swim. First the paths of the fish near the start drawn from high
+    // above for 40 s (smooth arcs, schools moving as one); then a showcase school of roach, one of
+    // perch, a feeding crucian and a pike in ambush filmed close up under the water in short
+    // sequences, the pike's strike, a school shying away from a splash, fish of different sizes
+    // side by side and roach basking at the top; the motion statistics go to the log.
+    struct FState
+    {
+        TWeakObjectPtr<ACameraActor> Camera;
+        TFunction<void(float)> Follow;
+        FVector CamAt = FVector::ZeroVector;
+        bool bCamSet = false;
+        TMap<TWeakObjectPtr<ALakeFish>, FVector> Trails;
+        FVector TrailCentre = FVector::ZeroVector;
+        float TrailFrom = 4, TrailTo = 44, TrailRadius = 3200;
+        TArray<TWeakObjectPtr<ALakeFish>> Roach, Perch, Lineup;
+        TWeakObjectPtr<ALakeFish> Crucian, Pike, Bait;
+    };
+    TSharedRef<FState> St = MakeShared<FState>();
+    FVector2D Facing;
+    const FVector2D Start = LakeMap::StartSpot(&Facing);
+    const FVector2D Right(-Facing.Y, Facing.X);
+    // The showcase: the first water 1.6 m deep or more straight out from the start.
+    FVector2D Show = Start + Facing * 900;
+    for (float Out = 300; Out < 4000; Out += 50)
+    {
+        const FVector2D P = Start + Facing * Out;
+        if (LakeMap::IsWater(P.X, P.Y) && LakeMap::Depth(P.X, P.Y) > 160 && LakeMap::ShoreDistance(P.X, P.Y) > 350) { Show = P; break; }
+    }
+    auto At = [this](float Seconds, TFunction<void()> Do)
+    {
+        FTimerHandle Handle;
+        GetWorldTimerManager().SetTimer(Handle, [Do] { Do(); }, Seconds, false);
+    };
+    auto Shot = [this](const TCHAR* File)
+    {
+        FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / File, false, false);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_PREVIEW shot %s at %.2f s"), File, GetWorld()->GetTimeSeconds());
+    };
+    auto Place = [this, St](const FVector& From, const FVector& Target, float Fov)
+    {
+        ACameraActor* Cam = St->Camera.Get();
+        if (!Cam)
+        {
+            Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            St->Camera = Cam;
+            if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
+            {
+                PC->SetViewTarget(Cam);
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+        }
+        Cam->GetCameraComponent()->SetFieldOfView(Fov);
+        Cam->SetActorLocationAndRotation(From, (Target - From).Rotation());
+    };
+    auto Centroid = [](const TArray<TWeakObjectPtr<ALakeFish>>& Fish, FVector& OutVel)
+    {
+        FVector C = FVector::ZeroVector;
+        OutVel = FVector::ZeroVector;
+        int32 N = 0;
+        for (const TWeakObjectPtr<ALakeFish>& F : Fish)
+            if (const ALakeFish* Fi = F.Get()) { C += Fi->GetActorLocation(); OutVel += Fi->Velocity(); ++N; }
+        if (N) { C /= N; OutVel /= N; }
+        return C;
+    };
+    // The camera follows a moving subject smoothly, every frame.
+    FTimerHandle FollowTimer;
+    GetWorldTimerManager().SetTimer(FollowTimer, [this, St]
+    {
+        if (St->Follow) St->Follow(GetWorld()->GetDeltaSeconds());
+    }, 0.01f, true);
+    // Side view under the water: the camera keeps beside the subject, level with it, a few metres off.
+    auto FollowSide = [St, Place](TFunction<FVector(FVector&)> Subject, float Distance, float Height, float Fov)
+    {
+        St->bCamSet = false;
+        St->Follow = [St, Place, Subject, Distance, Height, Fov](float Dt)
+        {
+            FVector Vel;
+            const FVector C = Subject(Vel);
+            FVector Side = FVector::CrossProduct(Vel.GetSafeNormal2D(), FVector::UpVector);
+            if (Side.IsNearlyZero()) Side = FVector(0, 1, 0);
+            FVector Want = C + Side * Distance;
+            Want.Z = FMath::Clamp(C.Z + Height, ALakeFish::BottomZ(Want.X, Want.Y) + 12, LakeFish::SurfaceZ - 6);
+            St->CamAt = St->bCamSet ? FMath::VInterpTo(St->CamAt, Want, Dt, 1.5f) : Want;
+            St->bCamSet = true;
+            Place(St->CamAt, C, Fov);
+        };
+    };
+    auto Weather = [this](float Hours)
+    {
+        if (ALakeWeather* W = ALakeWeather::Get(GetWorld()))
+        {
+            FLakeWeatherState Calm;
+            Calm.Cloud = 0.2f; Calm.Fog = 0.0f; Calm.Rain = 0; Calm.Wind = 0.05f; Calm.WindYaw = 40;
+            W->SetWeather(Calm, 1);
+            W->SetHours(Hours);
+        }
+    };
+
+    // 1. Paths from above.
+    At(2, [this, Weather, St, Start, Place]
+    {
+        Weather(10.5f);
+        // The busiest patch of water within 45 m of the start (the fish there are fully simulated).
+        int32 Best = -1;
+        for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
+            if (const ALakeFish* Fish = Weak.Get(); Fish && FVector2D::Distance(FVector2D(Fish->GetActorLocation()), Start) < 4500)
+            {
+                int32 Count = 0;
+                ForEachFishNear(Fish->GetActorLocation(), 2200, [&](ALakeFish*) { ++Count; });
+                if (Count > Best) { Best = Count; St->TrailCentre = Fish->GetActorLocation(); }
+            }
+        if (Best < 0) St->TrailCentre = FVector(Start, LakeFish::SurfaceZ);
+        St->TrailCentre.Z = LakeFish::SurfaceZ;
+        Place(St->TrailCentre + FVector(0, 0, 3600), St->TrailCentre + FVector(1, 0, 0), 70);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_PREVIEW trails around %s, %d fish within 22 m"), *St->TrailCentre.ToCompactString(), Best);
+    });
+    FTimerHandle TrailTimer;
+    GetWorldTimerManager().SetTimer(TrailTimer, [this, St]
+    {
+        const float Now = GetWorld()->GetTimeSeconds();
+        if (Now < St->TrailFrom || Now > St->TrailTo) return;
+        static const FColor Colours[] = { FColor(255, 120, 0), FColor(90, 220, 255), FColor(255, 215, 40), FColor(60, 255, 60) };
+        ForEachFishNear(St->TrailCentre, St->TrailRadius, [&](ALakeFish* Fish)
+        {
+            const FVector P = Fish->GetActorLocation();
+            if (const FVector* Before = St->Trails.Find(Fish); Before && FVector::DistSquared(*Before, P) < FMath::Square(300.0f))
+                DrawDebugLine(GetWorld(), FVector(Before->X, Before->Y, LakeFish::SurfaceZ + 2), FVector(P.X, P.Y, LakeFish::SurfaceZ + 2),
+                              Colours[(int32)Fish->Species], true, -1, SDPG_Foreground, St->TrailRadius > 1000 ? 7.0f : 2.0f);
+            St->Trails.Add(Fish, P);
+        });
+    }, 0.1f, true);
+    At(44, [Shot] { Shot(TEXT("Fish_Trails.png")); });
+    At(45, [this] { FlushPersistentDebugLines(GetWorld()); LogMotion(); });
+
+    // 2. The showcase fish.
+    At(45.5f, [this, St, Show, Facing, Right]
+    {
+        auto Spawn = [this](EFishSpecies Species, float Weight, FVector P, int32 School, float Yaw)
+        {
+            P.Z = FMath::Clamp(P.Z, ALakeFish::BottomZ(P.X, P.Y) + 12, LakeFish::SurfaceZ - 15);
+            ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(P, FRotator(0, Yaw, 0));
+            if (Fish) Fish->Setup(Species, Weight, P, School);
+            return Fish;
+        };
+        const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Right.Y, Right.X));
+        const float Mid = (LakeFish::SurfaceZ + ALakeFish::BottomZ(Show.X, Show.Y)) * 0.5f;
+        const float RoachWeights[] = { 0.06f, 0.08f, 0.1f, 0.12f, 0.15f, 0.18f, 0.22f, 0.28f, 0.35f };
+        for (int32 I = 0; I < 9; ++I)
+            St->Roach.Add(Spawn(EFishSpecies::Roach, RoachWeights[I], FVector(Show + Right * (I % 3) * 35 - Facing * (I / 3) * 35, Mid), 9000, Yaw));
+        const FVector2D PerchAt = Show + Facing * 500;
+        const float PerchWeights[] = { 0.1f, 0.15f, 0.22f, 0.3f, 0.45f, 0.7f };
+        for (int32 I = 0; I < 6; ++I)
+            St->Perch.Add(Spawn(EFishSpecies::Perch, PerchWeights[I], FVector(PerchAt + Right * (I % 3) * 45 + Facing * (I / 3) * 45, Mid + 30), 9001, Yaw));
+        // A crucian already at its feeding patch, nose in the silt.
+        const FVector2D CrucianAt = Show - Right * 350;
+        if (ALakeFish* Crucian = Spawn(EFishSpecies::Crucian, 0.6f, FVector(CrucianAt, ALakeFish::BottomZ(CrucianAt.X, CrucianAt.Y) + 8), -1, Yaw))
+        {
+            Crucian->Hunger = 1;
+            Crucian->Energy = 1;
+            Crucian->SetGoal(EFishGoal::Feed, 1000);
+            Crucian->RoamTarget = Crucian->GetActorLocation();
+            Crucian->bAtSpot = true;
+            St->Crucian = Crucian;
+        }
+        // A pike lying in wait, facing the open water where the roach school swims.
+        const FVector2D PikeAt = Show + Right * 420 + Facing * 150;
+        if (ALakeFish* Pike = Spawn(EFishSpecies::Pike, 2.5f, FVector(PikeAt, Mid + 10), -1, Yaw + 180))
+        {
+            Pike->Hunger = 0.2f;   // not hungry yet: it only watches
+            Pike->SetGoal(EFishGoal::Feed, 1000);
+            Pike->RoamTarget = Pike->GetActorLocation();
+            Pike->LieFacing = FVector(-Right, 0);
+            Pike->LieUntil = 1e6f;
+            Pike->bAtSpot = true;
+            St->Pike = Pike;
+        }
+        for (const TWeakObjectPtr<ALakeFish>& F : St->Roach) if (F.IsValid()) F->SetGoal(EFishGoal::Cruise, 1000);
+        for (const TWeakObjectPtr<ALakeFish>& F : St->Perch) if (F.IsValid()) F->SetGoal(EFishGoal::Cruise, 1000);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_PREVIEW showcase at %s, water %.0f cm"), *FVector(Show, 0).ToCompactString(), LakeMap::Depth(Show.X, Show.Y));
+    });
+
+    // 3. The roach school close up.
+    At(47, [St, FollowSide, Centroid] { FollowSide([St, Centroid](FVector& Vel) { return Centroid(St->Roach, Vel); }, 320, 30, 60); });
+    At(52.0f, [Shot] { Shot(TEXT("Fish_Roach_1.png")); });
+    At(52.3f, [Shot] { Shot(TEXT("Fish_Roach_2.png")); });
+    At(52.6f, [Shot] { Shot(TEXT("Fish_Roach_3.png")); });
+    At(52.9f, [Shot] { Shot(TEXT("Fish_Roach_4.png")); });
+    At(54.0f, [St, Place, Centroid]
+    {
+        St->Follow = [St, Place, Centroid](float)
+        {
+            FVector Vel;
+            const FVector C = Centroid(St->Roach, Vel);
+            Place(FVector(C.X, C.Y, LakeFish::SurfaceZ) + FVector(-180, -180, 260), C, 60);
+        };
+    });
+    At(56.0f, [Shot] { Shot(TEXT("Fish_Roach_Above.png")); });
+
+    // 4. The perch school.
+    At(57, [St, FollowSide, Centroid] { FollowSide([St, Centroid](FVector& Vel) { return Centroid(St->Perch, Vel); }, 340, 30, 60); });
+    At(61.0f, [Shot] { Shot(TEXT("Fish_Perch_1.png")); });
+    At(61.4f, [Shot] { Shot(TEXT("Fish_Perch_2.png")); });
+    At(61.8f, [Shot] { Shot(TEXT("Fish_Perch_3.png")); });
+
+    // 5. The crucian rooting at the bottom.
+    At(63, [St, FollowSide] { FollowSide([St](FVector& Vel) { const ALakeFish* F = St->Crucian.Get(); Vel = F ? FRotator(0, F->GetActorRotation().Yaw, 0).Vector() : FVector::ForwardVector; return F ? F->GetActorLocation() : FVector::ZeroVector; }, 130, 25, 55); });
+    At(66.0f, [Shot] { Shot(TEXT("Fish_Crucian_1.png")); });
+    At(69.0f, [Shot] { Shot(TEXT("Fish_Crucian_2.png")); });
+    At(72.0f, [St, Shot] { if (const ALakeFish* F = St->Crucian.Get()) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_PREVIEW crucian rooting=%d pitch=%.0f height over bottom=%.0f cm"), F->bRooting, F->GetActorRotation().Pitch, F->GetActorLocation().Z - ALakeFish::BottomZ(F->GetActorLocation().X, F->GetActorLocation().Y)); Shot(TEXT("Fish_Crucian_3.png")); });
+
+    // 6. The pike in its lie, then its strike at a small roach passing the snout.
+    At(73, [St, FollowSide] { FollowSide([St](FVector& Vel) { const ALakeFish* F = St->Pike.Get(); Vel = F ? F->GetActorForwardVector() : FVector::ForwardVector; return F ? F->GetActorLocation() : FVector::ZeroVector; }, 300, 0, 60); });
+    At(76.0f, [St, Shot, Place]
+    {
+        Shot(TEXT("Fish_Pike_Lie.png"));
+        ALakeFish* Pike = St->Pike.Get();
+        if (!Pike) return;
+        // Hold the camera still, a little ahead of the pike, so its dash crosses the picture.
+        St->Follow = nullptr;
+        const FVector Ahead = Pike->GetActorLocation() + Pike->GetActorForwardVector() * 90;
+        FVector Eye = Ahead - Pike->GetActorRightVector() * 330;
+        Eye.Z = FMath::Clamp(Pike->GetActorLocation().Z + 25, ALakeFish::BottomZ(Eye.X, Eye.Y) + 12, LakeFish::SurfaceZ - 6);
+        Place(Eye, Ahead, 60);
+        const FVector Front = Pike->MouthLocation() + Pike->GetActorForwardVector() * 110 + Pike->GetActorRightVector() * 25;
+        if (ALakeFish* Prey = Pike->GetWorld()->SpawnActor<ALakeFish>(Front, FRotator(0, Pike->GetActorRotation().Yaw + 90, 0)))
+        {
+            Prey->Setup(EFishSpecies::Roach, 0.1f, Front, -1);
+            St->Bait = Prey;
+        }
+    });
+    At(76.3f, [this, St]
+    {
+        ALakeFish* Pike = St->Pike.Get();
+        ALakeFish* Prey = St->Bait.Get();
+        if (!Pike || !Prey) return;
+        Pike->Hunger = 1;
+        Pike->Prey = Prey;
+        Pike->StrikeEnd = Pike->SimTime + 0.8f;
+        Pike->BurstTime = 0.8f;
+        CountPikeStrike();
+    });
+    const float StrikeShots[] = { 76.25f, 76.4f, 76.5f, 76.6f, 76.75f, 77.1f };
+    for (int32 I = 0; I < 6; ++I) At(StrikeShots[I], [Shot, I] { Shot(*FString::Printf(TEXT("Fish_Pike_Strike_%d.png"), I + 1)); });
+
+    // 7. A splash beside the roach school: they turn away together.
+    At(80, [this, St, Place, Centroid]
+    {
+        FVector Vel;
+        const FVector C = Centroid(St->Roach, Vel);
+        const FVector Eye = FVector(C.X, C.Y, LakeFish::SurfaceZ + 900);
+        St->Follow = nullptr;
+        Place(Eye, Eye - FVector(0.01f, 0, 1), 70);
+        FlushPersistentDebugLines(GetWorld());
+        St->Trails.Reset();
+        St->TrailCentre = C;
+        St->TrailRadius = 600;
+        St->TrailFrom = 80;
+        St->TrailTo = 86;
+    });
+    At(81.0f, [Shot] { Shot(TEXT("Fish_Shy_0.png")); });
+    At(81.2f, [this, St, Centroid]
+    {
+        FVector Vel;
+        const FVector C = Centroid(St->Roach, Vel);
+        const FVector Splash = FVector(C.X, C.Y, LakeFish::SurfaceZ) + FVector::CrossProduct(Vel.GetSafeNormal2D(), FVector::UpVector) * 160;
+        EmitSign(ELakeSign::Rise, Splash, 0.7f, EFishSpecies::Roach, 0.1f, 0, true);
+        Disturb(Splash, 700, 0.6f);
+        DrawDebugSphere(GetWorld(), Splash, 12, 8, FColor::Red, true, -1, SDPG_Foreground, 2);
+        St->TrailCentre = Splash;
+    });
+    At(82.0f, [Shot] { Shot(TEXT("Fish_Shy_1.png")); });
+    At(83.0f, [Shot] { Shot(TEXT("Fish_Shy_2.png")); });
+    At(85.5f, [Shot] { Shot(TEXT("Fish_Shy_3.png")); });
+
+    // 8. Fish of one species, small to big, side by side.
+    At(86, [this, St, Show, Facing, Right, Place]
+    {
+        St->Follow = nullptr;
+        FlushPersistentDebugLines(GetWorld());
+        const FVector2D Row = Show - Facing * 250;
+        const float Z = FMath::Max(ALakeFish::BottomZ(Row.X, Row.Y) + 40, LakeFish::SurfaceZ - 90);
+        const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Right.Y, Right.X));
+        const float Perch[] = { 0.08f, 0.3f, 0.8f };
+        const float Crucian[] = { 0.15f, 0.5f, 0.9f };
+        // Two rows nose to tail across the view (perch above, crucian below), the camera on the deep side.
+        for (int32 I = 0; I < 3; ++I)
+        {
+            const FVector A(Row + Right * (I * 55 - 55), Z + 30), B(Row + Right * (I * 55 - 55), Z - 15);
+            for (int32 K = 0; K < 2; ++K)
+                if (ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(K ? B : A, FRotator(0, Yaw, 0)))
+                {
+                    Fish->Setup(K ? EFishSpecies::Crucian : EFishSpecies::Perch, K ? Crucian[I] : Perch[I], K ? B : A, -1);
+                    Fish->SetGoal(EFishGoal::Rest, 1000);
+                    Fish->RoamTarget = Fish->GetActorLocation();
+                    Fish->bAtSpot = true;
+                    St->Lineup.Add(Fish);
+                }
+        }
+        const FVector Mid(Row, Z + 8);
+        Place(Mid + FVector(Facing, 0) * 260, Mid, 55);
+    });
+    At(86.4f, [Shot] { Shot(TEXT("Fish_Sizes.png")); });
+
+    // 9. Roach basking just under the surface on a warm still afternoon, seen from above the water.
+    At(88, [Weather] { Weather(14.0f); });
+    FTimerHandle BaskTimer;
+    GetWorldTimerManager().SetTimer(BaskTimer, [this, St, Show, Facing]
+    {
+        const float Now = GetWorld()->GetTimeSeconds();
+        if (Now < 88 || Now > 98) return;
+        // Warm still afternoon: the school drifts in circles just under the top.
+        if (ALakeFish* Lead = SchoolLeader(9000))
+        {
+            const FVector2D Circle = Show + Facing * 250 + FVector2D(FMath::Cos(Now * 0.25f), FMath::Sin(Now * 0.25f)) * 220;
+            Lead->RoamTarget = FVector(Circle, LakeFish::SurfaceZ - 12);
+            Lead->StateTime = 0;
+        }
+    }, 0.5f, true);
+    At(95, [St, Place, Centroid]
+    {
+        St->Follow = [St, Place, Centroid](float)
+        {
+            FVector Vel;
+            const FVector C = Centroid(St->Roach, Vel);
+            Place(FVector(C.X, C.Y, LakeFish::SurfaceZ) + FVector(-200, 90, 170), FVector(C.X, C.Y, C.Z), 55);
+        };
+    });
+    At(96.0f, [Shot] { Shot(TEXT("Fish_Surface_Above.png")); });
+    At(96.2f, [St, FollowSide, Centroid] { FollowSide([St, Centroid](FVector& Vel) { return Centroid(St->Roach, Vel); }, 300, -40, 65); });
+    At(97.0f, [St, Shot, Centroid]
+    {
+        FVector Vel;
+        const FVector C = Centroid(St->Roach, Vel);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_PREVIEW roach school %.0f cm under the surface"), LakeFish::SurfaceZ - C.Z);
+        Shot(TEXT("Fish_Surface_Below.png"));
+    });
+    At(98, [this] { LogMotion(); LogShownMotion(); });
+    At(100, [] { FPlatformMisc::RequestExit(false); });
+#endif
+}
+
+// --- water preview ---------------------------------------------------------------------------
+
+void ALakeLife::RunWaterPreview()
+{
+#if !UE_BUILD_SHIPPING
+    // -WaterPreview: how the water looks, at four kinds of light (sunny morning, overcast noon, low
+    // evening sun, night): from the bank at standing height, from a pier looking down, straight
+    // down from above and under the water. Fish hang still in a row at 15, 40 and 80 cm under the
+    // surface over 1.6 m or more of water, so it shows how deep one can see.
+    struct FState
+    {
+        TWeakObjectPtr<ACameraActor> Camera;
+        TArray<TPair<TWeakObjectPtr<ALakeFish>, FVector>> Held;
+    };
+    TSharedRef<FState> St = MakeShared<FState>();
+    FVector2D Facing;
+    const FVector2D Start = LakeMap::StartSpot(&Facing);
+    const FVector2D Right(-Facing.Y, Facing.X);
+    FVector2D Show = Start + Facing * 900;
+    for (float Out = 300; Out < 4000; Out += 50)
+    {
+        const FVector2D P = Start + Facing * Out;
+        if (LakeMap::IsWater(P.X, P.Y) && LakeMap::Depth(P.X, P.Y) > 160 && LakeMap::ShoreDistance(P.X, P.Y) > 350) { Show = P; break; }
+    }
+    auto At = [this](float Seconds, TFunction<void()> Do)
+    {
+        FTimerHandle Handle;
+        GetWorldTimerManager().SetTimer(Handle, [Do] { Do(); }, Seconds, false);
+    };
+    auto Look = [this, St](const FVector& From, const FVector& Target, float Fov)
+    {
+        ACameraActor* Cam = St->Camera.Get();
+        if (!Cam)
+        {
+            Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            St->Camera = Cam;
+            if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
+            {
+                PC->SetViewTarget(Cam);
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+        }
+        Cam->GetCameraComponent()->SetFieldOfView(Fov);
+        Cam->SetActorLocationAndRotation(From, (Target - From).Rotation());
+    };
+    // The fish row: across the view, a roach, a perch and a crucian at each depth.
+    At(2, [this, St, Show, Right, Facing]
+    {
+        const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Right.Y, Right.X));
+        const float Depths[] = { 15, 40, 80 };
+        const EFishSpecies Kinds[] = { EFishSpecies::Roach, EFishSpecies::Perch, EFishSpecies::Crucian };
+        const float Weights[] = { 0.25f, 0.4f, 0.6f };
+        for (int32 D = 0; D < 3; ++D)
+            for (int32 K = 0; K < 3; ++K)
+            {
+                const FVector P(Show + Right * (K * 45 - 45) + Facing * (D * 60 - 60), LakeFish::SurfaceZ - Depths[D]);
+                if (ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(P, FRotator(0, Yaw, 0)))
+                {
+                    Fish->Setup(Kinds[K], Weights[K], P, -1);
+                    St->Held.Add({ Fish, P });
+                }
+            }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WATER_PREVIEW fish row at %s, water %.0f cm"), *FVector(Show, 0).ToCompactString(), LakeMap::Depth(Show.X, Show.Y));
+    });
+    // Keep them hanging where they were put (only the tail moves).
+    FTimerHandle HoldTimer;
+    GetWorldTimerManager().SetTimer(HoldTimer, [St]
+    {
+        for (const TPair<TWeakObjectPtr<ALakeFish>, FVector>& H : St->Held)
+            if (ALakeFish* Fish = H.Key.Get())
+            {
+                Fish->SetActorLocation(H.Value);
+                Fish->Vel = FVector::ZeroVector;
+                Fish->Effort = 0.15f;
+            }
+    }, 0.02f, true);
+    struct FLight { const TCHAR* Name; float Hours, Cloud; };
+    const FLight Lights[] = { { TEXT("Sun"), 10.5f, 0.15f }, { TEXT("Grey"), 13.0f, 0.95f }, { TEXT("Evening"), 19.6f, 0.2f }, { TEXT("Night"), 23.5f, 0.2f } };
+    const FVector Mid(Show, LakeFish::SurfaceZ - 40);
+    const FVector2D Bank = Start - Facing * 120;
+    // -WaterQuick: only the sunny morning.
+    const int32 Count = FParse::Param(FCommandLine::Get(), TEXT("WaterQuick")) ? 1 : 4;
+    for (int32 L = 0; L < Count; ++L)
+    {
+        const float T0 = 4 + L * 20.0f;
+        const FLight Light = Lights[L];
+        At(T0, [this, Light]
+        {
+            if (ALakeWeather* W = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState State;
+                State.Cloud = Light.Cloud; State.Fog = 0; State.Rain = 0; State.Wind = 0.05f; State.WindYaw = 40;
+                W->SetWeather(State, 1);
+                W->SetHours(Light.Hours);
+            }
+        });
+        auto Shot = [this, Light](const TCHAR* View)
+        {
+            const FString File = FString::Printf(TEXT("Water_%s_%s.png"), View, Light.Name);
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / File, false, false);
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WATER_PREVIEW shot %s"), *File);
+        };
+        // From the bank at standing height, looking out past the fish row.
+        At(T0 + 5, [Look, Bank, Mid] { Look(FVector(Bank, LakeMap::Ground(Bank.X, Bank.Y) + 165), Mid, 70); });
+        At(T0 + 8, [Shot] { Shot(TEXT("Bank")); });
+        // From a pier: 1.5 m over the water, 2.5 m back, looking down at about 30 degrees.
+        At(T0 + 9, [Look, Mid, Facing] { Look(Mid - FVector(Facing, 0) * 250 + FVector(0, 0, 40 + 150), Mid, 60); });
+        At(T0 + 12, [Shot] { Shot(TEXT("Pier")); });
+        // Straight down from 3 m.
+        At(T0 + 13, [Look, Mid] { Look(FVector(Mid.X, Mid.Y, LakeFish::SurfaceZ + 300), FVector(Mid.X + 0.01f, Mid.Y, Mid.Z), 60); });
+        At(T0 + 15, [Shot] { Shot(TEXT("Top")); });
+        // Under the water, 3 m in front of the rows (the near one 15 cm down, the far one 80 cm).
+        At(T0 + 16, [Look, Mid, Facing]
+        {
+            FVector Eye = Mid - FVector(Facing, 0) * 320;
+            Eye.Z = FMath::Clamp(LakeFish::SurfaceZ - 45.0f, ALakeFish::BottomZ(Eye.X, Eye.Y) + 10, LakeFish::SurfaceZ - 8.0f);
+            Look(Eye, Mid, 65);
+        });
+        At(T0 + 18.5f, [Shot] { Shot(TEXT("Under")); });
+    }
+    // -WaterQuick also shows the pier view with the water surface hidden: what lies under it.
+    if (Count == 1)
+    {
+        At(25, [this, Look, Mid, Facing]
+        {
+            for (TObjectIterator<UPrimitiveComponent> It; It; ++It)
+                if (It->GetWorld() == GetWorld() && It->GetNumMaterials() > 0 && It->GetMaterial(0) && It->GetMaterial(0)->GetBaseMaterial() && It->GetMaterial(0)->GetBaseMaterial()->GetName() == TEXT("M_LakeSurface"))
+                    It->SetVisibility(false);
+            Look(Mid - FVector(Facing, 0) * 250 + FVector(0, 0, 40 + 150), Mid, 60);
+        });
+        At(28, [] { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / TEXT("Water_Pier_Hidden.png"), false, false); });
+    }
+    At(FMath::Max(4 + Count * 20.0f + 1, 30.0f), [] { FPlatformMisc::RequestExit(false); });
 #endif
 }

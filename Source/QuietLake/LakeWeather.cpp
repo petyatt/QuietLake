@@ -291,8 +291,8 @@ void ALakeWeather::BeginPlay()
     // -WeatherPreview: a fixed set of times and weathers seen from the start spot, HUD on.
     if (HasAuthority() && FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")))
     {
-        struct FShot { float Hours, Cloud, Fog, Rain, Wind; const TCHAR* File; };
-        static const FShot Shots[] = {
+        struct FShot { float Hours, Cloud, Fog, Rain, Wind; const TCHAR* File; float Turn = -25, Pitch = -4, Back = 250; };
+        TArray<FShot> Shots = {
             { 5.8f,  0.3f, 0.7f, 0.0f, 0.05f, TEXT("Weather_Dawn.png") },
             { 12.5f, 0.15f, 0.0f, 0.0f, 0.3f, TEXT("Weather_Noon.png") },
             { 15.0f, 0.95f, 0.15f, 0.0f, 0.75f, TEXT("Weather_OvercastWind.png") },
@@ -302,7 +302,14 @@ void ALakeWeather::BeginPlay()
             { 23.5f, 0.1f, 0.1f, 0.0f, 0.05f, TEXT("Weather_Night.png") },
             { 1.5f,  0.5f, 0.9f, 0.0f, 0.0f, TEXT("Weather_NightFog.png") },
         };
-        for (int32 I = 0; I < UE_ARRAY_COUNT(Shots); ++I)
+        if (FParse::Param(FCommandLine::Get(), TEXT("GrassLightPreview")))
+            Shots = {
+                { 12.5f, 0.15f, 0, 0, 0.1f, TEXT("Grass_NoonAcross.png"), -60, -25, 1000 },
+                { 12.5f, 0.15f, 0, 0, 0.1f, TEXT("Grass_NoonAway.png"), 120, -25, 1000 },
+                { 18.0f, 0.15f, 0, 0, 0.1f, TEXT("Grass_LowSun.png"), 0, -25, 1000 },
+                { 15.0f, 0.95f, 0.15f, 0, 0.1f, TEXT("Grass_Overcast.png"), -60, -25, 1000 },
+            };
+        for (int32 I = 0; I < Shots.Num(); ++I)
         {
             const FShot Shot = Shots[I];
             const float At = 18.0f + I * 9.0f;
@@ -320,9 +327,9 @@ void ALakeWeather::BeginPlay()
                     if (APawn* Pawn = PC->GetPawn())
                     {
                         FVector2D Facing;
-                        const FVector2D Spot = LakeMap::StartSpot(&Facing) - Facing * 250;
+                        const FVector2D Spot = LakeMap::StartSpot(&Facing) - Facing * Shot.Back;
                         Pawn->SetActorLocation(FVector(Spot, LakeMap::Ground(Spot.X, Spot.Y) + 100));
-                        PC->SetControlRotation(FRotator(-4, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)) - 25, 0));
+                        PC->SetControlRotation(FRotator(Shot.Pitch, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)) + Shot.Turn, 0));
                     }
             }, At - 7.0f, false);
             GetWorldTimerManager().SetTimer(Snap, [this, Shot]
@@ -334,7 +341,7 @@ void ALakeWeather::BeginPlay()
             }, At, false);
         }
         FTimerHandle Exit;
-        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 18.0f + UE_ARRAY_COUNT(Shots) * 9.0f + 2, false);
+        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 18.0f + Shots.Num() * 9.0f + 2, false);
     }
 #endif
 }

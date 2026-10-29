@@ -1,4 +1,5 @@
 #include "LakeRod.h"
+#include "LakeRipples.h"
 #include "LakeGame.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -7,7 +8,7 @@
 namespace
 {
     constexpr int32 BlankSegments = 14;
-    constexpr int32 MainLineSegments = 40, LeaderSegments = 8;
+    constexpr int32 MainLineSegments = 40, LeaderSegments = 16, TailSegments = 4;
     // 0.2 mm monofilament: 0.036 g per metre. Air drag across it, per unit of its mass:
     // 0.5 * air density * Cd (1.2) * diameter / mass per length, times 2 for the decay rate.
     constexpr float LineGramsPerCm = 0.00036f;
@@ -82,70 +83,7 @@ ALakeRod::ALakeRod()
     };
     MakeLine(TEXT("MainLine"), MainLineSegments, MainLine, MainSim);
     MakeLine(TEXT("Leader"), LeaderSegments, Leader, LeaderSim);
-    MakeLine(TEXT("Tail"), 3, Tail, TailSim);
-}
-
-void ALakeRod::SimulateLine(FLineSim& L, FVector A, FVector B, float Length, float DeltaSeconds, bool bFloatsOnWater, bool bReset)
-{
-    // Monofilament weighs almost nothing and air drag dominates it: it falls slowly, never
-    // swings like a rope, does not stretch, and resists sharp bends. Simulated as a short verlet
-    // chain with strong drag, inextensible segments and a bending term; both ends are pinned.
-    const int32 N = L.P.Num() - 1;
-    if (bReset)
-    {
-        for (int32 I = 0; I <= N; ++I) L.P[I] = L.Prev[I] = FMath::Lerp(A, B, float(I) / N);
-        L.LastA = A; L.LastB = B;
-    }
-    const float Segment = FMath::Max(Length, FVector::Dist(A, B)) / N;
-    const float Dt = FMath::Clamp(DeltaSeconds, 1 / 240.0f, 1 / 20.0f);
-    const int32 Steps = FMath::CeilToInt(Dt / (1 / 240.0f));
-    const float H = Dt / Steps;
-    for (int32 Step = 0; Step < Steps; ++Step)
-    {
-        const float S = float(Step + 1) / Steps;
-        const FVector EndA = FMath::Lerp(L.LastA, A, S), EndB = FMath::Lerp(L.LastB, B, S);
-        for (int32 I = 1; I < N; ++I)
-        {
-            const bool bWet = ALakeEnvironment::IsWater(L.P[I]) && L.P[I].Z < LakeFish::SurfaceZ;
-            const float Drag = bWet ? 30.0f : 7.0f;            // terminal speed ~1.4 m/s in air
-            const FVector V = (L.P[I] - L.Prev[I]) * FMath::Exp(-Drag * H);
-            L.Prev[I] = L.P[I];
-            L.P[I] += V + FVector(0, 0, -Gravity * (bWet ? 0.15f : 1.0f)) * H * H;
-        }
-        L.P[0] = EndA;
-        L.P[N] = EndB;
-        for (int32 Pass = 0; Pass < 10; ++Pass)
-        {
-            // Stiffness: each point is drawn towards the line through its neighbours.
-            for (int32 I = 1; I < N; ++I) L.P[I] += ((L.P[I - 1] + L.P[I + 1]) * 0.5f - L.P[I]) * 0.12f;
-            // No stretch: a segment may be shorter (slack) but never longer than its share.
-            for (int32 I = 0; I < N; ++I)
-            {
-                const FVector D = L.P[I + 1] - L.P[I];
-                const float Len = D.Size();
-                if (Len <= Segment) continue;
-                const FVector Fix = D * ((Len - Segment) / Len);
-                const float WA = I == 0 ? 0.0f : (I + 1 == N ? 1.0f : 0.5f);
-                const float WB = I + 1 == N ? 0.0f : (I == 0 ? 1.0f : 0.5f);
-                L.P[I] += Fix * WA;
-                L.P[I + 1] -= Fix * WB;
-            }
-        }
-        // Slack line lies on the water (the main line) or on the ground and lake bed.
-        for (int32 I = 1; I < N; ++I)
-        {
-            const float Floor = bFloatsOnWater && ALakeEnvironment::IsWater(L.P[I]) ? LakeFish::SurfaceZ + 0.2f
-                : ALakeEnvironment::GroundHeight(L.P[I].X, L.P[I].Y) + 0.3f;
-            if (L.P[I].Z < Floor)
-            {
-                L.P[I].Z = Floor;
-                L.Prev[I] = FMath::Lerp(L.Prev[I], L.P[I], 0.3f);   // surface friction
-                L.Prev[I].Z = Floor;
-            }
-        }
-    }
-    L.LastA = A;
-    L.LastB = B;
+    MakeLine(TEXT("Tail"), TailSegments, Tail, TailSim);
 }
 
 void ALakeRod::LayoutLine(const FLineSim& L, const TArray<TObjectPtr<UStaticMeshComponent>>& Segments, float Radius)
@@ -215,6 +153,18 @@ namespace
         return Slices;
     }
     /** Pull two points together to at most Length apart, by their inverse masses (0 = held). */
+    /** Keep A and B at least Length apart (a line's resistance to sharp bends, two links apart). */
+    void Apart(FVector& A, float WA, FVector& B, float WB, float Length)
+    {
+        const FVector D = B - A;
+        const float Len = D.Size();
+        if (Len >= Length || Len < KINDA_SMALL_NUMBER || WA + WB <= 0) return;
+        const FVector Fix = D / Len * (Len - Length) / (WA + WB);
+        A += Fix * WA;
+        B -= Fix * WB;
+    }
+    // A joint of the line bends at most ~25 degrees: two links apart, points stay this many links apart.
+    constexpr float LineBendSpan = 1.95f;
     void Rope(FVector& A, float WA, FVector& B, float WB, float Length, bool bRigid = false)
     {
         const FVector D = B - A;
@@ -314,6 +264,12 @@ void ALakeRod::StepBlank(float H, float S)
             Points[I + 1] -= D * (0.5f * BlankW[I + 1]);
         }
         for (int32 I = 1; I < N; ++I) Rope(Points[I], BlankW[I], Points[I + 1], BlankW[I + 1], Seg, true);
+        // The cast draw: the line, held by the hand, keeps the tip within its length of the float.
+        if (TipReach > 0)
+        {
+            FVector Anchor = TipAnchor;
+            Rope(Anchor, 0, Points[N], BlankW[N], TipReach);
+        }
     }
 }
 
@@ -398,40 +354,20 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         if (Off.Size() > Flat) { const FVector2D Kept = Off.GetSafeNormal() * Flat; HookTarget.X = TipPos.X + Kept.X; HookTarget.Y = TipPos.Y + Kept.Y; }
     }
 
-    // The cast from the hand. While LMB is held the hook hangs from the angler's hand. Let go, the
-    // rig swings out low in front and is carried to where the server laid it: the hook first,
-    // beyond the float when laid out straight, the float a moment later; let go too soon, both
-    // come down together in a heap. The paths are smooth curves (quadratic Bezier) through a
-    // high point ahead, followed loosely, so the line and the rod's stroke still move the rig.
-    const bool bFlying = In.SinceCast >= 0 && In.SinceCast < In.CastFlight;
-    const bool bStretched = FVector::Dist2D(In.HookLanding, In.FloatTarget) > 30;
-    const float HookFlight = In.CastFlight * (bStretched ? 0.88f : 1.0f);
-    const FVector Body = In.Hold.GetLocation();
-    auto Curve = [](const FVector& A, const FVector& Mid, const FVector& B, float U)
-    {
-        return A * FMath::Square(1 - U) + Mid * (2 * U * (1 - U)) + B * (U * U);
-    };
-    // The rig comes down: whatever speed the guided flight left in it is lost in the splash, so
-    // the line does not swing it back up.
-    if (bCastLaunched && !bFlying && !bCastLanded)
-    {
-        bCastLanded = true;
-        FloatKPrev = FloatK; FloatTPrev = FloatT; ShotPrev = ShotPos; HookPrev = HookPos;
-    }
-    if (bFlying && !bCastLaunched)
-    {
-        bCastLaunched = true;
-        bCastLanded = false;
-        FlightStart = FloatK;
-        HookFlightStart = HookPos;
-        FlightApex = Body + FVector(0, 0, 200) + Away * 260;
-    }
-    if (In.SinceCast < 0) { bCastLaunched = false; CastLine = -1; }
-    const bool bInAirCast = bFlying;   // thrown out on the line: little air drag
+    // The cast from the hand. While LMB is held the angler's fingers hold the shot. Let go, the rig is
+    // free: nothing steers it. It swings out on the line under the rod as the rod is pushed forward
+    // and down, and comes down where its own momentum takes it; the server takes that place from its
+    // own run of this simulation. Until the float is down it flies with little air drag.
+    const bool bFlying = In.bRigFlying;
+    const bool bInAirCast = bFlying;
+    const float TipToFloat = MainLength;
     // The rig in the angler's left hand (ready to cast, or drawn back for it): the fingers hold the
     // shot, the hook hangs just below it, and the line to the rod tip is kept taut.
-    const bool bShotHeld = In.HookHold >= 0.999f && !bFlying;
+    const bool bShotHeld = In.HookHold >= 0.999f;
+    // Held in the hand (also while swinging a cast) the line is just taut, never pulled beyond its
+    // length: let go, the rig swings out on it from where the hand held it, like a swing.
     FVector ShotTarget = In.HandPoint;
+    TipReach = -1;
     if (bShotHeld)
     {
         const float Reach = MainLength + ToShot - 2.0f;
@@ -439,13 +375,22 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         const FVector2D Off(ShotTarget.X - TipPos.X, ShotTarget.Y - TipPos.Y);
         if (Off.Size() > Flat) { const FVector2D Kept = Off.GetSafeNormal() * Flat; ShotTarget.X = TipPos.X + Kept.X; ShotTarget.Y = TipPos.Y + Kept.Y; }
     }
-    // Drawing the rig out: once it is off the water the free hand brings it in on a low curve in
-    // front of the angler, instead of letting it swing past him.
-    const bool bCatching = In.RetrieveT >= 0.45f && !bShotHeld;
-    if (bCatching && !bCatchLaunched) { bCatchLaunched = true; CatchStart = ShotPos; }
-    if (!bCatching) bCatchLaunched = false;
-
+    // The cast: the float flies on an arc from where the fingers let it go to the place the server
+    // picked (FloatTarget) in CastFlight seconds; the line, the shot and the hook follow it.
+    const bool bGuided = bFlying && In.SinceCast >= 0 && In.CastFlight > 0;
+    if (bGuided && !bGuiding) { GuideFrom = GuideLast = FloatK; }
+    bGuiding = bGuided;
     const TArray<FFloatSlice>& Slices = FloatSlices();
+    // The water under the float: the live waves where they are simulated (they move it up and down
+    // and tilt it with their slope); elsewhere (a dedicated server) a faint stand-in swell.
+    if (!Ripples.IsValid() && Time >= NextRipplesLookup)
+    {
+        Ripples = ALakeRipples::Get(GetWorld());
+        NextRipplesLookup = Time + 1.0f;
+    }
+    const ALakeRipples* Waves = Ripples.Get();
+    const float Wave = Waves ? Waves->ShownHeightAt(FVector2D(FloatK)) : FMath::Sin(Time * 2.1f) * 0.3f;
+    const FVector2D WaveSlope = Waves ? Waves->ShownSlopeAt(FVector2D(FloatK)) : FVector2D::ZeroVector;
     const int32 Steps = FMath::CeilToInt(Dt / (1 / 240.0f));
     const float H = Dt / Steps;
     for (int32 Step = 0; Step < Steps; ++Step)
@@ -455,7 +400,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         // --- the float: weight and the buoyancy of every submerged slice, shared between K and T ---
         const FVector Axis = (FloatT - FloatK).GetSafeNormal();
         const bool bOverWater = ALakeEnvironment::IsWater(FloatK);
-        const float Surface = LakeFish::SurfaceZ + FMath::Sin(Time * 2.1f) * 0.3f;
+        const float Surface = LakeFish::SurfaceZ + Wave;
         float LiftK = 0, LiftT = 0, Wet = 0;
         if (bOverWater)
             for (const FFloatSlice& Slice : Slices)
@@ -471,7 +416,8 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
                 Wet += Under / Slices.Num();
             }
         // Water damps a floating float hard; in the air it barely slows.
-        const float FloatDamp = FMath::Pow(Wet > 0.02f ? 0.03f : bInAirCast ? 0.85f : 0.6f, H);
+        // Held in the fingers, the float hangs in the nearly taut line: its swings die out quickly.
+        const float FloatDamp = FMath::Pow(Wet > 0.02f ? 0.03f : bShotHeld ? 0.15f : 0.8f, H);
         auto Integrate = [H](FVector& P, FVector& Prev, float Damp, const FVector& Acc)
         {
             const FVector V = (P - Prev) * Damp;
@@ -480,7 +426,10 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         };
         Integrate(FloatK, FloatKPrev, FloatDamp, FVector(0, 0, -Gravity + LiftK * Gravity / KeelMass));
         // The ripple rocks the antenna a little, so a float with nothing to hold it upright falls over.
-        const FVector Rock = Wet > 0.02f ? FVector(FMath::Sin(Time * 1.3f), FMath::Cos(Time * 1.7f), 0) * 15.0f : FVector::ZeroVector;
+        // A passing wave tips it too: the water slides downhill under the keel, so the antenna leans
+        // the other way.
+        const FVector Rock = Wet > 0.02f ? FVector(FMath::Sin(Time * 1.3f), FMath::Cos(Time * 1.7f), 0) * 15.0f
+            + FVector(WaveSlope, 0) * 600.0f : FVector::ZeroVector;
         Integrate(FloatT, FloatTPrev, FloatDamp, FVector(0, 0, -Gravity + LiftT * Gravity / TipMass) + Rock);
         if (In.FishingState == EFishingState::Waiting || In.FishingState == EFishingState::Bite)
             if (!bFlying && Wet > 0.02f)
@@ -495,17 +444,10 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         if (bShotHeld)
         {
             ShotPrev = ShotPos;
-            ShotPos = FMath::Lerp(ShotPos, ShotTarget, 0.08f);
+            const FVector Take = (ShotTarget - ShotPos) * (1 - FMath::Exp(-12.0f * H));
+            ShotPos += Take.GetClampedToMaxSize(300.0f * H);
         }
-        else Integrate(ShotPos, ShotPrev, FMath::Pow(bShotWet ? 0.0005f : bInAirCast ? 0.85f : 0.5f, H), FVector(0, 0, -Gravity * (bShotWet ? 0.91f : 1.0f)));
-        if (bCatching)
-        {
-            const float Along = FMath::SmoothStep(0.45f, 0.95f, In.RetrieveT);
-            const FVector Mid = (CatchStart + In.HandPoint) * 0.5f + FVector(0, 0, 60);
-            const float Follow = 0.04f + 0.2f * Along;
-            ShotPos += (Curve(CatchStart, Mid, In.HandPoint, Along) - ShotPos) * Follow;
-            ShotPrev = FMath::Lerp(ShotPrev, ShotPos, Follow);
-        }
+        else Integrate(ShotPos, ShotPrev, FMath::Pow(bShotWet ? 0.0005f : 0.8f, H), FVector(0, 0, -Gravity * (bShotWet ? 0.91f : 1.0f)));
         if (bHookHeld)
         {
             HookPrev = HookPos;
@@ -522,26 +464,8 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         {
             const bool bHookWet = ALakeEnvironment::IsWater(HookPos) && HookPos.Z < LakeFish::SurfaceZ;
             // Hanging from the held shot the hook settles quickly instead of swinging.
-            Integrate(HookPos, HookPrev, FMath::Pow(bHookWet ? 0.0002f : bInAirCast ? 0.85f : bShotHeld ? 0.002f : 0.5f, H), FVector(0, 0, -Gravity * (bHookWet ? 0.5f : 1.0f)));
+            Integrate(HookPos, HookPrev, FMath::Pow(bHookWet ? 0.0002f : bShotHeld ? 0.002f : 0.8f, H), FVector(0, 0, -Gravity * (bHookWet ? 0.5f : 1.0f)));
         }
-        if (bFlying && bCastLaunched)
-        {
-            // Carried along the arcs, eased in over the first moment of the stroke.
-            const float T = FMath::Min(In.SinceCast, In.CastFlight);
-            const float Follow = 0.06f + 0.19f * FMath::SmoothStep(0.0f, 0.2f, T / In.CastFlight);
-            const FVector Land = In.FloatTarget - FVector(0, 0, FloatPivot - 1);
-            const FVector Move = (Curve(FlightStart, FlightApex, Land, T / In.CastFlight) - FloatK) * Follow;
-            FloatK += Move; FloatT += Move;
-            if (T < HookFlight && !bHookHeld)
-                HookPos += (Curve(HookFlightStart, FlightApex + Away * 40, In.HookLanding, T / HookFlight) - HookPos) * Follow;
-        }
-
-        // A cast: while the rig flies the line never snatches it back (the rod is still coming down,
-        // and with a deep setting the line to the float is short); once it has landed the slack is
-        // taken in at most 0.8 m/s, so the float settles or slides gently instead of jumping.
-        if (bFlying) CastLine = FMath::Max(MainLength, FVector::Dist(TipPos, FloatK));
-        else if (CastLine >= 0) { CastLine -= 80.0f * H; if (CastLine <= MainLength) CastLine = -1; }
-        const float TipToFloat = CastLine >= 0 ? FMath::Max(MainLength, CastLine) : MainLength;
         // --- the main line: thin and light, carried by the wind in the air, lying on the water ---
         // In the air the drag across the line grows with the square of its speed relative to the
         // wind: a still line hangs, a breeze blows it out in a belly. On the water it lies on the
@@ -567,30 +491,74 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             Prev = P;
             P += V * H;
         }
+        // --- the leader (float to shot) and the tail (shot to hook): thin line hanging under the
+        // float. In the air it trails in the wind like the main line; in the water it sinks slowly
+        // (monofilament is barely heavier than water) and the water holds it back hard. ---
+        for (FLineSim* L : { &LeaderSim, &TailSim })
+        {
+            const int32 N = L->P.Num() - 1;
+            for (int32 I = 1; I < N; ++I)
+            {
+                FVector& P = L->P[I];
+                FVector& Prev = L->Prev[I];
+                FVector V = (P - Prev) / H;
+                if (ALakeEnvironment::IsWater(P) && P.Z < LakeFish::SurfaceZ)
+                    V = V * FMath::Exp(-25.0f * H) + FVector(0, 0, -Gravity * 0.12f * H);
+                else
+                {
+                    const FVector Tangent = (L->P[I + 1] - L->P[I - 1]).GetSafeNormal();
+                    const FVector Rel = V - In.Wind;
+                    const FVector Along = Tangent * FVector::DotProduct(Rel, Tangent);
+                    const FVector Across = Rel - Along;
+                    const float K = FMath::Min(LineAirDrag * Across.Size(), 400.0f) + 1.0f;
+                    V = (In.Wind + Across * FMath::Exp(-K * H) + Along * FMath::Exp(-0.05f * K * H)) + FVector(0, 0, -Gravity * H);
+                }
+                Prev = P;
+                P += V * H;
+            }
+        }
         // --- line and stick constraints, by mass ---
         const float WK = 1 / KeelMass, WT = 1 / TipMass, WS = bShotHeld ? 0.0f : 1 / ShotMass, WH = bHookHeld ? 0.0f : bFishOut ? 1 / In.FishGrams : 1 / HookMass;
-        // The rig hanging from the tip bends it a little through the line. A fish, the cast draw and
-        // a flying or hand-held rig load it as a force instead (TipForce), or not at all.
-        const float WRodTip = In.FishingState >= EFishingState::Fight || bShotHeld || bFlying || CastLine >= 0 ? 0.0f : BlankW.Last();
+        // The rig hanging from the tip, or flying out on the line, pulls it through the line. A fish
+        // and the cast draw load it as a force instead (TipForce); a hand-held rig not at all.
+        const float WRodTip = In.FishingState >= EFishingState::Fight || bShotHeld ? 0.0f : BlankW.Last();
+        const float WRig = WK + WT;
         for (int32 Pass = 0; Pass < 8; ++Pass)
         {
+            if (bShotHeld) Rope(RodTip, BlankW.Last(), ShotPos, 0, MainLength + ToShot);
             Rope(FloatK, WK, FloatT, WT, FloatLength, true);
             Rope(FloatK, WK, ShotPos, WS, ToShot);
             Rope(ShotPos, WS, HookPos, WH, ShotToHook);
-            Rope(RodTip, WRodTip, FloatK, WK + WT, TipToFloat);   // the rod tip holds; the whole float follows
+            Rope(RodTip, WRodTip, FloatK, WRig, TipToFloat);   // the rod tip holds; the whole float follows
             // The main line, link by link from the tip to the float's eye. The float's place is the
             // server's (it drifts the rig in the wind itself), so the line bends to it and does not
-            // drag it about.
+            // drag it about. The links keep their length both ways: line not needed between the tip
+            // and the float lies on the water in a loop instead of vanishing.
             const float Link = TipToFloat / Links, WL = 1 / FMath::Max(LineGramsPerCm * Link, 1e-4f);
             MainSim.P[0] = RodTip;
             for (int32 I = 0; I < Links; ++I)
-                Rope(MainSim.P[I], I == 0 ? 0.0f : WL, I + 1 == Links ? FloatK : MainSim.P[I + 1], I + 1 == Links ? 0.0f : WL, Link);
+                Rope(MainSim.P[I], I == 0 ? 0.0f : WL, I + 1 == Links ? FloatK : MainSim.P[I + 1], I + 1 == Links ? 0.0f : WL, Link, true);
+            for (int32 I = 0; I + 1 < Links; ++I)
+                Apart(MainSim.P[I], I == 0 ? 0.0f : WL, I + 2 == Links ? FloatK : MainSim.P[I + 2], I + 2 == Links ? 0.0f : WL, Link * LineBendSpan);
+            // The leader and the tail hang between the float, the shot and the hook; too light to
+            // move them, they only bend to them.
+            auto Chain = [](FLineSim& L, FVector& A, FVector& B, float Length)
+            {
+                const int32 N = L.P.Num() - 1;
+                const float Seg = Length / N;
+                L.P[0] = A;
+                for (int32 I = 0; I < N; ++I)
+                    Rope(L.P[I], I == 0 ? 0.0f : 1.0f, I + 1 == N ? B : L.P[I + 1], I + 1 == N ? 0.0f : 1.0f, Seg, true);
+                for (int32 I = 0; I + 1 < N; ++I)
+                    Apart(L.P[I], I == 0 ? 0.0f : 1.0f, I + 2 == N ? B : L.P[I + 2], I + 2 == N ? 0.0f : 1.0f, Seg * LineBendSpan);
+            };
+            Chain(LeaderSim, FloatK, ShotPos, ToShot);
+            Chain(TailSim, ShotPos, HookPos, ShotToHook);
         }
-        // A little stiffness (monofilament keeps some memory), and the line lies on the water or the ground.
+        // The line lies on the water or the ground.
         for (int32 I = 1; I < Links; ++I)
         {
             FVector& P = MainSim.P[I];
-            P += ((MainSim.P[I - 1] + MainSim.P[I + 1]) * 0.5f - P) * 0.08f;
             const float Floor = ALakeEnvironment::IsWater(P) ? LakeFish::SurfaceZ + 0.2f : ALakeEnvironment::GroundHeight(P.X, P.Y) + 0.3f;
             if (P.Z < Floor)
             {
@@ -620,22 +588,40 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
                 HookPrev = FMath::Lerp(HookPrev, HookPos, Take);
             }
         }
-        // Held in the hand on a taut line: the float sits on the line between the fingers and the
-        // rod tip instead of dangling as the angler walks.
-        if (bShotHeld)
+        if (bGuided)
         {
-            const FVector Up = (TipPos - ShotPos).GetSafeNormal();
-            FloatK = ShotPos + Up * ToShot;
-            FloatT = FloatK + Up * FloatLength;
-            FloatKPrev = FloatK;
-            FloatTPrev = FloatT;
+            const float T = In.SinceCast - Dt * (1 - float(Step + 1) / Steps);
+            const float Phase = FMath::Clamp(T / In.CastFlight, 0.0f, 1.0f);
+            const float Along = Phase * Phase * Phase * (Phase * (Phase * 6 - 15) + 10);
+            const FVector To(In.FloatTarget.X, In.FloatTarget.Y, LakeFish::SurfaceZ);
+            const float Apex = 18.0f;
+            FVector Want = FMath::Lerp(GuideFrom, To, Along);
+            Want.Z += Apex * 4 * Along * (1 - Along);
+            // Never farther from the tip than the line reaches.
+            Want = RodTip + (Want - RodTip).GetClampedToMaxSize(TipToFloat - 3);
+            const FVector Shift = Want - FloatK;
+            FloatKPrev = GuideLast;
+            FloatK = Want;
+            FloatT += Shift;
+            FloatTPrev = FloatT - (Want - GuideLast);
+            GuideLast = Want;
         }
         MainSim.P[Links] = FloatK;
         MainSim.P[0] = RodTip;
+        LeaderSim.P[0] = FloatK; LeaderSim.P.Last() = ShotPos;
+        TailSim.P[0] = ShotPos; TailSim.P.Last() = HookPos;
+        for (FLineSim* L : { &LeaderSim, &TailSim })
+            for (int32 I = 1; I + 1 < L->P.Num(); ++I)
+            {
+                FVector& P = L->P[I];
+                const float Floor = ALakeEnvironment::GroundHeight(P.X, P.Y) + 0.3f;
+                if (P.Z < Floor) { P.Z = Floor; L->Prev[I] = FMath::Lerp(L->Prev[I], P, 0.3f); L->Prev[I].Z = Floor; }
+            }
         // In the air the line runs through both of the float's rings: it hangs along the line.
         if (Wet <= 0.02f)
         {
-            const FVector Along = (FloatK - ShotPos).GetSafeNormal();
+            // Between the leader coming in at the keel and the main line going on from the antenna.
+            const FVector Along = ((FloatK - ShotPos).GetSafeNormal() + (MainSim.P[Links - 1] - FloatK).GetSafeNormal()).GetSafeNormal();
             FloatT = FMath::Lerp(FloatT, FloatK + (Along.IsNearlyZero() ? FVector::UpVector : Along) * FloatLength, 0.2f);
         }
         // Water holds a float back: towed by a fish it slides at most ~15 cm/s; pulled faster, the
@@ -706,22 +692,13 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
     FRodInput In = Input;
     In.HookDepth = LeaderNow;
     // Loads on the tip given as a force (dyn): a fish pulling (the line tension the server reports,
-    // up to ~1.2 kgf), a fish lifted out (its weight), the hand drawing the rig back for the cast.
-    // The rig's own weight pulls through the line itself (UpdateBobber).
+    // up to ~1.2 kgf), a fish lifted out (its weight). The rig's weight and the hand drawing it back
+    // for the cast pull through the line itself (UpdateBobber).
     TipForce = FVector::ZeroVector;
     if (Points.Num())
     {
         if (In.FishingState == EFishingState::Fight) TipForce = (BobberPos - Tip()).GetSafeNormal() * (2.0e4f + In.Tension * 1.2e6f);
         else if (In.FishingState == EFishingState::Landing) TipForce = (HookPos - Tip()).GetSafeNormal() * In.FishGrams * 980.0f * 1.2f;
-        else if (In.CastDraw > 0)
-        {
-            // The hand draws the line back and down: across the rod it bends the tip towards the angler.
-            const FVector Axis = (Points.Last() - Points[0]).GetSafeNormal();
-            FVector Pull = In.HandPoint - Tip();
-            Pull -= Axis * FVector::DotProduct(Pull, Axis);
-            if (Pull.SizeSquared() < 1) Pull = -In.Facing;
-            TipForce = Pull.GetSafeNormal() * In.CastDraw * 2.5e5f;
-        }
     }
     Heft = FMath::Max(0.5f, In.RodHeft);
     PrepareBlank(In.Hold);
@@ -737,19 +714,15 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
         ShotPos = ShotPrev = HookPos + FVector(0, 0, FMath::Min(ShotAboveHook, Below - 2.0f));
         BobberPos = BobberPrev = FloatK + FVector(0, 0, 3.5f * BobberScale);
         for (int32 I = 0; I < MainSim.P.Num(); ++I) MainSim.P[I] = MainSim.Prev[I] = FMath::Lerp(Tip(), FloatK, float(I) / (MainSim.P.Num() - 1));
+        for (int32 I = 0; I < LeaderSim.P.Num(); ++I) LeaderSim.P[I] = LeaderSim.Prev[I] = FMath::Lerp(FloatK, ShotPos, float(I) / (LeaderSim.P.Num() - 1));
+        for (int32 I = 0; I < TailSim.P.Num(); ++I) TailSim.P[I] = TailSim.Prev[I] = FMath::Lerp(ShotPos, HookPos, float(I) / (TailSim.P.Num() - 1));
         bInitialised = true;
     }
     LastTip = Tip();
     UpdateBobber(In, DeltaSeconds);
     Layout(In);
-    // Lines: the main line (simulated with the rig), the leader from the float's eye to the hook.
-    const float LeaderLength = FMath::Clamp(In.HookDepth, 5.0f, 520.0f);
-    const FVector Eye = BobberEye->GetComponentLocation();
-    // The leader runs through the shot to the hook.
-    const float RigLeader = FMath::Max(LeaderLength - KeelDepth, 4.0f);
-    const float ShotGap = FMath::Min(ShotAboveHook, RigLeader - 2.0f);
-    SimulateLine(LeaderSim, Eye, ShotPos, RigLeader - ShotGap, DeltaSeconds, false, bReset);
-    SimulateLine(TailSim, ShotPos, HookPos, ShotGap, DeltaSeconds, false, bReset);
+    // Lines, all simulated with the rig: the main line, the leader from the float's eye through the
+    // shot, and the tail to the hook.
     LayoutLine(MainSim, MainLine, 0.11f);
     LayoutLine(LeaderSim, Leader, 0.075f);
     LayoutLine(TailSim, Tail, 0.075f);
@@ -770,4 +743,9 @@ float ALakeRod::LineBelly(int32* OutOnWater) const
     }
     if (OutOnWater) *OutOnWater = OnWater;
     return Most;
+}
+
+bool ALakeRod::FloatDown() const
+{
+    return ALakeEnvironment::IsWater(FloatK) ? FloatK.Z <= LakeFish::SurfaceZ + 1.0f : FloatK.Z <= ALakeEnvironment::GroundHeight(FloatK.X, FloatK.Y) + 2.0f;
 }

@@ -60,6 +60,18 @@ void ALakeHUD::DrawHUD()
 
     // Line tension while fighting a fish.
     const float BarW = 360 * S, BarH = 8 * S, BarX = (Canvas->ClipX - BarW) / 2, BarY = Canvas->ClipY - 70 * S;
+    // The cast's strength while LMB is held: how far the rig will go.
+    if (Fisher->bCharging)
+    {
+        const float Charge = Fisher->CastCharge();
+        FVector Target;
+        const bool bWater = Fisher->CastTargetFor(Charge, Target);
+        DrawRect(FLinearColor(0, 0, 0, 0.4f), BarX, BarY, BarW, BarH);
+        DrawRect(bWater ? FLinearColor(0.45f, 0.7f, 0.95f) : FLinearColor(0.95f, 0.45f, 0.3f), BarX, BarY, BarW * Charge, BarH);
+        const FString Label = bWater ? FString::Printf(TEXT("Заброс: %.1f м"), FVector::Dist2D(Target, Fisher->GetActorLocation()) / 100)
+                                     : FString(TEXT("Заброс: там берег"));
+        Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
+    }
     if (Fisher->FishingState == EFishingState::Fight)
     {
         const FLinearColor Fill = Fisher->Tension > 0.75f ? FLinearColor(0.95f, 0.25f, 0.2f) : FLinearColor(0.35f, 0.8f, 0.55f);
@@ -67,29 +79,6 @@ void ALakeHUD::DrawHUD()
         DrawRect(Fill, BarX, BarY, BarW * Fisher->Tension, BarH);
         const FString Label = Fisher->Tension > 0.75f ? TEXT("Отпустите ЛКМ — леска на пределе")
             : FString::Printf(TEXT("Натяжение %.0f%%   ·   до рыбы %.1f м"), Fisher->Tension * 100, Fisher->FishDistance / 100);
-        Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
-    }
-    // Casting: a small mark on the water where the float will go (red over land), and at the bottom
-    // how far the rod tip is loaded: it fills while the hand draws the rig back and turns green
-    // when the cast is ready.
-    if (Fisher->bCharging)
-    {
-        const FVector Aim = Fisher->CastAimPoint();
-        FVector2D P;
-        if (APlayerController* Viewer = GetOwningPlayerController(); Viewer && Viewer->ProjectWorldLocationToScreen(Aim, P))
-        {
-            const FLinearColor Mark = ALakeEnvironment::IsWater(Aim) ? FLinearColor(1, 1, 1, 0.7f) : FLinearColor(1.0f, 0.35f, 0.3f, 0.8f);
-            const float R = 7 * S, T = 1.5f * S;
-            DrawRect(Mark, P.X - R, P.Y - R, 2 * R, T);
-            DrawRect(Mark, P.X - R, P.Y + R - T, 2 * R, T);
-            DrawRect(Mark, P.X - R, P.Y - R, T, 2 * R);
-            DrawRect(Mark, P.X + R - T, P.Y - R, T, 2 * R);
-        }
-        const float Load = FMath::Min(Fisher->SwingTime(Fisher->ServerNow()) / Fisher->CastLoadTime(), 1.0f);
-        const float W = BarW * 0.5f, X0 = (Canvas->ClipX - W) / 2;
-        DrawRect(FLinearColor(0, 0, 0, 0.4f), X0, BarY, W, BarH * 0.5f);
-        DrawRect(Load >= 1 ? FLinearColor(0.4f, 0.9f, 0.5f, 0.9f) : FLinearColor(1, 1, 1, 0.75f), X0, BarY, W * Load, BarH * 0.5f);
-        const FString Label = Load >= 1 ? TEXT("Удилище согнулось — отпустите ЛКМ") : TEXT("Оснастка в руке…");
         Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
     }
     // Bottom right: the time of day, the weather and the air temperature.
@@ -118,7 +107,7 @@ void ALakeHUD::DrawHUD()
     const float HintAlpha = FMath::Clamp((15.0f - (Now - PlayStart)) / 2.0f, 0.0f, 1.0f);
     if (HintAlpha > 0)
     {
-        const FString Hint = TEXT("ЛКМ (держать) — оснастка в руке, отпустить — заброс   ·   ПКМ — вытащить   ·   Q — удилище   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   1/2/3 — наживка   ·   Esc — меню");
+        const FString Hint = TEXT("Мышь — взгляд и удилище   ·   ЛКМ держать — дальше заброс, отпустить — забросить   ·   ЛКМ после заброса — плавно вытащить в левую руку   ·   ЛКМ с рыбой — держать и отпускать на рывках   ·   ПКМ — подсечка   ·   Q — удилище   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   Esc — меню");
         Text(Hint, FLinearColor(0.85f, 0.87f, 0.85f, 0.75f * HintAlpha), Canvas->ClipX - Width(Hint, 0.75f) - 28 * S, WeatherTop - 30 * S, 0.75f);
     }
     if (bShowLife) DrawLifePanel(S);

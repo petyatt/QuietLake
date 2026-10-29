@@ -40,9 +40,21 @@ public:
     UPROPERTY(Replicated) float ChargeServerStart = 0;     // when LMB was pressed
     UPROPERTY(Replicated) bool bRetrieving = false;        // the rod is being raised, drawing the rig out of the water
     UPROPERTY(Replicated) float RetrieveServerTime = -100;
+    /** How far the rig has been drawn out, 0..1: it goes on only while LMB or RMB is held (bRetrieveHeld). */
+    UPROPERTY(Replicated) float RetrieveProgress = 0;
+    UPROPERTY(Replicated) bool bRetrieveHeld = false;
+    /** Complete the lift after one click, also used when the rig lands on the bank. */
+    bool bRetrieveAuto = false;
+    /** A pull with LMB: let go, the rod goes back down and the rig fishes again where it lies. */
+    bool bRetrieveReturns = false;
+    /** After a pull: the rod is down, the rig settling on the water; then it fishes from where it lies. */
+    bool bRigSettling = false;
+    void ResumeAfterPull();
     UPROPERTY(Replicated) float RetrieveFromElevation = 20;
     /** Seconds of lifting the rig out of the water. */
-    static constexpr float RetrieveTime = 2.5f;
+    static constexpr float RetrieveTime = 2.8f;
+    UPROPERTY(Replicated) FVector RetrieveFromGrip = FVector::ZeroVector;
+    UPROPERTY(Replicated) float RetrieveFromYaw = 7;
     /**
      * The cast from the hand: holding LMB the angler takes the rig in the left hand and draws it
      * back to the hip, bending the rod tip; let go, the loaded tip swings the rig out in front. Let
@@ -63,9 +75,46 @@ public:
     float SwingTime(float Now) const { return bCharging ? FMath::Max(0.0f, Now - ChargeServerStart) : 0.0f; }
     /** How far (cm, from the angler) a cast can lay the float now. */
     float CastReach() const;
+    /** The cast: LMB held longer casts farther, from just past the water's edge to as far as the line reaches. */
+    float CastChargeTime() const { return 1.0f + 0.4f * RodHeft(); }
+    /** 0..1 while LMB is held for a cast. */
+    float CastCharge() const;
+    /** Where a cast with this charge puts the float, where the angler looks; false if no water there. */
+    bool CastTargetFor(float Charge, FVector& OutTarget) const;
     /** Where a clean cast would lay the float: the water point the angler looks at, within reach. */
     FVector CastAimPoint() const;
     UPROPERTY(Replicated) float CastServerTime = -100;      // when the cast was released
+    /**
+     * Persistent rod aim relative to the view. The mouse moves the rod in every fishing phase.
+     * Up and down the camera moves with the rod; casting, it stays within lake.CastCameraMin/Max
+     * and only the rod goes on (RodLowestAngle..RodHighestAngle). Aside the camera turns with the rod. LMB holds the shot,
+     * release frees the rig without resetting the aim or choosing a landing point.
+     * Degrees added to the rod's angle and turn (the owner's own values; others get them replicated).
+     */
+    UPROPERTY(Replicated) float SwingPitch = 0;
+    UPROPERTY(Replicated) float SwingYaw = 0;
+    static constexpr float SwingBase = 45;          // the rod's angle ready to cast, the rig in the other hand
+    /** Mouse degrees per input unit. */
+    UPROPERTY(EditDefaultsOnly, Category="Rod|Input") float RodMouseSensitivity = 1.25f;
+    UPROPERTY(EditDefaultsOnly, Category="Rod|Input") float RodYawLimit = 20;
+    UPROPERTY(EditDefaultsOnly, Category="Rod|Input") float RodPitchDownLimit = 140;
+    UPROPERTY(EditDefaultsOnly, Category="Rod|Input") float RodPitchUpLimit = 140;
+    /** How far the rod can be lowered (its tip about at the ground) and raised, degrees above level. */
+    UPROPERTY(EditDefaultsOnly, Category="Rod|Input") float RodLowestAngle = -15;
+    UPROPERTY(EditDefaultsOnly, Category="Rod|Input") float RodHighestAngle = 95;
+    /** The rod's angle with a level view while the rig is in the water: lower, nearer the water. */
+    UPROPERTY(EditDefaultsOnly, Category="Rod|Input") float RodWaitAngle = 25;
+    /** The rod's angle with a level view, before the mouse moves it: ready to cast, or waiting for a bite. */
+    float RodBase() const
+    {
+        // (Also while the cast flies: the rod goes down with it, so the line reaches the place picked.)
+        const bool bInWater = !bRetrieving && (FishingState == EFishingState::Waiting || FishingState == EFishingState::Bite);
+        return bInWater ? RodWaitAngle : SwingBase;
+    }
+    /** The free hand holds the rig by the shot (it catches it as the rig swings by, and lets go to cast). */
+    UPROPERTY(Replicated) bool bRigInHand = true;
+    /** Let go and not yet down: the server takes where it lands from its own run of the rod simulation. */
+    UPROPERTY(Replicated) bool bRigFlying = false;
     UPROPERTY(Replicated) float CastFlight = 1;
     UPROPERTY(Replicated) float StrikeServerTime = -100;
     /** Landing: when the tired fish was lifted out of the water on the line, to be swung to the hand. */
@@ -103,6 +152,7 @@ private:
     friend class FLakeFishBehaviourTest;
     friend class FLakeCastingTest;
     friend class FLakeWindDriftTest;
+    friend class FLakeRodControlTest;
     void SelectBait(EBait NewBait);
     void BaitWorm() { SelectBait(EBait::Worm); }
     void BaitMaggot() { SelectBait(EBait::Maggot); }
@@ -114,7 +164,6 @@ private:
     void PlaceBait();
     UFUNCTION(Server, Reliable) void ServerSelectBait(EBait NewBait);
     FVector RodTip() const;
-    bool CanWalk() const;
     void ToggleRod();
     void ToggleView();
     void ToggleLifePanel();
@@ -123,11 +172,18 @@ private:
     UFUNCTION(Server, Reliable) void ServerNextRod();
     /** -LakePreview, -BitePreview, -LandPreview: scripted scenes, filmed and logged (LakePreviews.cpp). */
     void RunPreviews();
+    void RunRodDiagnostics(float DeltaSeconds);
+    float RodDiagnosticTime = 0, NextRodDiagnosticLog = 0;
+    int32 RodDiagnosticStage = 0;
     UFUNCTION(Server, Reliable) void ServerToggleRod();
     /** LMB pressed with nothing out: the rig taken in the hand. */
     void StartCast();
-    /** LMB released after Held seconds: the loaded tip swings the rig out; too soon, it falls short in a heap. */
+    /** LMB release: make a low cast, with distance determined by Held seconds. */
     void DoCast(float Held);
+    /** The cast rig came down at Where: on the water the bait starts fishing, on the bank it is lifted out. */
+    void OnRigLanded(FVector Where);
+    /** Where the free hand holds the rig (Draw: 0..1 drawn back for the cast). */
+    FVector HandPoint(float Draw) const;
     /** Rod elevation while waiting (deg): with a deep float the main line is short, so the tip goes down to the water. */
     float WaitElevation(float Pitch, float Depth) const;
     void RodPoseTarget(float Pitch, float Now, float& OutElevation, FVector& OutGrip, float& OutStiffness, float& OutYaw) const;
@@ -149,15 +205,22 @@ private:
     UPROPERTY() TObjectPtr<class USpringArmComponent> ThirdPersonArm;
     UPROPERTY() TObjectPtr<class UCameraComponent> ThirdPersonCamera;
     void Forward(float Value);
+    /** Mouse steers the rod; the outward part near the hand limits turns the view. */
+    void Turn(float Value);
+    void Look(float Value);
+    void MoveRodAxis(float Delta, bool bPitch);
+    UFUNCTION(Server, Unreliable) void ServerSwing(float Pitch, float Yaw);
+    UFUNCTION(Server, Reliable) void ServerReleaseWithAim(float Pitch, float Yaw);
+    float NextAimSend = 0;
     void Right(float Value);
     void Fish();
     void Cancel();
     void Release();
     void UpdateFight(float DeltaSeconds);
     void FinishFishing(const FString& Message);
-    /** Slowly raise the rod and draw the rig out; the cast ends when the rod is up. */
-    void StartRetrieve(const FString& Message, const FString& EndMessage);
-    void UpdateRetrieve();
+    /** Raise the rod and draw the rig out while the button is held (or by itself, bAuto); the cast ends when the rod is up. */
+    void StartRetrieve(const FString& Message, const FString& EndMessage, bool bAuto = false);
+    void UpdateRetrieve(float DeltaSeconds);
     /** Lift the tired fish out of the water: it hangs on the line and swings to the angler's hand. */
     void StartLanding(class ALakeFish* Fish);
     void UpdateLanding();
@@ -166,7 +229,12 @@ private:
     UFUNCTION(Server, Reliable) void ServerRelease();
     UFUNCTION(Server, Reliable) void ServerFish();
     UFUNCTION(Server, Reliable) void ServerCancel();
+    /** RMB let go: the rig stops coming out of the water. */
+    UFUNCTION(Server, Reliable) void ServerStopRetrieve();
+    void CancelReleased();
     void Escape();
+    /** RMB: the strike. On a bite it hooks the fish (or misses it); otherwise it frightens a fish trying the bait. */
+    void Strike();
     FTimerHandle FishingTimer;
     double NextActionTime = 0;
     float FightTime = 0;

@@ -67,7 +67,6 @@ namespace
         return FVector2D(LakeMap::Ground(X + 100, Y) - LakeMap::Ground(X - 100, Y), LakeMap::Ground(X, Y + 100) - LakeMap::Ground(X, Y - 100)).Size() / 200;
     }
     float YawOf(const FVector2D& Dir) { return FMath::RadiansToDegrees(FMath::Atan2(Dir.Y, Dir.X)); }
-    float DamDistance(const FVector2D& P) { const LakeMap::FDam& D = LakeMap::Dam(); return SegmentDistance2D(P, D.A, D.B); }
 }
 
 void ALakeEnvironment::BeginPlay()
@@ -105,7 +104,6 @@ void ALakeEnvironment::BeginPlay()
     const LakeMap::FPier& Pier = LakeMap::Pier();
     const FVector2D PierEnd = Pier.Root + Pier.Dir * Pier.Length;
     const LakeMap::FShorePoint Landing = LakeMap::Landing();
-    const LakeMap::FDam& Dam = LakeMap::Dam();
     const FVector2D Island = LakeMap::IslandCentre();
     LakeMap::LilyBeds();
     LakeMap::Snags();
@@ -151,7 +149,7 @@ void ALakeEnvironment::BeginPlay()
                     // faces; none of them = the muddy shore and the lake bed.
                     const float L = -LakeMap::ShoreDistance(X, Y) / 100;
                     const float Bare = FMath::SmoothStep(0.55f, 0.95f, (float)FVector2D(DX, DY).Size()) * FMath::SmoothStep(0.2f, 1.0f, L);
-                    const float Open = FMath::SmoothStep(900.0f, 1800.0f, (float)FVector2D::Distance(P, Start)) * FMath::SmoothStep(300.0f, 700.0f, DamDistance(P));
+                    const float Open = FMath::SmoothStep(900.0f, 1800.0f, (float)FVector2D::Distance(P, Start));
                     const float Forest = Woodland(P, L) * Open;
                     const float Meadow = FMath::SmoothStep(1.5f, 5.0f, L) * (1 - Forest);
                     // Clay faces get some dark forest soil mixed in: dirty, not like a sand dune.
@@ -241,6 +239,11 @@ void ALakeEnvironment::BeginPlay()
     const FVector2D WaterExtent = LakeBox.GetExtent() + FVector2D(3000, 3000);
     Add(Water, FVector(LakeBox.GetCenter(), LakeMap::SurfaceZ - 6), FVector(WaterExtent.X / 50, WaterExtent.Y / 50, 0.12));
     Water->SetCullDistances(0, 0);
+    // The water slab must not shade what is under it: the sun and the sky light the shallows, the
+    // bottom and the fish through the water (the water material dims them by depth itself).
+    Water->SetCastShadow(false);
+    Water->bAffectDistanceFieldLighting = false;
+    Water->bAffectDynamicIndirectLighting = false;
     auto* Bark = Group(TEXT("Cylinder"), TEXT("M_OldBark"), true);    // piles, snags, stakes, logs
     auto* Wood = Group(TEXT("Cube"), TEXT("M_WeatheredWood"), true);
     auto* Metal = Group(TEXT("Cylinder"), TEXT("M_Metal"), true);
@@ -255,7 +258,20 @@ void ALakeEnvironment::BeginPlay()
     // bSway = false: the deep forest, seen from the lake as the far wall of trees: no wind and no
     // shadow casting. Instanced skinned meshes redraw their virtual shadow pages every frame even
     // when still (they always count as moving), which is the main cost of a forest.
-    auto Plants = [this, Wind](const TCHAR* Folder, const TCHAR* Prefix, const TCHAR* Letters, float CullDistance, bool bSway = true)
+    auto PlantComponent = [this, Wind](USkinnedAsset* Mesh, float CullDistance, bool bSway)
+    {
+        auto* Component = NewObject<UInstancedSkinnedMeshComponent>(this);
+        Component->SetupAttachment(RootComponent);
+        Component->SetSkinnedAssetAndUpdate(Mesh);
+        if (bSway) Component->SetTransformProvider(Wind);
+        else Component->SetCastShadow(false);       // far forest: Lumen shades it, no shadow pages to redraw
+        Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        Component->SetCullDistances(CullDistance * 0.8f, CullDistance);
+        Component->RegisterComponent();
+        AddInstanceComponent(Component);
+        return Component;
+    };
+    auto Plants = [&PlantComponent](const TCHAR* Folder, const TCHAR* Prefix, const TCHAR* Letters, float CullDistance, bool bSway = true)
     {
         TArray<UInstancedSkinnedMeshComponent*> Variants;
         for (const TCHAR* Letter = Letters; *Letter; ++Letter)
@@ -267,27 +283,32 @@ void ALakeEnvironment::BeginPlay()
                 UE_LOG(LogTemp, Warning, TEXT("Megaplant mesh missing: %s/%s"), Folder, *Name);
                 continue;
             }
-            auto* Component = NewObject<UInstancedSkinnedMeshComponent>(this);
-            Component->SetupAttachment(RootComponent);
-            Component->SetSkinnedAssetAndUpdate(Mesh);
-            if (bSway) Component->SetTransformProvider(Wind);
-            else Component->SetCastShadow(false);       // far forest: Lumen shades it, no shadow pages to redraw
-            Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-            Component->SetCullDistances(CullDistance * 0.8f, CullDistance);
-            Component->RegisterComponent();
-            AddInstanceComponent(Component);
-            Variants.Add(Component);
+            Variants.Add(PlantComponent(Mesh, CullDistance, bSway));
         }
+        return Variants;
+    };
+    // Plants grown in the Procedural Vegetation Editor (graphs and exports in /Game/Plants/PV).
+    auto GrownPlant = [&PlantComponent](const TCHAR* Name, float CullDistance, bool bSway = true)
+    {
+        TArray<UInstancedSkinnedMeshComponent*> Variants;
+        if (auto* Mesh = LoadObject<USkinnedAsset>(nullptr, *FString::Printf(TEXT("/Game/Plants/PV/%s.%s"), Name, Name)))
+            Variants.Add(PlantComponent(Mesh, CullDistance, bSway));
+        else
+            UE_LOG(LogTemp, Warning, TEXT("Grown plant missing: %s"), Name);
         return Variants;
     };
     // Trees by the water sway and cast shadows; the forest behind stands still and is seen from
     // across the lake, so it is drawn far.
     const auto Pines = Plants(TEXT("Tree_Baltic_Pine/Tree_Baltic_Pine_01"), TEXT("Tree_Baltic_Pine_01"), TEXT("ABCD"), 40000);
-    const auto Spruces = Plants(TEXT("Tree_Norway_Spruce/Tree_Norway_Spruce_01"), TEXT("Tree_Norway_Spruce_01"), TEXT("ABCD"), 40000);
+    auto Spruces = Plants(TEXT("Tree_Norway_Spruce/Tree_Norway_Spruce_01"), TEXT("Tree_Norway_Spruce_01"), TEXT("ABCD"), 40000);
+    Spruces.Append(GrownPlant(TEXT("SKM_PV_Spruce"), 40000));            // a fifth spruce, grown in the editor
     const auto Birches = Plants(TEXT("Tree_Silver_Birch/Tree_Silver_Birch_01"), TEXT("Tree_Silver_Birch_01"), TEXT("ABCD"), 40000);
     const auto Alders = Plants(TEXT("Tree_Black_Alder/Tree_Black_Alder_01"), TEXT("Tree_Black_Alder_01"), TEXT("ABCD"), 40000);
     const auto StillPines = Plants(TEXT("Tree_Baltic_Pine/Tree_Baltic_Pine_01"), TEXT("Tree_Baltic_Pine_01"), TEXT("ABCD"), 110000, false);
-    const auto StillSpruces = Plants(TEXT("Tree_Norway_Spruce/Tree_Norway_Spruce_01"), TEXT("Tree_Norway_Spruce_01"), TEXT("ABCD"), 110000, false);
+    auto StillSpruces = Plants(TEXT("Tree_Norway_Spruce/Tree_Norway_Spruce_01"), TEXT("Tree_Norway_Spruce_01"), TEXT("ABCD"), 110000, false);
+    StillSpruces.Append(GrownPlant(TEXT("SKM_PV_Spruce"), 110000, false));
+    // Undergrowth: a broad deciduous shrub (3.4 m tall, 5 m across at full size), drawn near only.
+    const auto Shrubs = GrownPlant(TEXT("SKM_PV_Shrub"), 15000);
     const auto StillBirches = Plants(TEXT("Tree_Silver_Birch/Tree_Silver_Birch_01"), TEXT("Tree_Silver_Birch_01"), TEXT("ABCD"), 110000, false);
     const auto StillAlders = Plants(TEXT("Tree_Black_Alder/Tree_Black_Alder_01"), TEXT("Tree_Black_Alder_01"), TEXT("ABCD"), 110000, false);
     const auto Bulrush = Plants(TEXT("Plant_Bulrush/Plant_Bulrush_01"), TEXT("Plant_Common_Bulrush_01"), TEXT("ABCDE"), 18000);
@@ -306,7 +327,7 @@ void ALakeEnvironment::BeginPlay()
 
     // Forest: dense along the wooded banks (birch and alder by the water, pine and spruce behind,
     // pines on the bluff), thinner further off; groves and lone trees in the meadow; the island
-    // wooded. The camp, the dam, the village plateau and the spots stay open.
+    // wooded. The camp, the village plateau and the spots stay open.
     int32 TreeCount = 0;
     TArray<FTransform> TrunkTransforms;
     {
@@ -325,7 +346,7 @@ void ALakeEnvironment::BeginPlay()
                 // Trees per cell: one in two by the water, fewer deep in the woods.
                 const float Chance = bForest ? (bIsland ? 0.7f : L < 70 ? 0.5f : L < 180 ? 0.24f : 0.13f) : 0.012f;
                 if (Random.FRand() > Chance) continue;
-                if (FVector2D::Distance(P, Village) < 9000 || FVector2D::Distance(P, Start) < 1600 || DamDistance(P) < 1300) continue;
+                if (FVector2D::Distance(P, Village) < 9000 || FVector2D::Distance(P, Start) < 1600) continue;
                 if (LakeMap::SpotAmount(P) > 0.05f || SegmentDistance2D(P, Pier.Root - Pier.Dir * 800, Pier.Root) < 600) continue;
                 if (Slope(P.X, P.Y) > 0.8f) continue;               // not on the faces of bluffs, scarps and ravines
                 // Out in the meadows trees stand in small groves of birch and alder.
@@ -357,7 +378,7 @@ void ALakeEnvironment::BeginPlay()
     {
         const LakeMap::FShorePoint& S = Shore[I];
         if (LakeMap::SpotAmount(S.Location) > 0.1f || LakeMap::BluffHeight(S.Location) > 0.5f || Random.FRand() > 0.45f * LakeMap::ForestAmount(S.Location)) continue;
-        if (SegmentDistance2D(S.Location, Pier.Root, PierEnd) < 1500 || DamDistance(S.Location) < 1500) continue;
+        if (SegmentDistance2D(S.Location, Pier.Root, PierEnd) < 1500) continue;
         const FVector2D P = S.Location + S.Outward * Random.FRandRange(150, 450);
         const FVector Toward(-S.Outward, 0);
         const FVector Axis = FVector::CrossProduct(FVector::UpVector, Toward).GetSafeNormal();
@@ -366,11 +387,69 @@ void ALakeEnvironment::BeginPlay()
         TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, FVector(P, Ground(P) + 235), FVector(0.4f, 0.4f, 4.5f)));
         ++TreeCount;
     }
+    // The little bay at the west end: a few alders and birches leaning out over it.
+    {
+        const FVector2D Bay = LakeMap::WestBay();
+        int32 Leaning = 0;
+        for (int32 I = 0; I < Shore.Num() && Leaning < 5; I += 3)
+        {
+            const LakeMap::FShorePoint& S = Shore[I];
+            if (FVector2D::Distance(S.Location, Bay) > 2200 || LakeMap::SpotAmount(S.Location) > 0.05f || Random.FRand() > 0.35f) continue;
+            const FVector2D P = S.Location + S.Outward * Random.FRandRange(180, 320);
+            const FVector Toward(-S.Outward, 0);
+            const FVector Axis = FVector::CrossProduct(FVector::UpVector, Toward).GetSafeNormal();
+            const FQuat Lean = FQuat(Axis, FMath::DegreesToRadians(Random.FRandRange(10, 20))) * FQuat(FVector::UpVector, Random.FRandRange(0, 2 * PI));
+            Place(Random.FRand() < 0.6f ? Alders : Birches, FTransform(Lean, FVector(P, Ground(P) - 15), FVector(Random.FRandRange(0.75f, 1.0f))));
+            TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, FVector(P, Ground(P) + 235), FVector(0.4f, 0.4f, 4.5f)));
+            ++TreeCount;
+            ++Leaning;
+        }
+    }
     Trunks->AddInstances(TrunkTransforms, false, true);
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BUILD trees %d, %.1f s"), TreeCount, FPlatformTime::Seconds() - BuildStart);
 
-    // Mossy boulders (Quixel Megascans, Nanite): under the bluffs, along the banks, riprap on the
-    // dam's water face, a few in the fields and the woods.
+    // Shrubs: thick along the forest edge, a few under the trees, clumps on the wooded banks a few
+    // metres from the water. The camp, the spots, the pier and the village stay open.
+    int32 ShrubCount = 0;
+    auto PlaceShrub = [&](const FVector2D& P, float MinScale, float MaxScale)
+    {
+        if (FVector2D::Distance(P, Village) < 9000 || FVector2D::Distance(P, Start) < 1400) return;
+        if (LakeMap::SpotAmount(P) > 0.05f || SegmentDistance2D(P, Pier.Root - Pier.Dir * 800, PierEnd) < 600) return;
+        if (Slope(P.X, P.Y) > 0.7f || -LakeMap::ShoreDistance(P.X, P.Y) < 180) return;
+        const FQuat Tilt = FQuat(FVector(Random.FRandRange(-1, 1), Random.FRandRange(-1, 1), 0).GetSafeNormal(), FMath::DegreesToRadians(Random.FRandRange(0, 5)));
+        const float S = Random.FRandRange(MinScale, MaxScale);
+        Place(Shrubs, FTransform(Tilt * FQuat(FVector::UpVector, Random.FRandRange(0, 2 * PI)), FVector(P, Ground(P) - 10), FVector(S, S, S * Random.FRandRange(0.85f, 1.1f))));
+        ++ShrubCount;
+    };
+    {
+        const FBox2D Land = LakeMap::TerrainBounds.ExpandBy(-500);
+        constexpr float ShrubCell = 450.0f;
+        for (float CY = Land.Min.Y; CY < Land.Max.Y; CY += ShrubCell)
+            for (float CX = Land.Min.X; CX < Land.Max.X; CX += ShrubCell)
+            {
+                const FVector2D P(CX + Random.FRandRange(0, ShrubCell), CY + Random.FRandRange(0, ShrubCell));
+                const float L = -LakeMap::ShoreDistance(P.X, P.Y) / 100;
+                if (L < 3 || L > 160) continue;
+                const bool bIsland = FVector2D::Distance(P, Island) < 3600;
+                const float Forest = bIsland ? 1.0f : LakeMap::ForestAmount(P);
+                if (Forest < 0.3f) continue;
+                const float FS = bIsland ? 2.0f : ForestStart(P);
+                // Edge: from a few metres before the first trees to ten metres in; then sparse.
+                const float Edge = 1 - FMath::SmoothStep(4.0f, 14.0f, FMath::Abs(L - FS - 4));
+                if (Random.FRand() > 0.06f * Forest + 0.4f * Edge * Forest) continue;
+                PlaceShrub(P, 0.35f, 0.7f);
+            }
+        for (int32 I = 0; I < Shore.Num(); I += 6)
+        {
+            const LakeMap::FShorePoint& S = Shore[I];
+            if (LakeMap::BluffHeight(S.Location) > 0.5f || Random.FRand() > 0.3f * LakeMap::ForestAmount(S.Location)) continue;
+            PlaceShrub(S.Location + S.Outward * Random.FRandRange(220, 500), 0.3f, 0.55f);
+        }
+    }
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BUILD shrubs %d"), ShrubCount);
+
+    // Mossy boulders (Quixel Megascans, Nanite): under the bluffs, along the banks, a few in the
+    // fields and the woods.
     auto* Rocks = NewObject<UHierarchicalInstancedStaticMeshComponent>(this);
     Rocks->SetupAttachment(RootComponent);
     Rocks->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Fab/Megascans/3D/Mossy_Rocks_tjmudcfda/High/tjmudcfda_tier_1/StaticMeshes/tjmudcfda_tier_1.tjmudcfda_tier_1")));
@@ -391,14 +470,6 @@ void ALakeEnvironment::BeginPlay()
             // Under the bluffs the stones lie at the foot of the clay face, partly in the water.
             P = Sh.Location + Sh.Outward * (Bluff > 0.5f ? Random.FRandRange(-160, 40) : Random.FRandRange(-180, 260));
         }
-        else if (I < 620)
-        {
-            // Riprap: stones along the dam where the water laps against it.
-            const float T = Random.FRand();
-            P = FMath::Lerp(Dam.A, Dam.B, T) + FVector2D(Random.FRandRange(150, 500), 0);
-            if (!LakeMap::IsWater(P.X + 300, P.Y) || FVector2D::Distance(P, Dam.Spillway) < 500) continue;
-            S *= 0.7f;
-        }
         else
         {
             P = FVector2D(Random.FRandRange(LakeBox.Min.X - 15000, LakeBox.Max.X + 15000), Random.FRandRange(LakeBox.Min.Y - 15000, LakeBox.Max.Y + 15000));
@@ -416,7 +487,7 @@ void ALakeEnvironment::BeginPlay()
     for (const LakeMap::FShorePoint& S : Shore)
     {
         if (LakeMap::SpotAmount(S.Location) > 0.35f || LakeMap::BluffHeight(S.Location) > 0.7f) continue;
-        if (SegmentDistance2D(S.Location, Pier.Root, PierEnd) < 450 || DamDistance(S.Location) < 900) continue;
+        if (SegmentDistance2D(S.Location, Pier.Root, PierEnd) < 450) continue;
         const float Back = LakeMap::BackwaterAmount(S.Location.X, S.Location.Y);
         const float Shade = 0.35f * LakeMap::ForestAmount(S.Location);
         if (Random.FRand() > 0.55f + 0.35f * FMath::PerlinNoise2D(S.Location / 2500) + 0.4f * Back - Shade) continue;
@@ -515,15 +586,14 @@ void ALakeEnvironment::BeginPlay()
                 if (SegmentDistance2D(P, Pier.Root - Pier.Dir * 50, Pier.Root + Pier.Dir * 400) < 140) continue;
                 if (Slope(P.X, P.Y) > 0.6f) continue;                      // bare clay faces
                 const float Spot = LakeMap::SpotAmount(P);
-                const bool bDam = DamDistance(P) < 500;
                 UHierarchicalInstancedStaticMeshComponent* Kind;
-                // Tall bank grass in long stretches (not at the spots, on the dam or under the bluffs).
-                const bool bBank = L > 1.2f && L < 14.0f + 3.0f * FMath::PerlinNoise2D(P / 1500) && !bTrampled && Spot < 0.05f && !bDam
+                // Tall bank grass in long stretches (not at the spots or under the bluffs).
+                const bool bBank = L > 1.2f && L < 14.0f + 3.0f * FMath::PerlinNoise2D(P / 1500) && !bTrampled && Spot < 0.05f
                     && FMath::PerlinNoise2D(P / 4500 + FVector2D(7, 3)) > -0.25f && LakeMap::BluffHeight(P) < 0.8f;
                 // Bank grass: fewer, larger tufts (cheaper to draw, just as dense to the eye).
                 if (bBank && Random.FRand() < 0.4f) continue;
                 if (bBank) Kind = FMath::PerlinNoise2D(P / 700 + FVector2D(31, 7)) > 0.3f && Random.FRand() < 0.6f ? Meadowsweet : Waist;
-                else if (bTrampled || Spot > 0.3f || bDam) { if (Random.FRand() < 0.35f) continue; Kind = Short; }
+                else if (bTrampled || Spot > 0.3f) { if (Random.FRand() < 0.35f) continue; Kind = Short; }
                 else if (L < 2.5f) Kind = Random.FRand() < 0.75f ? Sedge : Tall;
                 else if (FMath::PerlinNoise2D(P / 900) > 0.3f && Random.FRand() < 0.5f) Kind = Blooms;
                 else Kind = Random.FRand() < 0.5f ? Short : Tall;
@@ -594,32 +664,6 @@ void ALakeEnvironment::BeginPlay()
         ++Logs;
     }
 
-    // --- the dam: a timber spillway gate at its south end, a few old posts along the crest ---------
-    {
-        const FVector2D Across = (Dam.B - Dam.A).GetSafeNormal();
-        const float Yaw = YawOf(Across);
-        const FVector2D S = Dam.Spillway;
-        const float Crest = LakeMap::SurfaceZ + Dam.CrestM * 100;
-        // Two heavy posts either side of the notch, a board gate between them, a footbridge over it.
-        for (float Side : { -1.0f, 1.0f })
-        {
-            const FVector2D P = S + Across * Side * 260;
-            Add(Bark, FVector(P, LakeMap::SurfaceZ + 60), FVector(0.32f, 0.32f, 2.6f), FRotator(0, 0, Random.FRandRange(-2, 2)));
-        }
-        for (int32 K = 0; K < 4; ++K)
-            Add(Wood, FVector(S + FVector2D(160, 0), LakeMap::SurfaceZ - 10 + K * 26), FVector(0.08f, 4.6f, 0.24f), FRotator(0, Yaw - 90, Random.FRandRange(-1, 1)));
-        for (int32 K = 0; K < 9; ++K)
-            Add(Wood, FVector(S + Across * (-200 + K * 50), Crest + 4), FVector(1.6f, 0.45f, 0.05f), FRotator(Random.FRandRange(-1, 1), Yaw + 90, 0));
-        // Old posts of a long-gone railing along the crest.
-        for (float T = 0.06f; T < 0.95f; T += 0.08f)
-        {
-            if (Random.FRand() < 0.35f) continue;
-            const FVector2D P = FMath::Lerp(Dam.A, Dam.B, T) + FVector2D(220, 0);
-            if (FVector2D::Distance(P, S) < 600) continue;
-            Add(Bark, FVector(P, Ground(P) + 45), FVector(0.1f, 0.1f, 1.0f), FRotator(Random.FRandRange(-6, 6), 0, Random.FRandRange(-6, 6)));
-        }
-    }
-
     // --- the landing: boats and nets drying; the village itself comes later on the plateau above ---
     {
         auto Prop = [this](const TCHAR* Name, FVector Location, FRotator Rotation, bool bCollision)
@@ -659,6 +703,65 @@ void ALakeEnvironment::BeginPlay()
             const FVector2D P = Landing.Location + Landing.Outward * 900 + Along * S * 450;
             Prop(TEXT("NetRack"), FVector(P, Ground(P)), FRotator(0, YawOf(Along) + Random.FRandRange(-8, 8), 0), false);
         }
+    }
+
+    // --- the west end: where an old weir once held the water. A ragged row of its rotten piles still
+    // stands in the shallows; boulders along the waterline, a tree fallen into the little bay and an
+    // old boat left upside down on the meadow bank. ---------------------------------------------------
+    {
+        const LakeMap::FShorePoint Tip = LakeMap::NearestShore(LakeMap::WestEnd());
+        const FVector2D Along(-Tip.Outward.Y, Tip.Outward.X);
+        int32 Piles = 0, Boulders = 0;
+        bool bFallen = false, bBoat = false;
+        for (int32 K = -6; K <= 6; ++K)
+        {
+            if (Random.FRand() < 0.3f) continue;
+            const FVector2D P = Tip.Location - Tip.Outward * (800 + Random.FRandRange(-80, 80)) + Along * (K * 220 + Random.FRandRange(-40, 40));
+            if (!LakeMap::IsWater(P.X, P.Y) || LakeMap::SpotAmount(P) > 0) continue;
+            // Most stick up a little; some are broken off at the waterline.
+            const float Bed = Ground(P) - 40, Top = LakeMap::SurfaceZ + (Random.FRand() < 0.3f ? Random.FRandRange(-6, 4) : Random.FRandRange(15, 75));
+            const float Radius = Random.FRandRange(9, 14);
+            Add(Bark, FVector(P, (Bed + Top) * 0.5f), FVector(Radius / 50, Radius / 50, (Top - Bed) / 100), FRotator(Random.FRandRange(-9, 9), 0, Random.FRandRange(-9, 9)));
+            ++Piles;
+        }
+        // Mossy boulders along the rounded end, some half in the water.
+        for (const LakeMap::FShorePoint& S : Shore)
+        {
+            if (FVector2D::Distance(S.Location, Tip.Location) > 3500 || LakeMap::SpotAmount(S.Location) > 0.2f || Random.FRand() > 0.06f) continue;
+            const FVector2D P = S.Location + S.Outward * Random.FRandRange(-150, 120);
+            const float Size = Random.FRandRange(0.4f, 1.1f);
+            Add(Rocks, FVector(P, Ground(P) - 6), FVector(Size, Size, Size * Random.FRandRange(0.7f, 1.3f)), FRotator(Random.FRandRange(-10, 10), Random.FRandRange(0, 360), Random.FRandRange(-10, 10)));
+            ++Boulders;
+        }
+        // A tree fallen from the back of the bay into the water.
+        {
+            const LakeMap::FShorePoint Back = LakeMap::NearestShore(LakeMap::WestBay());
+            const FVector2D Root2 = Back.Location + Back.Outward * 150;
+            const FVector2D Tip2 = Root2 + (-Back.Outward).GetRotated(18) * 1300;
+            bFallen = LakeMap::IsWater(Tip2.X, Tip2.Y) && LakeMap::SpotAmount(Tip2) == 0;
+            if (bFallen) Log(FVector(Root2, Ground(Root2) + 22), FVector(Tip2, FMath::Min(Ground(Tip2) + 25, LakeMap::SurfaceZ - 25)), 24, 7);
+        }
+        // An old boat upside down on the meadow bank south of the end.
+        {
+            const LakeMap::FShorePoint Bank = LakeMap::NearestShore(Tip.Location - Along * 3200);
+            const FVector2D P = Bank.Location + Bank.Outward * 500;
+            if (LakeMap::SpotAmount(P) == 0)
+            {
+                auto* Boat = NewObject<UStaticMeshComponent>(this);
+                Boat->SetupAttachment(RootComponent);
+                Boat->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Village/SM_Boat_A.SM_Boat_A")));
+                Boat->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+                Boat->SetCollisionResponseToAllChannels(ECR_Block);
+                Boat->RegisterComponent();
+                AddInstanceComponent(Boat);
+                // Turned over, it rests on its gunwales: lift it by the hull's height.
+                const float Hull = Boat->GetStaticMesh() ? Boat->GetStaticMesh()->GetBoundingBox().Max.Z : 40.0f;
+                const FVector2D Dir(-Bank.Outward.Y, Bank.Outward.X);
+                Boat->SetWorldLocationAndRotation(FVector(P, Ground(P) + Hull - 6), FRotator(2, YawOf(Dir) + 12, 178));
+                bBoat = true;
+            }
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WEST piles %d, boulders %d, fallen tree %d, boat %d"), Piles, Boulders, bFallen, bBoat);
     }
 
     // --- fishing spots: boards at the water's edge and two rod stakes ------------------------------
@@ -839,17 +942,40 @@ void ALakeEnvironment::BeginPlay()
             const LakeMap::FPier& Pr = LakeMap::Pier();
             Shots.Add({ FVector(Pr.Root + Pr.Dir * (Pr.Length - 60), LakeMap::SurfaceZ + 150), FRotator(-5, YawOf(Pr.Dir) - 40, 0), TEXT("WorldPreview_2.png"), false });
             // The high bluff seen from the water.
-            const LakeMap::FShorePoint Bluff = LakeMap::NearestShore({ 3800, -12500 });
+            const LakeMap::FShorePoint Bluff = LakeMap::NearestShore({ 2850, -9375 });
             const FVector BluffEye(Bluff.Location - Bluff.Outward * 4500, LakeMap::SurfaceZ + 300);
             Shots.Add({ BluffEye, (FVector(Bluff.Location + Bluff.Outward * 400, LakeMap::SurfaceZ + 400) - BluffEye).Rotation(), TEXT("WorldPreview_3.png"), true });
             SpotView(TEXT("Заводь"), -55, TEXT("WorldPreview_5.png"));
-            // On the dam, looking up the lake.
-            const LakeMap::FDam& D = LakeMap::Dam();
-            const FVector2D DamEye = FMath::Lerp(D.A, D.B, 0.45f);
-            Shots.Add({ Stand(DamEye), FRotator(-5, 0, 0), TEXT("WorldPreview_Dam.png"), false });
+            // The rounded west end with its little bay, and from the water: the old weir's piles.
+            SpotView(TEXT("Омут"), 30, TEXT("WorldPreview_West.png"));
+            const LakeMap::FShorePoint WestTip = LakeMap::NearestShore(LakeMap::WestEnd());
+            const FVector WestEye(WestTip.Location - WestTip.Outward * 3200 + FVector2D(0, 600), LakeMap::SurfaceZ + 260);
+            Shots.Add({ WestEye, (FVector(WestTip.Location - WestTip.Outward * 600, LakeMap::SurfaceZ + 80) - WestEye).Rotation(), TEXT("WorldPreview_WestEnd.png"), true });
+            const LakeMap::FShorePoint BayBack = LakeMap::NearestShore(LakeMap::WestBay());
+            const FVector BayEye(BayBack.Location - BayBack.Outward * 2600, LakeMap::SurfaceZ + 220);
+            Shots.Add({ BayEye, (FVector(BayBack.Location - BayBack.Outward * 500, LakeMap::SurfaceZ + 60) - BayEye).Rotation(), TEXT("WorldPreview_WestBay.png"), true });
             SpotView(TEXT("Остров"), 0, TEXT("WorldPreview_Island.png"));
             SpotView(TEXT("Коряжник"), 30, TEXT("WorldPreview_Snags.png"));
             SpotView(TEXT("Верховье"), 40, TEXT("WorldPreview_Upper.png"));
+            // A low wooded bank near the camp: the shrubs and the grown spruce, from the water and
+            // from the bank itself looking along the forest edge.
+            {
+                const FVector2D From = LakeMap::StartSpot();
+                const LakeMap::FShorePoint* Best = nullptr;
+                for (const LakeMap::FShorePoint& S : LakeMap::Shoreline())
+                    if (LakeMap::ForestAmount(S.Location) > 0.9f && LakeMap::BluffHeight(S.Location) < 0.3f && LakeMap::SpotAmount(S.Location) < 0.02f
+                        && FVector2D::Distance(S.Location, From) > 3000
+                        && (!Best || FVector2D::Distance(S.Location, From) < FVector2D::Distance(Best->Location, From)))
+                        Best = &S;
+                if (Best)
+                {
+                    const FVector Eye(Best->Location - Best->Outward * 2400, LakeMap::SurfaceZ + 220);
+                    Shots.Add({ Eye, (FVector(Best->Location + Best->Outward * 900, LakeMap::SurfaceZ + 350) - Eye).Rotation(), TEXT("WorldPreview_Shrubs.png"), true });
+                    const FVector2D Along(-Best->Outward.Y, Best->Outward.X);
+                    const FVector2D OnBank = Best->Location + Best->Outward * 400;
+                    Shots.Add({ Stand(OnBank) + FVector(0, 0, 70), FRotator(-4, YawOf(Along + Best->Outward * 0.6f), 0), TEXT("WorldPreview_Edge.png"), true });
+                }
+            }
             // From the meadow above the bay, where the village will stand.
             const FVector2D Plateau = LakeMap::VillageCentre() + FVector2D(0, -4000);
             Shots.Add({ Stand(Plateau), FRotator(-4, YawOf(LakeMap::Landing().Location - Plateau), 0), TEXT("WorldPreview_Village.png"), false });
@@ -930,7 +1056,7 @@ void ALakeEnvironment::BeginPlay()
         FishRandom.Initialize(20261027);
         for (int32 I = 0; I < 20; ++I) SpawnFish(EFishSpecies::Perch, 6, NextSchool++);
         for (int32 I = 0; I < 22; ++I) SpawnFish(EFishSpecies::Roach, 8, NextSchool++);
-        SpawnFish(EFishSpecies::Crucian, 80, -1);
+        SpawnFish(EFishSpecies::Crucian, 240, -1);
         SpawnFish(EFishSpecies::Pike, 24, -1);
         for (int32 Species = 0; Species < (int32)EFishSpecies::Count; ++Species)
         {

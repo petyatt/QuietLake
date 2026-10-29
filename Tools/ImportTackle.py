@@ -61,7 +61,7 @@ F1, F3 = unreal.CustomMaterialOutputType.CMOT_FLOAT1, unreal.CustomMaterialOutpu
 prop(custom('return saturate(1 - A * 4);', F1), '', unreal.MaterialProperty.MP_METALLIC)
 prop(custom('return lerp(0.22, 0.5, saturate(A * 4));', F1), '', unreal.MaterialProperty.MP_ROUGHNESS)
 # Fluorescent paint (alpha 0.5, or saturated red/orange) glows a little so the float reads from the bank.
-prop(custom('float paint = max(saturate(1 - abs(A - 0.5) * 8), (V.r > 0.7 && V.g < 0.45 && V.b < 0.12) ? 1.0 : 0.0); return V * paint * 12;', F3),
+prop(custom('float paint = max(saturate(1 - abs(A - 0.5) * 8), (V.r > 0.7 && V.g < 0.45 && V.b < 0.12) ? 1.0 : 0.0); return V * paint * 1.5;', F3),
      '', unreal.MaterialProperty.MP_EMISSIVE_COLOR)
 lib.recompile_material(mat)
 unreal.EditorAssetLibrary.save_asset('/Game/Tackle/M_Tackle')

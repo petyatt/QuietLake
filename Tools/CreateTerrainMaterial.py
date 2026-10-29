@@ -97,7 +97,7 @@ return float3(grass, moss, wet);
 
 BLEND = 'float g = W.x, m = W.y; float f = saturate(1 - g - m);\n'
 color = custom(mat, BLEND + """
-float3 c = G * g + F * f + M * m;
+float3 c = G * (g * 0.78) + F * f + M * m;
 float macro = lerp(0.85, 1.12, frac(sin(dot(floor(P.xy / 900), float2(12.9898, 78.233))) * 43758.5453));
 c *= macro;
 c = lerp(c, c * float3(0.5, 0.48, 0.45), W.z);       // damp soil is darker

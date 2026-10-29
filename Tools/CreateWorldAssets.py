@@ -1,4 +1,8 @@
-"""Create original procedural materials and import our synthesized ambience."""
+"""Create original procedural materials and import our synthesized ambience.
+
+QUIET_LAKE_ONLY=M_LakeSurface,... (environment variable): rebuild only these materials and skip
+the audio, so tuned assets made by other scripts stay as they are.
+"""
 import os
 import unreal
 
@@ -19,13 +23,15 @@ def connect(source, output, target, input_name):
 def custom(material, code, inputs, output=unreal.CustomMaterialOutputType.CMOT_FLOAT3):
     node = expression(material, unreal.MaterialExpressionCustom, code=code, output_type=output)
     entries = []
-    for name, source in inputs:
+    # An input is (name, source) or (name, source, output pin), e.g. 'RGBA' for all four
+    # components of a vector parameter.
+    for entry in inputs:
         item = unreal.CustomInput()
-        item.set_editor_property('input_name', name)
+        item.set_editor_property('input_name', entry[0])
         entries.append(item)
     node.set_editor_property('inputs', entries)
-    for name, source in inputs:
-        connect(source, '', node, name)
+    for entry in inputs:
+        connect(entry[1], entry[2] if len(entry) > 2 else '', node, entry[0])
     return node
 
 palette = {
@@ -127,6 +133,23 @@ if (R > 0.01)
     }
     rainRough = 0.35 * R * R + 0.05 * R;
 }
+// Waves simulated near the viewer (ALakeRipples): a height field in cm on a square window,
+// RW = (origin x, origin y, size, one texel in UV). Its slope adds to the ripples; it fades out
+// towards the window edge.
+if (RW.z > 0)
+{
+    float2 ruv = (P.xy - RW.xy) / RW.z;
+    float edge = saturate(min(min(ruv.x, ruv.y), min(1.0 - ruv.x, 1.0 - ruv.y)) * 14.0);
+    if (edge > 0)
+    {
+        float e = RW.w;
+        float hl = Texture2DSampleLevel(Rip, RipSampler, ruv - float2(e, 0), 0).r;
+        float hr = Texture2DSampleLevel(Rip, RipSampler, ruv + float2(e, 0), 0).r;
+        float hd = Texture2DSampleLevel(Rip, RipSampler, ruv - float2(0, e), 0).r;
+        float hu = Texture2DSampleLevel(Rip, RipSampler, ruv + float2(0, e), 0).r;
+        g += float2(hr - hl, hu - hd) / (2.0 * e * RW.z) * edge;
+    }
+}
 float rough = 0.02 + lost * 3.0 + 0.04 * W + rainRough;
 return float4(normalize(float3(-g, 1)), saturate(rough));
 """
@@ -142,9 +165,12 @@ return foam * smoothstep(0.55, 0.9, W) * (1.0 - saturate(distance(P, C) / 9000))
 """
 
 weather = unreal.load_asset('/Game/Weather/MPC_Weather')
+only = [n for n in os.environ.get('QUIET_LAKE_ONLY', '').split(',') if n]
 if not weather:
     raise RuntimeError('Run CreateWeatherAssets.py first: MPC_Weather is missing')
 for name, rgb in palette.items():
+    if only and name not in only:
+        continue
     path = '/Game/Materials/' + name
     # Recreate from scratch: delete_all_material_expressions keeps special output nodes
     # (e.g. Single Layer Water), so re-running the script used to stack duplicates.
@@ -164,23 +190,35 @@ for name, rgb in palette.items():
         param = lambda n: expression(mat, unreal.MaterialExpressionCollectionParameter, collection=weather, parameter_name=n)
         rain, wind, wx, wy, wetness = param('Rain'), param('Wind'), param('WindDirX'), param('WindDirY'), param('Wetness')
         inputs = [('P', position), ('T', time), ('C', camera), ('R', rain), ('W', wind), ('X', wx), ('Y', wy)]
-        surface = custom(mat, WATER_SURFACE, inputs, unreal.CustomMaterialOutputType.CMOT_FLOAT4)
+        # The simulated waves (set at run time by ALakeRipples; a black texture and a zero window
+        # leave the water as it was).
+        ripples = expression(mat, unreal.MaterialExpressionTextureObjectParameter, parameter_name='Ripples',
+                             texture=unreal.load_asset('/Engine/EngineResources/Black'))
+        window = expression(mat, unreal.MaterialExpressionVectorParameter, parameter_name='RippleWindow',
+                            default_value=unreal.LinearColor(0, 0, 0, 0))
+        surface = custom(mat, WATER_SURFACE, inputs + [('Rip', ripples), ('RW', window, 'RGBA')], unreal.CustomMaterialOutputType.CMOT_FLOAT4)
         normal = expression(mat, unreal.MaterialExpressionComponentMask, r=True, g=True, b=True, a=False)
         rough = expression(mat, unreal.MaterialExpressionComponentMask, r=False, g=False, b=False, a=True)
         connect(surface, '', normal, '')
         connect(surface, '', rough, '')
         lib.connect_material_property(normal, '', unreal.MaterialProperty.MP_NORMAL)
         lib.connect_material_property(rough, '', unreal.MaterialProperty.MP_ROUGHNESS)
-        # Foam: the surface colour (it tints single-layer water everywhere, so it stays dark) turns
-        # white only on the foam.
+        # Foam: in single-layer water the base colour is a lit surface layer whose coverage is the
+        # Opacity input (unconnected it is 1 and hides the whole water body - the lake was a dark
+        # film). Only the foam covers the water; everywhere else one sees into it.
         foam = custom(mat, WATER_FOAM, inputs, unreal.CustomMaterialOutputType.CMOT_FLOAT1)
-        base = custom(mat, 'return lerp(float3(0.01, 0.013, 0.012), float3(0.6, 0.62, 0.63), saturate(F));', [('F', foam)])
+        base = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.6, 0.62, 0.63, 1))
         lib.connect_material_property(base, '', unreal.MaterialProperty.MP_BASE_COLOR)
+        lib.connect_material_property(foam, '', unreal.MaterialProperty.MP_OPACITY)
         out = expression(mat, unreal.MaterialExpressionSingleLayerWaterMaterialOutput)
-        # Peaty forest lake: red absorbed fast, greenish scattering (coefficients per metre);
-        # after long rain the runoff clouds it a little.
-        scatter = custom(mat, 'return float3(0.010, 0.022, 0.016) * (1.0 + 1.5 * Wt) + float3(0.004, 0.004, 0.002) * Wt;', [('Wt', wetness)])
-        absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.55, 0.20, 0.26, 1))
+        # A forest lake with a little peat: the humus in the water eats blue light most, then green,
+        # red least, so the water is tea-amber over a sandy bottom and dark brown-green in the deep;
+        # fine silt and plankton scatter a little light back (greenish-yellow). The engine takes the
+        # coefficients per centimetre (scene depth); below they are written per metre / 100.
+        # Visibility is about 1.5-2 m: a fish 30 cm down is plain to see from above, 70 cm down a
+        # shadow, the bottom at 1.6 m barely. After long rain the runoff clouds it.
+        scatter = custom(mat, 'return (float3(0.04, 0.05, 0.022) * (1.0 + 3.0 * Wt) + float3(0.15, 0.14, 0.08) * Wt) / 100.0;', [('Wt', wetness)])
+        absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.008, 0.009, 0.024, 1))
         connect(scatter, '', out, 'ScatteringCoefficients')
         connect(absorb, '', out, 'AbsorptionCoefficients')
     elif name == 'M_Terrain':
@@ -210,22 +248,52 @@ return c;""", [('P', position), ('V', vertex)])
     lib.recompile_material(mat)
     unreal.EditorAssetLibrary.save_asset(path)
 
+# Under the water (post process, switched on by ALakeLife only while the camera is below the
+# surface): the lake swallows the view within a couple of metres, fading into olive-brown murk whose
+# brightness follows what the camera sees (day, dusk, night). Extinction per centimetre.
+UNDERWATER = """
+float3 avg = 0;
+for (int i = 0; i < 5; i++)
+    for (int j = 0; j < 3; j++)
+        avg += SceneTextureLookup(ViewportUVToBufferUV(float2((i + 0.5) / 5.0, (j + 0.5) / 3.0)), 14, false).rgb;
+avg /= 15.0;
+float lum = dot(avg, float3(0.3, 0.59, 0.11));
+float3 murk = float3(0.42, 0.5, 0.26) * lum;
+float3 t = exp(-float3(0.011, 0.010, 0.022) * D);
+return C * t + murk * (1.0 - t);
+"""
+if not only or 'M_Underwater' in only:
+    path = '/Game/Materials/M_Underwater'
+    if unreal.EditorAssetLibrary.does_asset_exist(path) and not unreal.EditorAssetLibrary.delete_asset(path):
+        raise RuntimeError('Cannot delete old material: ' + path)
+    mat = assets.create_asset('M_Underwater', '/Game/Materials', unreal.Material, unreal.MaterialFactoryNew())
+    mat.set_editor_property('material_domain', unreal.MaterialDomain.MD_POST_PROCESS)
+    mat.set_editor_property('blendable_location', unreal.BlendableLocation.BL_SCENE_COLOR_BEFORE_DOF)
+    scene = expression(mat, unreal.MaterialExpressionSceneTexture, scene_texture_id=unreal.SceneTextureId.PPI_POST_PROCESS_INPUT0)
+    depth = expression(mat, unreal.MaterialExpressionSceneDepth)
+    murk = custom(mat, UNDERWATER, [('C', scene), ('D', depth)])
+    lib.connect_material_property(murk, '', unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    lib.recompile_material(mat)
+    unreal.EditorAssetLibrary.save_asset(path)
+
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# The old surf-like water loop and the first rain loop are no longer used.
-for old in ('A_Water', 'A_Rain'):
-    if unreal.EditorAssetLibrary.does_asset_exist('/Game/Audio/' + old):
-        unreal.EditorAssetLibrary.delete_asset('/Game/Audio/' + old)
-for name in ('A_Wind','A_Birds','A_RainLight','A_RainHeavy','A_Crickets'):
-    task = unreal.AssetImportTask()
-    task.set_editor_property('filename',os.path.join(root,'Tools','GeneratedAudio',name+'.wav'))
-    task.set_editor_property('destination_path','/Game/Audio')
-    task.set_editor_property('automated',True)
-    task.set_editor_property('replace_existing',True)
-    task.set_editor_property('save',True)
-    assets.import_asset_tasks([task])
-    sound = unreal.load_asset('/Game/Audio/'+name)
-    if not sound:
-        raise RuntimeError('Audio import failed: '+name)
-    sound.set_editor_property('looping',True)
-    unreal.EditorAssetLibrary.save_asset('/Game/Audio/'+name)
-unreal.log('QUIET_LAKE_WORLD_ASSETS_READY')
+# The ambience (skipped when only some materials are rebuilt).
+if not only:
+    # The old surf-like water loop and the first rain loop are no longer used.
+    for old in ('A_Water', 'A_Rain'):
+        if unreal.EditorAssetLibrary.does_asset_exist('/Game/Audio/' + old):
+            unreal.EditorAssetLibrary.delete_asset('/Game/Audio/' + old)
+    for name in ('A_Wind','A_Birds','A_RainLight','A_RainHeavy','A_Crickets'):
+        task = unreal.AssetImportTask()
+        task.set_editor_property('filename',os.path.join(root,'Tools','GeneratedAudio',name+'.wav'))
+        task.set_editor_property('destination_path','/Game/Audio')
+        task.set_editor_property('automated',True)
+        task.set_editor_property('replace_existing',True)
+        task.set_editor_property('save',True)
+        assets.import_asset_tasks([task])
+        sound = unreal.load_asset('/Game/Audio/'+name)
+        if not sound:
+            raise RuntimeError('Audio import failed: '+name)
+        sound.set_editor_property('looping',True)
+        unreal.EditorAssetLibrary.save_asset('/Game/Audio/'+name)
+unreal.log('QUIET_LAKE_WORLD_ASSETS_READY' + (' (only %s)' % ', '.join(only) if only else ''))

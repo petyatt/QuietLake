@@ -2,7 +2,8 @@
 
 M_Fish: two-sided, colour from vertex colours, swimming done in World Position Offset.
 Per-fish values come from Custom Primitive Data (no material instance per fish):
-  0 = tail beat rate (rad/s), 1 = bend amplitude (fraction of length), 2 = phase, 3 = mesh length (cm).
+  0 = tail beat rate (rad/s), 1 = bend amplitude (fraction of length), 2 = phase, 3 = mesh length (cm),
+  4 = curl into a turn (C-shape; offset of head and tail = curl * length * (u - 0.4)^2, mesh +Y).
 """
 import os
 import unreal
@@ -58,14 +59,18 @@ rate = prim_data(mat, 'SwimRate', 0, 8.0)
 amp = prim_data(mat, 'SwimAmplitude', 1, 0.05)
 phase = prim_data(mat, 'SwimPhase', 2, 0.0)
 length = prim_data(mat, 'MeshLength', 3, 25.0)
+curl = prim_data(mat, 'SwimCurl', 4, 0.0)
 
 # Lateral body wave in local space: travels head -> tail, grows towards the tail.
 wave = custom(mat, """
 float u = saturate(UV.x);
 float env = 0.12 + pow(u, 1.7);
 float side = A * Len * env * sin(u * 5.5 - T * R + Ph);
+// Turning, the whole body curves: head and tail towards the inside of the turn.
+float d = u - 0.4;
+side += C * Len * d * d;
 return float3(0, side, 0);
-""", [('UV', uv), ('T', time), ('R', rate), ('A', amp), ('Ph', phase), ('Len', length)])
+""", [('UV', uv), ('T', time), ('R', rate), ('A', amp), ('Ph', phase), ('Len', length), ('C', curl)])
 to_world = node(mat, unreal.MaterialExpressionTransform,
                 transform_source_type=unreal.MaterialVectorCoordTransformSource.TRANSFORMSOURCE_LOCAL,
                 transform_type=unreal.MaterialVectorCoordTransform.TRANSFORM_WORLD)
