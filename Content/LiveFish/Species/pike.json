@@ -1,0 +1,59 @@
+{
+  "order": 3,
+  "name": "Щука",
+  "noun": "щука",
+  "description": "Одиночный хищник из засады у края травы и коряг: подолгу стоит неподвижно, бьёт по рыбе до трети своего веса, проплывающей перед мордой. Наживку хватает и уводит поперёк пасти, останавливается развернуть и на втором рывке заглатывает. Червя берёт редко.",
+  "mesh": "/Game/Fish/SM_Fish_Pike.SM_Fish_Pike",
+  "meshLength": 62,
+  "condition": 0.65,
+  "minWeight": 0.8,
+  "maxWeight": 3.5,
+  "girthGrowth": 0.1,
+
+  "habitat":     { "shallows": 0.6, "reedEdge": 1.0, "dropOff": 0.4, "cover": 1.0, "deep": 0.1, "open": 0.1, "minDepthM": 0.6, "maxDepthM": 2.6, "bAmbush": true },
+  "feedHabitat": { "shallows": 0.5, "reedEdge": 1.0, "dropOff": 0.3, "cover": 1.0, "deep": 0.0, "open": 0.1, "minDepthM": 0.5, "maxDepthM": 2.2, "bAmbush": true },
+  "restHabitat": { "shallows": 0.1, "reedEdge": 0.2, "dropOff": 0.6, "cover": 0.7, "deep": 0.7, "open": 0.0, "minDepthM": 1.5, "maxDepthM": 4.0, "bAmbush": true },
+  "depthMin": 0.3,
+  "depthMax": 0.7,
+
+  "cruiseSpeed": 10,
+  "burstSpeed": 420,
+  "turnRate": 120,
+  "acceleration": 900,
+  "tailBeat": 7,
+  "gait": { "hoverTurn": 20, "turnRadius": 1.0, "turnAccel": 160, "response": 0.5, "wanderDeg": 10, "wanderHz": 0.05, "kick": 1.0, "kickPeriod": 1.0, "spacing": 3.0 },
+
+  "senseRadius": 800,
+  "baits": { "worm": 0.18, "maggot": 0.05, "bread": 0.0 },
+  "bite": {
+    "minTries": 0, "maxTries": 2, "takeChance": 0.55,
+    "pauseMin": 0.5, "pauseMax": 2.0,
+    "tries": [ { "motion": "Peck", "seconds": 0.3, "amount": 2.0, "amountMax": 4.0, "bTake": false } ],
+    "take": [
+      { "motion": "Sink", "seconds": 1.8, "secondsMax": 3.0, "amount": 100, "amountMax": 160, "hook": 0.45 },
+      { "motion": "Hold", "seconds": 3.0, "secondsMax": 7.0, "hook": 0.55 },
+      { "motion": "Sink", "seconds": 2.0, "secondsMax": 3.5, "amount": 60, "amountMax": 100, "hook": 0.95 }
+    ],
+    "runMin": 300, "runMax": 600,
+    "sensitive": 1.0,
+    "comeback": 0.3, "maxVisits": 2, "returnMin": 10, "returnMax": 25,
+    "directHold": 9.0,
+    "earlyStrikeText": "Подсекли рано: щука несла наживку поперёк пасти и выпустила её. Дождитесь, пока она остановится и снова потянет."
+  },
+  "feeding": {
+    "wariness": 0.4, "camouflage": 0.7, "dominance": 2.0, "strikeChance": 0.3, "hungerRate": 0.25,
+    "bPredator": true, "preyMaxWeight": 0.3, "restColumn": 0.8,
+    "browseStep": 700, "browseSpeed": 0.55, "fillRate": 0.0,
+    "bask": 0.12, "unflappable": 0.4
+  },
+  "diet":    { "insects": 0.05, "fry": 1.0, "fish": 0.7 },
+  "dietBig": { "fry": 0.2, "fish": 1.0 },
+  "mood": { "dawn": 0.95, "day": 0.6, "dusk": 0.9, "night": 0.12, "tempLow": 5, "tempBest": 17, "tempHigh": 27, "overcast": 0.6,
+            "lightRain": 1.3, "heavyRain": 0.7, "ripple": 1.3, "strongWind": 0.75, "fog": 0.8, "front": 0.8 },
+
+  "strength": 1.6,
+  "stamina": 12,
+  "runBurst": 1.2,
+  "stock": { "count": 24, "schoolSize": 1 },
+  "signs": { "swirl": "Бурун — щука ударила под водой", "splash": "Всплеск — удар щуки", "scatter": "Щука влетела в стайку малька", "jump": "Из воды выпрыгнула щука" }
+}

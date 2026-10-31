@@ -336,8 +336,9 @@ void ALakeWeather::BeginPlay()
             {
                 FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Shot.File, true, false);
                 const FFishConditions C = FishConditions();
-                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WEATHER_SHOT %s %s %.0f C | bite: perch %.2f roach %.2f crucian %.2f pike %.2f"), Shot.File, *Describe(), TemperatureC(),
-                    LakeFish::Activity(EFishSpecies::Perch, C), LakeFish::Activity(EFishSpecies::Roach, C), LakeFish::Activity(EFishSpecies::Crucian, C), LakeFish::Activity(EFishSpecies::Pike, C));
+                FString Bite;
+                for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp) Bite += FString::Printf(TEXT(" %s %.2f"), *LakeFish::Info((EFishSpecies)Sp).Id, LakeFish::Activity((EFishSpecies)Sp, C));
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WEATHER_SHOT %s %s %.0f C | bite:%s"), Shot.File, *Describe(), TemperatureC(), *Bite);
             }, At, false);
         }
         FTimerHandle Exit;

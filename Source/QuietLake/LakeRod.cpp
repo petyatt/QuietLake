@@ -326,6 +326,8 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         }
         case EBiteMotion::Peck: HookTarget = BiteAnchor + PullDir * (Slack + 1.0f * Amount) * (E < D ? FMath::Sin(PI * U) : 0.0f); break;
         case EBiteMotion::Lift: HookTarget = BiteAnchor + FVector(0, 0, (8 + 9 * Amount) * FMath::SmoothStep(0.0f, 0.8f, U)); break;
+        // The fish stands holding the bait where it led it: the line stays as it is (a float pulled under stays under).
+        case EBiteMotion::Hold: HookTarget = BiteAnchor; break;
         case EBiteMotion::Drift:
         case EBiteMotion::Sink:
         {

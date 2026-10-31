@@ -1,0 +1,65 @@
+{
+  "order": 1,
+  "name": "Плотва",
+  "noun": "плотва",
+  "description": "Стаи вдоль края тростника и кувшинок в толще воды. Пробует тычками, топит наискосок или ведёт в сторону и выплёвывает, почуяв сопротивление поплавка. На тихих зорьках берёт насекомых с поверхности.",
+  "mesh": "/Game/Fish/SM_Fish_Roach.SM_Fish_Roach",
+  "meshLength": 22,
+  "condition": 1.1,
+  "minWeight": 0.05,
+  "maxWeight": 0.4,
+  "girthGrowth": 0.14,
+
+  "habitat":     { "shallows": 0.5, "reedEdge": 1.0, "dropOff": 0.3, "cover": 0.3, "deep": 0.0, "open": 0.4, "minDepthM": 0.6, "maxDepthM": 2.8 },
+  "feedHabitat": { "shallows": 0.8, "reedEdge": 1.0, "dropOff": 0.2, "cover": 0.1, "deep": 0.0, "open": 0.3, "minDepthM": 0.4, "maxDepthM": 2.2 },
+  "restHabitat": { "shallows": 0.1, "reedEdge": 0.3, "dropOff": 0.6, "cover": 0.2, "deep": 0.3, "open": 1.0, "minDepthM": 1.2, "maxDepthM": 3.5 },
+  "depthMin": 0.1,
+  "depthMax": 0.45,
+
+  "cruiseSpeed": 24,
+  "burstSpeed": 130,
+  "turnRate": 200,
+  "acceleration": 320,
+  "tailBeat": 10,
+  "gait": { "hoverTurn": 50, "turnRadius": 0.5, "turnAccel": 480, "response": 0.25, "wanderDeg": 18, "wanderHz": 0.10, "kick": 1.0, "kickPeriod": 1.0, "spacing": 1.2 },
+
+  "senseRadius": 450,
+  "baits": { "worm": 0.35, "maggot": 1.0, "bread": 0.85 },
+  "bite": {
+    "minTries": 1, "maxTries": 6, "takeChance": 0.35,
+    "pauseMin": 0.3, "pauseMax": 1.2,
+    "tries": [
+      { "motion": "Tremble", "seconds": 0.4, "secondsMax": 0.8, "amount": 0.4, "amountMax": 0.7, "bTake": false, "weight": 0.3 },
+      { "motion": "Peck", "seconds": 0.18, "secondsMax": 0.3, "amount": 0.8, "amountMax": 2.0, "bTake": false, "weight": 0.7 }
+    ],
+    "take": [
+      { "motion": "Sink", "seconds": 1.4, "secondsMax": 2.2, "amount": 20, "amountMax": 35, "bPaced": true, "felt": 0.25 },
+      { "motion": "Drift", "seconds": 1.0, "secondsMax": 2.0, "amount": 4, "amountMax": 8, "bPaced": true }
+    ],
+    "takeFromBottom": [
+      { "motion": "Lift", "seconds": 0.8, "secondsMax": 1.4, "amount": 1.0, "amountMax": 2.0, "hook": 0.7 },
+      { "motion": "Drift", "seconds": 1.6, "secondsMax": 2.8, "amount": 5, "amountMax": 9, "bPaced": true }
+    ],
+    "fromBottomChance": 0.25,
+    "sensitive": 0.5,
+    "comeback": 0.8, "maxVisits": 3, "returnMin": 3, "returnMax": 10,
+    "directHold": 3.0
+  },
+  "feeding": {
+    "lightShy": 0.6,
+    "wariness": 1.0, "dominance": 0.6,
+    "sipAtDusk": 0.65, "restColumn": 0.5,
+    "browseStep": 500, "browseSpeed": 0.55, "fillRate": 0.012,
+    "bask": 0.35, "bJumps": true
+  },
+  "diet":    { "plankton": 0.9, "insects": 0.8, "benthos": 0.5, "plants": 0.4 },
+  "dietBig": { "plankton": 0.4, "insects": 0.6, "benthos": 0.9, "plants": 0.6 },
+  "mood": { "dawn": 1.0, "day": 0.55, "dusk": 0.95, "night": 0.3, "tempLow": 8, "tempBest": 19, "tempHigh": 26, "overcast": 0.2,
+            "lightRain": 1.2, "heavyRain": 0.6, "ripple": 1.1, "strongWind": 0.5, "fog": 1.0, "front": 0.7 },
+
+  "strength": 0.7,
+  "stamina": 6,
+  "runBurst": 0.5,
+  "stock": { "count": 208, "schoolSize": 8 },
+  "signs": { "rise": "Плотва берёт с поверхности — круги", "jump": "Из воды выпрыгнула плотва" }
+}

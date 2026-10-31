@@ -2,6 +2,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "LakeFish.h"
+#include "LakeFood.h"
 #include "LakeLife.generated.h"
 
 /** Visible signs of fish life on the water. */
@@ -41,6 +42,7 @@ struct FFryShoal
     // Server only.
     FVector Target = FVector::ZeroVector;
     float NextWander = 0, Panic = 0, Speed = 20, AttackedAt = -100;
+    float NextLook = 0, Alert = 0;          // watching for perch and pike; 1 just after darting off from one
 };
 
 /**
@@ -92,7 +94,8 @@ public:
     /** The water was disturbed at At (a rig landing, heavy steps): fish within Radius shy away, the closest bolt. */
     void Disturb(const FVector& At, float Radius, float Strength);
     /** Every machine: how smooth one fish's shown motion was this frame (acceleration cm/s^2, change of turn deg/s^2). */
-    void RecordShownMotion(const FVector& Where, float Accel, float TurnAccel, EFishSpecies Species);
+    /** bBurst: during a burst or just after it (a fast start of the fish's own, kept apart). */
+    void RecordShownMotion(const FVector& Where, float Accel, float TurnAccel, EFishSpecies Species, bool bBurst = false);
     /** Server: log how the fish swim (speeds, turns, schools) as QUIET_LAKE_FISH_MOTION. */
     void LogMotion();
     /** Show a sign on the water to the players near it. */
@@ -106,8 +109,13 @@ public:
     {
         int32 Signs[(int32)ELakeSign::Count] = {};
         int32 FryAttacks = 0, PikeStrikes = 0, Eaten = 0;
+        int32 FryFlights = 0;      // fry darting off from a predator before it struck
+        float FryEaten = 0;        // fry caught (about a mouthful a rush)
     };
     const FStats& Stats() const { return Counters; }
+    /** The natural food of the pond (server; see LakeFood). */
+    const FLakeFoodField& Food() const { return FoodField; }
+    FLakeFoodField& Food() { return FoodField; }
     const TArray<FFryShoal>& FryShoals() const { return Fry; }
 
     // --- every machine ---
@@ -125,20 +133,26 @@ private:
     bool FryCanBe(const FVector2D& P) const;
     FVector FrySpotNear(const FVector2D& P, float Range);
     void LogStats();
+    /** What the fish eat and where, and what is left of the food (QUIET_LAKE_FOOD). */
+    void LogFood();
     /** Every few seconds: which fish would sense a bait cast 2-6 m out at each fishing spot. */
     void SampleSpots();
     void LogSpots();
     /** Once, after the start: where each species lives (QUIET_LAKE_STOCK). */
     void LogStock();
+    /** With the spots: how close prey lets a predator that could eat it come, and the schools' spacing then (QUIET_LAKE_PREY). */
+    void SamplePrey();
+    void LogPrey();
     /** Water fish can be stocked in, on a 3 m grid, and how well it suits each species (LakeFish::HabitatScore). */
-    struct FStockPlace { FVector2D P; float Score[(int32)EFishSpecies::Count]; };
+    struct FStockPlace { FVector2D P; TArray<float, TInlineAllocator<8>> Score; };
     void BuildStockPlaces();
     /** A stocking place for Species, drawn by how well the water suits it, among Candidates (all if empty), at least Spacing from Taken and Away from every player. */
     bool DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candidates, const TArray<FVector2D>& Taken, float Spacing, float Away, FVector2D& Out);
-    ALakeFish* SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift);
+    /** Weight < 0: drawn for the species (most fish small, big ones rare). */
+    ALakeFish* SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift, float Weight = -1);
     void RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries);
     TArray<FStockPlace> StockPlaces;
-    float StockRef[(int32)EFishSpecies::Count] = {};   // a good score for each species (80th percentile), to compare species
+    TArray<float> StockRef;   // a good score for each species (80th percentile), to compare species
     FRandomStream StockRandom;
     void RunPreview();
     void RunFishPreview();
@@ -168,11 +182,16 @@ private:
     float Time = 0, NextDetail = 0, NextEvent = 0, NextLog = 0, NextSample = 0, NextSpotSample = 0;
     bool bStockLogged = false;
     FStats Counters;
+    FLakeFoodField FoodField;
     /** Fish in reach of each fishing spot, summed over the samples since the last log. */
-    struct FSpotWatch { int32 Samples = 0, Occupied = 0, Feeding = 0; float Fish[(int32)EFishSpecies::Count] = {}; float Nearest = 0; };
+    struct FSpotWatch { int32 Samples = 0, Occupied = 0, Feeding = 0; TArray<float, TInlineAllocator<8>> Fish; float Nearest = 0; };
     TArray<FSpotWatch> SpotWatch;
     /** The schools stocked at each fishing spot (for the log). */
     TArray<TArray<int32>> SpotSchools;
+    /** Prey near predators, by species (see SamplePrey), and who ate whom (predator * species count + prey). */
+    struct FPreyWatch { int32 Samples = 0, Threatened = 0, Within150 = 0, Within300 = 0, Mates = 0, MatesAfraid = 0, Seen = 0, SeenWithin150 = 0; double Spacing = 0, SpacingAfraid = 0; };
+    TArray<FPreyWatch> PreyWatch;
+    TArray<int32> Kills;
 public:
     /** How the fish swim, sampled on the server a few times a second (see LogMotion). */
     struct FMotionStats
@@ -184,13 +203,17 @@ public:
         double Spacing = 0, Order = 0;        // schools: nearest mate in body lengths, how aligned (0..1)
         int32 SchoolSamples = 0;
     };
-    FMotionStats Motion[(int32)EFishSpecies::Count];
+    TArray<FMotionStats> Motion;   // by species
+    FMotionStats& MotionOf(EFishSpecies Species) { if (Motion.Num() <= (int32)Species) Motion.SetNum((int32)Species + 1); return Motion[(int32)Species]; }
     /** Shown motion on this machine: acceleration histogram in 50 cm/s^2 steps, turn changes in 50 deg/s^2 steps. */
     struct FShownStats
     {
         int32 Accel[64] = {}, Turn[64] = {};
         int32 Samples = 0;
         float MaxAccel = 0, MaxTurn = 0;
+        TArray<int32> BySpecies, JerkyBySpecies;   // samples, and those over 600 cm/s^2, by species
+        int32 BurstAccel[64] = {};
+        int32 BurstSamples = 0;
     };
     FShownStats Shown;
     /** p-th percentile (0..1) of a histogram in Step-wide buckets. */
@@ -221,4 +244,6 @@ private:
     TArray<FNote> RecentNotes;
     bool bVisualsReady = false;
     friend class FLakePondLifeTest;
+    friend class FLakeInteractionsTest;
+    friend class FLakeFoodTest;
 };

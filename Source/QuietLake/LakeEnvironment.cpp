@@ -1105,8 +1105,12 @@ void ALakeEnvironment::BeginPlay()
     GetWorldTimerManager().SetTimer(FishCountTimer, [this]
     {
         int32 Count = 0;
-        for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It) ++Count;
-        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_VISIBLE %d (netmode %d)"), Count, (int32)GetNetMode());
+        TArray<int32> BySpecies;
+        BySpecies.Init(0, LakeFish::NumSpecies());
+        for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It) { ++Count; if (BySpecies.IsValidIndex((int32)It->Species)) ++BySpecies[(int32)It->Species]; }
+        FString Line;
+        for (int32 Sp = 0; Sp < BySpecies.Num(); ++Sp) Line += FString::Printf(TEXT(" %s %d"), *LakeFish::Info((EFishSpecies)Sp).Id, BySpecies[Sp]);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_VISIBLE %d (netmode %d):%s"), Count, (int32)GetNetMode(), *Line);
     }, 8.0f, false);
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WORLD_READY: terrain, lake, dam, island, forest and props in %.1f s"), FPlatformTime::Seconds() - BuildStart);
 }

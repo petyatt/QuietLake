@@ -1,4 +1,5 @@
 #include "LakeFish.h"
+#include "LakeFood.h"
 #include "LakeGame.h"
 #include "LakeLife.h"
 #include "LakeMap.h"
@@ -8,58 +9,156 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
+#include "Dom/JsonObject.h"
+#include "HAL/FileManager.h"
+#include "JsonObjectConverter.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 // ---------------------------------------------------------------------------------------------
-// Species table. Values are game-tuned but follow the real fish:
-//  perch  - schooling predator of drop-offs, snags and piles, bold, prefers worms, head-shaking fight;
-//  roach  - schools along the reed and lily edges in mid-water, maggot and bread, light and cautious;
-//  crucian- warm weedy shallows and the silty backwater, bottom feeder, very cautious nibbles;
-//  pike   - solitary ambush hunter at the edge of reeds and lilies and by snags, explosive bursts.
-// Habitat weights: Shallows, ReedEdge, DropOff, Cover, Deep, Open, water depth (m), ambush.
-// Mood (last column): Dawn, Day, Dusk, Night; water temperature low/best/high; likes overcast;
-// light rain, heavy rain; ripple, strong wind; fog; sensitivity to fronts. Then where each species
-// feeds and where it rests (same habitat columns) - see the daily life in ALakeLife. Following anglers' lore:
-//  perch  - by day, best morning and evening, steady weather and a light ripple, sulks in a downpour;
-//  roach  - the dawns, warm settled weather, bites in a light rain, dislikes strong wind;
-//  crucian- warmth: dawns, evenings and warm nights, calm, drizzle and mist; very sensitive to fronts;
-//  pike   - "pike weather": grey sky, a breeze, drizzle; poor on bright calm days, idle at night.
+// The species. Each has its passport in Content/LiveFish/Species/<id>.json (see the README.md
+// there): its body, where it lives, how it swims, feeds, bites and fights, its mood with the time
+// and the weather, how many the pond holds. The passports are read once, sorted by "order" (the
+// EFishSpecies number); the four first ones are perch, roach, crucian and pike.
 // ---------------------------------------------------------------------------------------------
 namespace
 {
-    const FFishSpeciesInfo GSpecies[] = {
-        // Name           Mesh                                        Len  K     Wmin  Wmax  Habitat                                                    Column       Cruise Burst Turn  Acc  School Sense  Worm Maggot Bread  Nib    Str  Stam  Beat
-        { TEXT("Окунь"),  TEXT("/Game/Fish/SM_Fish_Perch.SM_Fish_Perch"),     26, 1.25f, 0.08f, 0.8f, {0.1f, 0.3f, 1.0f, 0.9f, 0.5f, 0.3f, 1.2f, 4.8f, false},  0.3f, 0.75f, 28, 160, 220, 380, 5, 650, {1.0f, 0.55f, 0.08f}, 0, 1, 1.0f, 9,  9 , {1.0f, 0.75f, 0.9f, 0.15f,  6, 18, 27,  0.1f,  1.0f, 0.5f,  1.15f, 0.6f,  0.85f, 0.8f},
-          {0.4f, 1.0f, 0.8f, 0.4f, 0.1f, 0.2f, 0.6f, 3.5f, false}, {0.0f, 0.1f, 0.5f, 1.0f, 0.6f, 0.0f, 1.5f, 5.0f, false} },
-        { TEXT("Плотва"), TEXT("/Game/Fish/SM_Fish_Roach.SM_Fish_Roach"),     22, 1.1f,  0.05f, 0.4f, {0.5f, 1.0f, 0.3f, 0.3f, 0.0f, 0.4f, 0.6f, 2.8f, false},  0.1f, 0.45f, 24, 130, 200, 320, 7, 450, {0.35f, 1.0f, 0.85f}, 1, 3, 0.7f, 6, 10 , {1.0f, 0.55f, 0.95f, 0.3f,  8, 19, 26,  0.2f,  1.2f, 0.6f,  1.1f, 0.5f,  1.0f, 0.7f},
-          {0.8f, 1.0f, 0.2f, 0.1f, 0.0f, 0.3f, 0.4f, 2.2f, false}, {0.1f, 0.3f, 0.6f, 0.2f, 0.3f, 1.0f, 1.2f, 3.5f, false} },
-        { TEXT("Карась"), TEXT("/Game/Fish/SM_Fish_Crucian.SM_Fish_Crucian"), 20, 1.9f,  0.15f, 0.9f, {1.0f, 0.4f, 0.0f, 0.2f, 0.0f, 0.0f, 0.35f, 1.8f, false}, 0.75f, 1.0f, 12,  80, 110, 160, 1, 350, {0.55f, 0.7f, 1.0f},  3, 6, 0.9f, 14, 6 , {1.0f, 0.4f, 0.9f, 0.7f,  12, 23, 29,  0.3f,  1.25f, 0.5f,  0.85f, 0.35f,  1.2f, 1.0f},
-          {1.0f, 0.5f, 0.0f, 0.1f, 0.0f, 0.0f, 0.3f, 1.6f, false}, {0.8f, 0.3f, 0.0f, 0.6f, 0.0f, 0.0f, 0.6f, 2.2f, false} },
-        { TEXT("Щука"),   TEXT("/Game/Fish/SM_Fish_Pike.SM_Fish_Pike"),       62, 0.65f, 0.8f,  3.5f, {0.6f, 1.0f, 0.4f, 1.0f, 0.1f, 0.1f, 0.6f, 2.6f, true},   0.3f, 0.7f,  10, 420, 120, 900, 1, 800, {0.18f, 0.05f, 0.0f}, 0, 0, 1.6f, 12, 7 , {0.95f, 0.6f, 0.9f, 0.12f,  5, 17, 27,  0.6f,  1.3f, 0.7f,  1.3f, 0.75f,  0.8f, 0.8f},
-          {0.5f, 1.0f, 0.3f, 1.0f, 0.0f, 0.1f, 0.5f, 2.2f, true}, {0.1f, 0.2f, 0.6f, 0.7f, 0.7f, 0.0f, 1.5f, 4.0f, true} },
-    };
-    // How each species moves (see FFishGait):
-    //  perch  - nimble, swims in kicks and glides, a loose school about a body and a half apart;
-    //  roach  - steady and smooth, a tight school that turns as one;
-    //  crucian- slow and deliberate, wide lazy meanders, turns with its fins at the bottom;
-    //  pike   - long still waits, slow gliding turns, but the strongest burst (see Acceleration).
-    const FFishGait GGaits[] = {
-        // Hover  Radius TurnAcc Resp  Wander Hz     Kick  Period Spacing
-        {  45,    0.6f,  420,    0.3f, 22,    0.12f, 0.45f, 1.6f, 1.4f },
-        {  50,    0.5f,  480,    0.25f,18,    0.10f, 1.0f,  1.0f, 1.2f },
-        {  30,    0.5f,  200,    0.6f, 30,    0.07f, 1.0f,  1.0f, 2.0f },
-        {  20,    1.0f,  160,    0.5f, 10,    0.05f, 1.0f,  1.0f, 3.0f },
-    };
     const TCHAR* GBaitNames[] = { TEXT("червь"), TEXT("опарыш"), TEXT("хлеб") };
+    const TCHAR* GBaitKeys[] = { TEXT("worm"), TEXT("maggot"), TEXT("bread") };
 
     float Depth01(float Z, float X, float Y)
     {
         const float Bottom = ALakeFish::BottomZ(X, Y);
         return FMath::Clamp((LakeFish::SurfaceZ - Z) / FMath::Max(1.0f, LakeFish::SurfaceZ - Bottom), 0.0f, 1.0f);
     }
+
+    TArray<FString> GProblems;
+
+    /** Fields in a file the passport does not have (a typo would silently be ignored otherwise). */
+    void CheckFields(const UStruct* Struct, const TSharedPtr<FJsonObject>& Json, const FString& Where, TArray<FString>& Problems)
+    {
+        for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Json->Values)
+        {
+            const FProperty* Found = nullptr;
+            for (TFieldIterator<FProperty> It(Struct); It && !Found; ++It)
+                if (FJsonObjectConverter::StandardizeCase(It->GetName()).Equals(Field.Key, ESearchCase::IgnoreCase)) Found = *It;
+            if (!Found) { Problems.Add(FString::Printf(TEXT("%s: unknown field \"%s\""), *Where, *Field.Key)); continue; }
+            if (const FStructProperty* Inner = CastField<FStructProperty>(Found))
+            {
+                if (Field.Value->Type == EJson::Object) CheckFields(Inner->Struct, Field.Value->AsObject(), Where + TEXT(".") + Field.Key, Problems);
+            }
+            else if (const FArrayProperty* List = CastField<FArrayProperty>(Found))
+            {
+                if (const FStructProperty* Item = CastField<FStructProperty>(List->Inner); Item && Field.Value->Type == EJson::Array)
+                    for (int32 I = 0; I < Field.Value->AsArray().Num(); ++I)
+                        if (Field.Value->AsArray()[I]->Type == EJson::Object)
+                            CheckFields(Item->Struct, Field.Value->AsArray()[I]->AsObject(), FString::Printf(TEXT("%s.%s[%d]"), *Where, *Field.Key, I), Problems);
+            }
+        }
+    }
+
+    TArray<FFishSpeciesInfo> LoadSpecies()
+    {
+        TArray<FFishSpeciesInfo> Out;
+        const FString Dir = FPaths::ProjectContentDir() / TEXT("LiveFish/Species");
+        TArray<FString> Files;
+        IFileManager::Get().FindFiles(Files, *(Dir / TEXT("*.json")), true, false);
+        Files.Sort();
+        for (const FString& File : Files)
+        {
+            FString Text;
+            FFishSpeciesInfo Info;
+            if (!FFileHelper::LoadFileToString(Text, *(Dir / File))) { GProblems.Add(FString::Printf(TEXT("%s: cannot be read"), *File)); continue; }
+            if (LakeFish::ReadSpecies(Text, File, Info, GProblems)) Out.Add(Info);
+        }
+        Out.Sort([](const FFishSpeciesInfo& A, const FFishSpeciesInfo& B) { return A.Order < B.Order; });
+        for (int32 I = 0; I < Out.Num(); ++I)
+            if (Out[I].Order != I) GProblems.Add(FString::Printf(TEXT("%s: \"order\" is %d, expected %d (0, 1, 2, ... without gaps)"), *Out[I].Id, Out[I].Order, I));
+        for (const FString& Problem : GProblems) UE_LOG(LogTemp, Error, TEXT("LIVE_FISH species file %s"), *Problem);
+        checkf(Out.Num() >= 4, TEXT("Live Fish needs the species files in %s (perch, roach, crucian, pike); found %d"), *Dir, Out.Num());
+        FString Names;
+        for (const FFishSpeciesInfo& Info : Out) Names += TEXT(" ") + Info.Id;
+        UE_LOG(LogTemp, Display, TEXT("LIVE_FISH %d species:%s"), Out.Num(), *Names);
+        return Out;
+    }
+    const TArray<FFishSpeciesInfo>& AllSpecies()
+    {
+        static const TArray<FFishSpeciesInfo> Species = LoadSpecies();
+        return Species;
+    }
 }
 
-const FFishSpeciesInfo& LakeFish::Info(EFishSpecies Species) { return GSpecies[FMath::Clamp((int32)Species, 0, 3)]; }
-const FFishGait& LakeFish::Gait(EFishSpecies Species) { return GGaits[FMath::Clamp((int32)Species, 0, 3)]; }
+float FFishDiet::Of(EFishFood Food) const
+{
+    switch (Food)
+    {
+    case EFishFood::Plankton: return Plankton;
+    case EFishFood::Insects: return Insects;
+    case EFishFood::Benthos: return Benthos;
+    case EFishFood::Plants: return Plants;
+    case EFishFood::Fry: return Fry;
+    case EFishFood::Fish: return Fish;
+    default: return 0;
+    }
+}
+FFishDiet LakeFish::DietOf(EFishSpecies Species, float Size01)
+{
+    const FFishSpeciesInfo& S = Info(Species);
+    if (S.DietBig.IsEmpty()) return S.Diet;
+    const float T = FMath::Clamp(Size01, 0.0f, 1.0f);
+    FFishDiet D;
+    D.Plankton = FMath::Lerp(S.Diet.Plankton, S.DietBig.Plankton, T);
+    D.Insects = FMath::Lerp(S.Diet.Insects, S.DietBig.Insects, T);
+    D.Benthos = FMath::Lerp(S.Diet.Benthos, S.DietBig.Benthos, T);
+    D.Plants = FMath::Lerp(S.Diet.Plants, S.DietBig.Plants, T);
+    D.Fry = FMath::Lerp(S.Diet.Fry, S.DietBig.Fry, T);
+    D.Fish = FMath::Lerp(S.Diet.Fish, S.DietBig.Fish, T);
+    return D;
+}
+
+float FFishSpeciesInfo::BaitLike(EBait Bait) const
+{
+    const float* Like = Baits.Find(GBaitKeys[FMath::Clamp((int32)Bait, 0, 2)]);
+    return Like ? *Like : 0.0f;
+}
+const FFishSpeciesInfo& LakeFish::Info(EFishSpecies Species)
+{
+    const TArray<FFishSpeciesInfo>& All = AllSpecies();
+    return All[FMath::Clamp((int32)Species, 0, All.Num() - 1)];
+}
+int32 LakeFish::NumSpecies() { return AllSpecies().Num(); }
+const TArray<FString>& LakeFish::SpeciesProblems() { AllSpecies(); return GProblems; }
+bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpeciesInfo& Info, TArray<FString>& Problems)
+{
+    TSharedPtr<FJsonObject> Json;
+    if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Json) || !Json.IsValid())
+    {
+        Problems.Add(FString::Printf(TEXT("%s: not a valid JSON file"), *File));
+        return false;
+    }
+    if (!FJsonObjectConverter::JsonObjectToUStruct(Json.ToSharedRef(), &Info))
+    {
+        Problems.Add(FString::Printf(TEXT("%s: could not be read into a species passport"), *File));
+        return false;
+    }
+    Info.Id = FPaths::GetBaseFilename(File);
+    CheckFields(FFishSpeciesInfo::StaticStruct(), Json, File, Problems);
+    // Numbers that would break the fish.
+    if (Info.MaxWeight <= Info.MinWeight || Info.MinWeight <= 0) Problems.Add(FString::Printf(TEXT("%s: minWeight must be above 0 and below maxWeight"), *File));
+    if (Info.CruiseSpeed <= 0 || Info.BurstSpeed < Info.CruiseSpeed) Problems.Add(FString::Printf(TEXT("%s: cruiseSpeed must be above 0 and burstSpeed at least as fast"), *File));
+    if (Info.Bite.Take.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: bite.take is empty - how does it take the bait?"), *File));
+    if (Info.Mesh.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: no mesh"), *File));
+    if (Info.Stock.SchoolSize < 1) Problems.Add(FString::Printf(TEXT("%s: stock.schoolSize must be 1 or more"), *File));
+    if (Info.Name.IsEmpty() || Info.Noun.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: name and noun are needed"), *File));
+    if (Info.Diet.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: diet is empty - what does it eat? (plankton, insects, benthos, plants, fry, fish)"), *File));
+    for (const FFishDiet* Diet : { &Info.Diet, &Info.DietBig })
+        for (float V : { Diet->Plankton, Diet->Insects, Diet->Benthos, Diet->Plants, Diet->Fry, Diet->Fish })
+            if (V < 0 || V > 1.5f) { Problems.Add(FString::Printf(TEXT("%s: diet values go from 0 to 1"), *File)); break; }
+    return true;
+}
+const FFishGait& LakeFish::Gait(EFishSpecies Species) { return Info(Species).Gait; }
 const TCHAR* LakeFish::BaitName(EBait Bait) { return GBaitNames[FMath::Clamp((int32)Bait, 0, 2)]; }
 float LakeFish::Size01(EFishSpecies Species, float WeightKg)
 {
@@ -72,7 +171,7 @@ float LakeFish::Girth(EFishSpecies Species, float WeightKg)
     // fish are quite alike: a little individual variation from the weight's digits, the same on
     // every machine.
     const float Own = FMath::Frac(WeightKg * 1000.0f * 0.6180339f) - 0.5f;
-    const float Growth = Species == EFishSpecies::Crucian ? 0.18f : Species == EFishSpecies::Pike ? 0.1f : 0.14f;
+    const float Growth = Info(Species).GirthGrowth;
     return 0.93f + Growth * Size01(Species, WeightKg) + 0.07f * Own;
 }
 
@@ -160,79 +259,97 @@ float LakeFish::LengthCm(EFishSpecies Species, float WeightKg)
 {
     return FMath::Pow(WeightKg * 1000.0f * 100.0f / Info(Species).Condition, 1.0f / 3.0f);
 }
-float LakeFish::BaitInterest(EFishSpecies Species, EBait Bait, float DepthFraction)
+float LakeFish::BaitInterest(EFishSpecies Species, EBait Bait, float DepthFraction, float FeedColumn)
 {
     const FFishSpeciesInfo& S = Info(Species);
-    // Bait outside the species' depth band is found less often (a bottom feeder rarely rises to it).
-    const float Mid = (S.DepthMin + S.DepthMax) * 0.5f, Half = (S.DepthMax - S.DepthMin) * 0.5f + 0.15f;
-    const float DepthMatch = FMath::Clamp(1.0f - FMath::Max(0.0f, FMath::Abs(DepthFraction - Mid) - Half) * 2.5f, 0.15f, 1.0f);
-    return S.BaitLike[FMath::Clamp((int32)Bait, 0, 2)] * DepthMatch;
+    float DepthMatch;
+    if (FeedColumn >= 0)
+        // Feeding in one layer (on the bottom, at the top, with the plankton): a bait there is found
+        // at once, one far off it seldom.
+        DepthMatch = FMath::Clamp(1.0f - FMath::Max(0.0f, FMath::Abs(DepthFraction - FeedColumn) - 0.15f) * 2.0f, 0.15f, 1.0f);
+    else
+    {
+        // Bait outside the species' depth band is found less often (a bottom feeder rarely rises to it).
+        const float Mid = (S.DepthMin + S.DepthMax) * 0.5f, Half = (S.DepthMax - S.DepthMin) * 0.5f + 0.15f;
+        DepthMatch = FMath::Clamp(1.0f - FMath::Max(0.0f, FMath::Abs(DepthFraction - Mid) - Half) * 2.5f, 0.15f, 1.0f);
+    }
+    return S.BaitLike(Bait) * DepthMatch;
+}
+FBiteStep LakeFish::NextBiteStep(EFishSpecies Species, FBiteState& B, float Size01, float A, bool bOnBottom, bool bWary, float Like, float Disturb, FRandomStream& R)
+{
+    const FFishBiteStyle& Style = Info(Species).Bite;
+    // Sluggish (poor appetite, bright calm water): more testing, shorter takes, sooner let go.
+    const float Lazy = FMath::Clamp(FMath::Clamp(1.0f - A, 0.0f, 0.9f) + (bWary ? 0.3f : 0.0f), 0.0f, 1.0f);
+    const float Pace = FMath::Lerp(1.1f, 0.75f, Lazy);
+    auto Make = [&](const FFishBiteMove& Move)
+    {
+        FBiteStep Step;
+        Step.Motion = Move.Motion;
+        Step.Duration = (Move.SecondsMax > Move.Seconds ? R.FRandRange(Move.Seconds, Move.SecondsMax) : Move.Seconds) * (Move.bPaced ? FMath::Max(Pace, Move.MinPace) : 1.0f);
+        Step.Amount = (Move.AmountMax > Move.Amount ? R.FRandRange(Move.Amount, Move.AmountMax) : Move.Amount) * FMath::Lerp(Move.AmountSmall, Move.AmountBig, Size01);
+        Step.bTake = Move.bTake;
+        Step.Hook = Move.Hook;
+        B.Felt += Move.Felt;
+        return Step;
+    };
+    auto LetGo = [&B](FBiteStep Step) { Step.bLetGo = true; B.bDone = true; return Step; };
+    auto Still = [](float Seconds) { FBiteStep Step; Step.Motion = EBiteMotion::None; Step.Duration = Seconds; Step.bTake = false; return Step; };
+    // Whatever it felt: the rig moved under its nose (the bait jumps), and the float pulling back.
+    B.Felt += Disturb;
+    if (B.bDone) return LetGo(Still(0.1f));
+
+    // 1. Testing the bait: a try, a pause, then the choice - take it, try again, or let it be.
+    if (B.Phase == 0)
+    {
+        if (Disturb > 0.5f) return LetGo(Still(0.1f));
+        if (B.bTried)
+        {
+            B.bTried = false;
+            return Still(R.FRandRange(Style.PauseMin, FMath::Max(Style.PauseMin, Style.PauseMax)));
+        }
+        const int32 MinTries = Style.MinTries + (Size01 < 0.3f ? Style.SmallExtraTries : 0) + (Lazy > 0.4f ? 1 : 0);
+        if (B.Tries >= MinTries)
+        {
+            const float Take = Style.TakeChance * FMath::Lerp(Style.TakeSmall, Style.TakeBig, Size01) * (0.5f + 0.5f * Like)
+                * FMath::Lerp(0.6f, 1.1f, FMath::Clamp(A, 0.0f, 1.2f) / 1.2f) * (1 + 0.25f * B.Tries) * FMath::Max(0.0f, 1 - B.Felt);
+            const float Leave = (0.25f * (1 - Like) + 0.1f * Lazy) * (1 + 2 * B.Felt);
+            const float U = R.FRand();
+            if (U < Leave || (B.Tries >= Style.MaxTries && Like < 0.4f)) return LetGo(Still(0.1f));
+            if (U < Leave + Take || B.Tries >= Style.MaxTries) B.Phase = 1;
+        }
+        if (B.Phase == 0)
+        {
+            ++B.Tries;
+            B.bTried = true;
+            if (Style.Tries.IsEmpty()) { FBiteStep Peck = Still(0.25f); Peck.Motion = EBiteMotion::Peck; Peck.Amount = 1.5f; return Peck; }
+            // One of its tries, drawn by weight.
+            float Total = 0;
+            for (const FFishBiteMove& Try : Style.Tries) Total += FMath::Max(0.0f, Try.Weight);
+            float Pick = R.FRand() * Total;
+            for (const FFishBiteMove& Try : Style.Tries)
+                if ((Pick -= FMath::Max(0.0f, Try.Weight)) <= 0) return Make(Try);
+            return Make(Style.Tries.Last());
+        }
+    }
+
+    // 2. The take, move by move (from the bottom, some lift it first); after the last, not struck,
+    // the fish lets go of the bait.
+    if (B.Felt > Style.Sensitive) return LetGo(Still(0.1f));
+    if (B.Phase == 1) B.Variant = bOnBottom && !Style.TakeFromBottom.IsEmpty() && R.FRand() < Style.FromBottomChance ? 1 : 0;
+    const TArray<FFishBiteMove>& Moves = B.Variant == 1 ? Style.TakeFromBottom : Style.Take;
+    const int32 Index = B.Phase++ - 1;
+    if (!Moves.IsValidIndex(Index)) return LetGo(Still(0.1f));
+    const FBiteStep Step = Make(Moves[Index]);
+    return Index == Moves.Num() - 1 ? LetGo(Step) : Step;
 }
 TArray<FBiteStep> LakeFish::MakeBite(EFishSpecies Species, float Size01, float A, bool bOnBottom, bool bWary, FRandomStream& R)
 {
     TArray<FBiteStep> Out;
-    // Sluggish (poor appetite, bright calm water): more testing, and the fish lets go sooner.
-    const float Lazy = FMath::Clamp(1.0f - A, 0.0f, 0.9f) + (bWary ? 0.3f : 0.0f);
-    const float Pace = FMath::Lerp(1.1f, 0.65f, FMath::Clamp(Lazy, 0.0f, 1.0f));
-    auto Add = [&Out](EBiteMotion Motion, float Duration, float Amount, bool bTake) { Out.Add({ Motion, Duration, Amount, bTake }); };
-    auto Pause = [&](float Lo, float Hi) { Add(EBiteMotion::None, R.FRandRange(Lo, Hi), 0, false); };
-    switch (Species)
+    FBiteState State;
+    for (int32 I = 0; I < 60; ++I)
     {
-    case EFishSpecies::Crucian:
-    {
-        const int32 Trembles = R.RandRange(1, 3) + (Size01 < 0.3f ? R.RandRange(1, 3) : 0) + (Lazy > 0.4f ? 1 : 0);
-        for (int32 I = 0; I < Trembles; ++I)
-        {
-            Add(EBiteMotion::Tremble, R.FRandRange(0.6f, 1.8f), R.FRandRange(0.3f, 0.9f) * (1 - 0.4f * Size01), false);
-            Pause(0.8f, 3.5f);
-        }
-        if (bOnBottom && R.FRand() < 0.8f)
-        {
-            const float Lift = R.FRandRange(1.2f, 3.6f) * (0.6f + 0.6f * Size01);
-            Add(EBiteMotion::Lift, R.FRandRange(1.2f, 2.4f), Lift, true);
-            Add(EBiteMotion::Drift, R.FRandRange(1.5f, 3.0f) * Pace, R.FRandRange(3.0f, 8.0f), true);
-        }
-        else
-        {
-            Add(EBiteMotion::Peck, 0.35f, R.FRandRange(0.8f, 1.5f), false);
-            Pause(0.4f, 1.2f);
-            Add(EBiteMotion::Drift, R.FRandRange(2.0f, 3.2f) * Pace, R.FRandRange(6.0f, 12.0f), true);
-        }
-        break;
-    }
-    case EFishSpecies::Roach:
-    {
-        const int32 Pecks = R.RandRange(1, 3) + (Lazy > 0.4f ? 1 : 0);
-        for (int32 I = 0; I < Pecks; ++I)
-        {
-            if (R.FRand() < 0.3f) Add(EBiteMotion::Tremble, R.FRandRange(0.4f, 0.8f), R.FRandRange(0.4f, 0.7f), false);
-            Add(EBiteMotion::Peck, R.FRandRange(0.18f, 0.3f), R.FRandRange(0.8f, 2.0f), false);
-            Pause(0.3f, 1.2f);
-        }
-        if (bOnBottom && R.FRand() < 0.25f)
-        {
-            Add(EBiteMotion::Lift, R.FRandRange(0.8f, 1.4f), R.FRandRange(1.0f, 2.0f), true);
-            Add(EBiteMotion::Drift, R.FRandRange(1.0f, 1.6f) * Pace, R.FRandRange(5.0f, 9.0f), true);
-        }
-        else Add(EBiteMotion::Sink, R.FRandRange(1.2f, 2.0f) * Pace, R.FRandRange(20.0f, 35.0f), true);
-        break;
-    }
-    case EFishSpecies::Perch:
-    {
-        const int32 Taps = R.RandRange(0, 2) + (Lazy > 0.5f ? 1 : 0);
-        for (int32 I = 0; I < Taps; ++I)
-        {
-            Add(EBiteMotion::Peck, 0.2f, R.FRandRange(1.5f, 3.0f), false);
-            Pause(0.4f, 1.5f);
-        }
-        Add(EBiteMotion::Sink, R.FRandRange(2.0f, 3.0f) * FMath::Max(Pace, 0.85f), R.FRandRange(45.0f, 70.0f), true);
-        break;
-    }
-    default:
-        Add(EBiteMotion::Peck, 0.3f, R.FRandRange(2.0f, 4.0f), false);
-        Pause(0.5f, 2.0f);
-        Add(EBiteMotion::Sink, R.FRandRange(1.3f, 1.8f), R.FRandRange(60.0f, 90.0f), true);
-        break;
+        Out.Add(NextBiteStep(Species, State, Size01, A, bOnBottom, bWary, 1.0f, 0.0f, R));
+        if (Out.Last().bLetGo) break;
     }
     return Out;
 }
@@ -244,7 +361,8 @@ const TCHAR* LakeFish::BiteText(EBiteMotion Motion, float Amount)
     case EBiteMotion::Peck: return TEXT("Поплавок коротко притопило…");
     case EBiteMotion::Lift: return Amount >= 2.5f ? TEXT("Поплавок поднимается и ложится на бок!") : TEXT("Поплавок поднимается!");
     case EBiteMotion::Drift: return TEXT("Поплавок медленно пошёл в сторону!");
-    case EBiteMotion::Sink: return TEXT("Поплавок ушёл под воду!");
+    case EBiteMotion::Sink: return Amount >= 100 ? TEXT("Поплавок резко утащило под воду и в сторону!") : TEXT("Поплавок ушёл под воду!");
+    case EBiteMotion::Hold: return TEXT("Поплавок замер — рыба держит наживку.");
     default: return TEXT("");
     }
 }
@@ -283,8 +401,8 @@ float LakeFish::DepthShiftM(EFishSpecies Species, const FFishConditions& C)
     const float Heat = FMath::SmoothStep(M.TempBest, M.TempBest + 5, C.WaterTempC);
     const float Bright = Light * (1 - C.Cloud) * (1 - FMath::SmoothStep(0.15f, 0.4f, C.Wind));
     const float Night = 1 - FMath::SmoothStep(-10.0f, -4.0f, C.SunElevation);
-    // Crucian (warm-water fish) come up into the shallows to feed at night.
-    const float NightShallows = Species == EFishSpecies::Crucian ? 0.4f * Night : 0.0f;
+    // Warm-water fish (crucian) come up into the shallows to feed at night.
+    const float NightShallows = Info(Species).Feeding.NightShallows * Night;
     return FMath::Clamp(0.8f * Heat + 0.5f * Bright - 0.3f * C.Cloud * Light - NightShallows, -0.6f, 1.2f);
 }
 bool LakeFish::IsBrightCalm(const FFishConditions& C)
@@ -298,7 +416,7 @@ const FFishHabitat& LakeFish::HabitatFor(EFishSpecies Species, EFishGoal Goal)
 }
 const TCHAR* LakeFish::GoalName(EFishSpecies Species, EFishGoal Goal)
 {
-    const bool bPredator = Species == EFishSpecies::Perch || Species == EFishSpecies::Pike;
+    const bool bPredator = Info(Species).Feeding.bPredator;
     return Goal == EFishGoal::Feed ? (bPredator ? TEXT("охотятся") : TEXT("кормятся")) : Goal == EFishGoal::Rest ? TEXT("отдыхают") : TEXT("гуляют");
 }
 namespace
@@ -332,10 +450,20 @@ float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y
         const FVector2D Out = LakeMap::NearestShore(FVector2D(X, Y)).Outward;
         Downwind = 1 + 0.8f * Conditions->Wind * FMath::Max(0.0f, FVector2D::DotProduct(Out, Conditions->WindDir)) * (1 - FMath::SmoothStep(10.0f, 25.0f, SD));
     }
-    return (0.03f + Like) * DepthFit * Downwind;
+    // Small fish keep out of bright open shallows by day: herons, grebes and terns hunt there.
+    float Exposed = 0;
+    if (Conditions && Info(Species).Feeding.LightShy > 0)
+    {
+        const float Light = FMath::SmoothStep(5.0f, 25.0f, Conditions->SunElevation) * (1 - 0.5f * Conditions->Cloud);
+        const float Shallow = 1 - FMath::SmoothStep(0.5f, 1.5f, D);
+        const float Shelter = FMath::Max3(LakeMap::LilyAmount(X, Y), Z.Cover, 0.7f * Z.ReedEdge);
+        Exposed = FMath::Min(0.9f, Info(Species).Feeding.LightShy * Light * Shallow * (1 - Shelter));
+    }
+    return (0.03f + Like) * DepthFit * Downwind * (1 - Exposed);
 }
 }
-FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions, EFishGoal Goal)
+FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions, EFishGoal Goal,
+                           const TFunction<float(const FVector2D&)>& Weigh)
 {
     const FFishHabitat& Habitat = HabitatFor(Species, Goal);
     // Best of a few random candidates, with some chance so fish do not all crowd one spot.
@@ -361,7 +489,7 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
             }
             if (!bOpen) continue;
         }
-        const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions) * Random.FRandRange(0.6f, 1.0f);
+        const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions) * Random.FRandRange(0.6f, 1.0f) * (Weigh ? Weigh(P) : 1.0f);
         if (Score > BestScore) { BestScore = Score; Best = P; }
     }
     if (BestScore < 0 && LakeMap::Depth(Best.X, Best.Y) < 35) Best = LakeMap::Centre;
@@ -401,7 +529,9 @@ void ALakeFish::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
     DOREPLIFETIME(ALakeFish, NetVelocity);
     DOREPLIFETIME(ALakeFish, NetRotation);
     DOREPLIFETIME(ALakeFish, NetEffort);
+    DOREPLIFETIME(ALakeFish, bNetBurst);
     DOREPLIFETIME(ALakeFish, Goal);
+    DOREPLIFETIME(ALakeFish, NetFeedOn);
     DOREPLIFETIME(ALakeFish, bLifted);
 }
 
@@ -480,9 +610,10 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
     if (Lead != this)
     {
         RoamTarget = Lead->RoamTarget;
+        FeedOn = Lead->FeedOn;
         return;
     }
-    const bool bHomeBound = S.SchoolSize > 1 || S.Habitat.bAmbush;
+    const bool bHomeBound = S.IsSchooling() || S.Habitat.bAmbush;
     if (Goal == EFishGoal::Cruise)
     {
         // Schools and ambushers keep to their home area; loners wander through good water nearby.
@@ -490,7 +621,7 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
         // bank the wind blows onto), so schools drift with the weather - around the place they were
         // stocked in, not step by step away from it.
         if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift, C);
-        const float Range = S.Habitat.bAmbush ? 350.0f : S.SchoolSize > 1 ? 900.0f : 2500.0f;
+        const float Range = S.Habitat.bAmbush ? 350.0f : S.IsSchooling() ? 900.0f : 2500.0f;
         // A cruising fish carries on more or less the way it is going rather than doubling back.
         const FVector Ahead = GetActorForwardVector().GetSafeNormal2D();
         for (int32 Try = 0; Try < 4; ++Try)
@@ -502,46 +633,94 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
         // in the shallows - fish the angler can see.
         if (bWeather && Conditions.WaterTempC > 17 && Conditions.SunElevation > 15 && Conditions.Wind < 0.3f && Conditions.Rain < 0.15f)
         {
-            const float Chance = Species == EFishSpecies::Roach ? 0.35f : Species == EFishSpecies::Crucian ? 0.3f : Species == EFishSpecies::Pike ? 0.12f : 0.0f;
+            const float Chance = S.Feeding.Bask;
             if (Random.FRand() < Chance)
                 RoamTarget.Z = FMath::Max(LakeFish::SurfaceZ - Random.FRandRange(9.0f, 20.0f), BottomZ(RoamTarget.X, RoamTarget.Y) + 10);
         }
         return;
     }
-    // Hungry perch go after the nearest fry (those living at a fishing spot only after fry close to
-    // their home, so a chase does not lead them off step by step).
+    // What it eats: the natural food of the pond as its diet and the food at hand make best (without
+    // the food field or a diet - a test world, a species file without one - the old ways below).
     PreyFry = -1;
-    if (Goal == EFishGoal::Feed && Species == EFishSpecies::Perch)
-        if (const ALakeLife* Life = ALakeLife::Get(GetWorld()))
-        {
-            const bool bResident = HomeDrift < 1000;
-            PreyFry = Life->NearestFry(bResident ? HomePoint : GetActorLocation(), bResident ? 1500.0f : 4500.0f);
-            if (PreyFry >= 0) { RoamTarget = Life->FryLocation(PreyFry) - FVector(0, 0, 20); return; }
-        }
+    const ALakeLife* Life = ALakeLife::Get(GetWorld());
+    const FLakeFoodField* Field = Life && bWeather && Life->Food().IsReady() ? &Life->Food() : nullptr;
+    const FFishDiet Diet = LakeFish::DietOf(Species, Size01);
+    const bool bByFood = Goal == EFishGoal::Feed && Field && !Diet.IsEmpty();
+    // Hungry perch go after the nearest fry (those living at a fishing spot only after fry close to
+    // their home, so a chase does not lead them off step by step) - if fry are what they eat.
+    int32 Fry = -1;
+    if (Goal == EFishGoal::Feed && S.Feeding.bHuntsFry && Life && (!bByFood || Diet.Fry > 0) && !(bLocal && LakeFood::IsNatural(FeedOn)))
+    {
+        const bool bResident = HomeDrift < 1000;
+        Fry = Life->NearestFry(bResident ? HomePoint : GetActorLocation(), bResident ? 1500.0f : 4500.0f);
+    }
+    auto ChaseFry = [&] { PreyFry = Fry; FeedOn = EFishFood::Fry; RoamTarget = Life->FryLocation(Fry) - FVector(0, 0, 20); };
+    if (Fry >= 0 && !bByFood) { ChaseFry(); return; }
     // A pike hunts from a lie at the edge of cover.
     if (Goal == EFishGoal::Feed && S.Habitat.bAmbush && !bLocal)
     {
+        FeedOn = EFishFood::Fish;
         ChooseLie();
         return;
     }
     // Feeding and resting places: near home for schools and ambushers (closer for those that live
     // at a fishing spot, see HomeDrift), anywhere near for loners; once there, a fish browses along
     // a few metres at a time (a crucian a step at a time).
-    const float Range = bLocal ? (Species == EFishSpecies::Crucian ? 160.0f : S.Habitat.bAmbush ? 700.0f : 500.0f) : bHomeBound ? FMath::Min(1500.0f, HomeDrift + 300) : 1200.0f;
+    const float Range = bLocal ? S.Feeding.BrowseStep : bHomeBound ? FMath::Min(1500.0f, HomeDrift + 300) : 1200.0f;
     const FVector2D Near = bLocal || !bHomeBound ? FVector2D(GetActorLocation()) : FVector2D(HomePoint);
-    RoamTarget = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal);
+    if (bByFood)
+    {
+        // Where its food is: each place weighed by the best food there for this fish (browsing on, it
+        // keeps to the food it is on), and by the way there - a fish does not swim far for a little
+        // better; it feeds in the layer that food is in.
+        const bool bKeep = bLocal && LakeFood::IsNatural(FeedOn);
+        auto Best = [&](const FVector2D& P, EFishFood& Which)
+        {
+            float Value = 0;
+            Which = EFishFood::None;
+            for (EFishFood F : { EFishFood::Plankton, EFishFood::Insects, EFishFood::Benthos, EFishFood::Plants })
+            {
+                if (bKeep && F != FeedOn) continue;
+                const float V = Diet.Of(F) * Field->Available(F, P, Conditions) * Random.FRandRange(0.85f, 1.15f);
+                if (V > Value) { Value = V; Which = F; }
+            }
+            return Value;
+        };
+        EFishFood Which;
+        auto Weigh = [&](const FVector2D& P) { return (0.5f + Best(P, Which)) * (1 - 0.4f * FMath::Min(1.0f, (float)FVector2D::Distance(P, Near) / FMath::Max(1.0f, Range))); };
+        const FVector Spot = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal, Weigh);
+        const float Value = Best(FVector2D(Spot), Which);
+        // Fry close by are a richer meal than most for a fish that eats them.
+        if (Fry >= 0 && Diet.Fry * Random.FRandRange(0.7f, 1.1f) > Value) { ChaseFry(); return; }
+        if (Which != EFishFood::None)
+        {
+            FeedOn = Which;
+            FeedFound = Value;
+            NextFoodCheck = SimTime + 4;
+            RoamTarget = FVector(Spot.X, Spot.Y, LakeFood::FeedingZ(Which, Spot.X, Spot.Y, Conditions, Random));
+            return;
+        }
+        FeedOn = EFishFood::None;
+        RoamTarget = Spot;
+    }
+    else
+    {
+        FeedOn = EFishFood::None;
+        RoamTarget = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal);
+    }
     const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
     auto Column = [&](float Fraction) { return FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, Fraction); };
     if (Goal == EFishGoal::Feed)
     {
-        // Crucian root in the silt; roach sip insects off the top on calm dawns and evenings.
-        if (Species == EFishSpecies::Crucian) RoamTarget.Z = Bottom + 7;
-        else if (Species == EFishSpecies::Roach && bWeather && IsTwilight(Conditions) && Conditions.Wind < 0.5f && Conditions.Rain < 0.6f && Random.FRand() < 0.65f)
+        // Crucian root in the silt; roach sip insects off the top on calm dawns and evenings; others
+        // feed in their own layer of the water.
+        if (S.Feeding.bRootsInSilt) RoamTarget.Z = Bottom + 7;
+        else if (S.Feeding.SipAtDusk > 0 && bWeather && IsTwilight(Conditions) && Conditions.Wind < 0.5f && Conditions.Rain < 0.6f && Random.FRand() < S.Feeding.SipAtDusk)
             RoamTarget.Z = LakeFish::SurfaceZ - 12;
-        else if (Species == EFishSpecies::Perch) RoamTarget.Z = Column(Random.FRandRange(0.6f, 0.95f));
+        else if (S.Feeding.FeedColumnMin >= 0) RoamTarget.Z = Column(Random.FRandRange(S.Feeding.FeedColumnMin, FMath::Max(S.Feeding.FeedColumnMin, S.Feeding.FeedColumnMax)));
     }
     else
-        RoamTarget.Z = Column(Species == EFishSpecies::Crucian ? 0.75f : Species == EFishSpecies::Roach ? 0.5f : 0.8f);
+        RoamTarget.Z = Column(S.Feeding.RestColumn);
 }
 
 void ALakeFish::ChooseLie()
@@ -629,7 +808,7 @@ void ALakeFish::Startle(FVector From, float Strength)
 {
     if (State == EState::Hooked || bLifted || Strength < 0.08f) return;
     // A pike in its lie lets small disturbances pass; a fish at the bait ignores a mild one.
-    if ((Species == EFishSpecies::Pike && Strength < 0.4f) || (IsBusy() && Strength < 0.7f)) return;
+    if (Strength < LakeFish::Info(Species).Feeding.Unflappable || (IsBusy() && Strength < 0.7f)) return;
     if (Strength >= 0.65f) { Spook(From, 1.0f + 2.5f * Strength); return; }
     if (State != EState::Roam) return;
     // Shy: turn and swim calmly away for a few seconds; the school follows it round.
@@ -659,7 +838,7 @@ FVector ALakeFish::SteerRoam() const
     }
     // Resting fish barely move; browsing ones potter about.
     if (Goal == EFishGoal::Rest && bAtSpot) Speed *= 0.3f;
-    else if (Goal == EFishGoal::Feed && bAtSpot && Species != EFishSpecies::Perch) Speed *= 0.55f;
+    else if (Goal == EFishGoal::Feed && bAtSpot) Speed *= S.Feeding.BrowseSpeed;
     else if (Goal != EFishGoal::Cruise && !bAtSpot && !S.Habitat.bAmbush) Speed *= 1.4f;   // on its way somewhere
     return Dist > 1 ? To / Dist * Speed : FVector::ZeroVector;
 }
@@ -684,7 +863,7 @@ FVector ALakeFish::SteerSchool(bool bFollow) const
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     const FFishGait& G = LakeFish::Gait(Species);
     const float Len = LakeFish::LengthCm(Species, WeightKg);
-    const float Personal = FMath::Max(18.0f, Len * G.Spacing);
+    const float Personal = FMath::Max(18.0f, Len * G.Spacing * (1 - 0.35f * Fear));   // closer together when afraid
     const float Look = FMath::Max(200.0f, Personal * 4);
     const FVector P = GetActorLocation();
     FVector Centre = FVector::ZeroVector, Heading = FVector::ZeroVector, Separation = FVector::ZeroVector;
@@ -711,10 +890,10 @@ FVector ALakeFish::SteerSchool(bool bFollow) const
     const ALakeFish* Lead = Leader();
     const FVector LeadVel = Lead->Vel;
     FVector Out = Count ? (Heading / Count) * 0.75f + LeadVel * 0.25f : LeadVel;
-    if (Count) Out += (Centre / Count - P) * (Goal == EFishGoal::Rest ? 0.08f : 0.15f);
+    if (Count) Out += (Centre / Count - P) * (Goal == EFishGoal::Rest ? 0.08f : 0.15f) * (1 + 3 * Fear);
     const FVector Slot = Lead->GetActorLocation() + FRotator(0, Lead->Yaw, 0).RotateVector(SlotOffset);
     const FVector ToSlot = Slot - P;
-    Out += (ToSlot * (Goal == EFishGoal::Cruise ? 0.4f : 0.25f)).GetClampedToMaxSize(Cruise * 1.3f);
+    Out += (ToSlot * (Goal == EFishGoal::Cruise ? 0.4f : 0.25f) * (1 + Fear)).GetClampedToMaxSize(Cruise * (1.3f + Fear));
     Out += Separation * Cruise * 1.8f;
     return Out;
 }
@@ -777,7 +956,7 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     // Needs: swimming tires, resting restores; hunger grows with the appetite of the hour.
     const float Recovery = Goal != EFishGoal::Rest ? 0.0f : bAtSpot ? 0.014f : 0.006f;   // already easing off on the way
     Energy = FMath::Clamp(Energy - DeltaSeconds * (0.0012f + 0.004f * Effort) + DeltaSeconds * Recovery, 0.0f, 1.0f);
-    Hunger = FMath::Min(1.0f, Hunger + DeltaSeconds * 0.0035f * Activity);
+    Hunger = FMath::Min(1.0f, Hunger + DeltaSeconds * 0.0035f * Activity * S.Feeding.HungerRate);
     {
         const ALakeFish* Lead = Leader();
         if (Lead != this)
@@ -785,6 +964,7 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
             // School members share their leader's destination and arrive with it.
             RoamTarget = Lead->RoamTarget;
             bAtSpot = Lead->bAtSpot;
+            FeedOn = Lead->FeedOn;
         }
     }
     const float Dist = FVector::Dist(GetActorLocation(), RoamTarget);
@@ -795,9 +975,25 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     }
     if (Goal == EFishGoal::Feed && bAtSpot)
     {
-        // Grazers find food where they browse; perch without fry pick at the bottom.
-        if (Species == EFishSpecies::Crucian || Species == EFishSpecies::Roach) Hunger -= DeltaSeconds * 0.012f;
-        else if (Species == EFishSpecies::Perch && PreyFry < 0) Hunger -= DeltaSeconds * 0.005f;
+        FLakeFoodField* Field = Life && bSeen && Life->Food().IsReady() ? &Life->Food() : nullptr;
+        if (Field && LakeFood::IsNatural(FeedOn))
+        {
+            // It fills as fast as the patch gives, and eats it down.
+            const FVector2D Here(GetActorLocation());
+            const float There = Field->Available(FeedOn, Here, Seen);
+            const float Meal = DeltaSeconds * S.Feeding.FillRate * FMath::Clamp(There / 0.5f, 0.15f, 1.4f);
+            Hunger -= Meal;
+            Field->Eat(FeedOn, Here, Meal, WeightKg);
+            // The patch is eaten down: on to the next (a school with its leader).
+            if (SimTime >= NextFoodCheck && Leader() == this)
+            {
+                NextFoodCheck = SimTime + Random.FRandRange(2.0f, 4.0f);
+                if (There < FMath::Max(0.08f, 0.45f * FeedFound)) { ChooseRoamTarget(); bAtSpot = false; bRooting = false; StateTime = 0; }
+            }
+        }
+        // Grazers find food where they browse; fry hunters without fry pick at the bottom; a fish-eater
+        // fills only by eating fish.
+        else if (!(S.Feeding.bHuntsFry && PreyFry >= 0)) Hunger -= DeltaSeconds * S.Feeding.FillRate;
         Hunger = FMath::Max(0.0f, Hunger);
     }
     if (SimTime >= GoalUntil || (Goal == EFishGoal::Feed && Hunger < 0.1f) || (Goal == EFishGoal::Rest && Energy > 0.97f)) Decide();
@@ -812,12 +1008,13 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     const bool bFollower = Lead != this;
     PitchBias = 0;
     FaceDir = FVector::ZeroVector;
-    const bool bRoot = Goal == EFishGoal::Feed && bAtSpot && Species == EFishSpecies::Crucian;
+    // Rooting in the silt for the bottom fauna (on weed or plankton it does not dig).
+    const bool bRoot = Goal == EFishGoal::Feed && bAtSpot && S.Feeding.bRootsInSilt && (FeedOn == EFishFood::Benthos || !LakeFood::IsNatural(FeedOn));
     if (!bRoot) bRooting = false;
     const bool bLie = Goal == EFishGoal::Feed && S.Habitat.bAmbush && bAtSpot;
 
     // Perch drive the fry: follow the shoal, the leader leads each rush into it.
-    if (Goal == EFishGoal::Feed && Species == EFishSpecies::Perch && PreyFry >= 0 && Life)
+    if (Goal == EFishGoal::Feed && S.Feeding.bHuntsFry && PreyFry >= 0 && Life)
     {
         // A school living at a fishing spot lets the shoal go once it has led them 20 m from home.
         if (!bFollower && HomeDrift < 1000 && FVector::Dist2D(Life->FryLocation(PreyFry), HomePoint) > 2000) ChooseRoamTarget();
@@ -859,9 +1056,11 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     }
     else if (bFollower)
     {
+        // The fright of the leader runs through the school at once: all close up and keep up with it.
+        Fear = FMath::Max(Fear, Lead->Fear * 0.9f);
         const FVector Flock = SteerSchool(true);
         Desired = Meander(Flock) * 0.5f + Flock * 0.5f;
-        MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed * 1.35f);
+        MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed * (1.35f + 1.2f * Fear));
     }
     else
     {
@@ -871,6 +1070,13 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         if (School >= 0) Desired *= 0.85f;
         // Moving to a new place a fish may swim faster than it cruises (SteerRoam sets how fast).
         MaxSpeed = FMath::Max(MaxSpeed, (float)Roam.Size());
+        // Closing in on the fry shoal it hunts: a fast swim, then the rush (see ALakeLife::AttackFry).
+        if (S.Feeding.bHuntsFry && PreyFry >= 0 && Goal == EFishGoal::Feed && Life && FVector::Dist2D(GetActorLocation(), Life->FryLocation(PreyFry)) < 800)
+        {
+            const float Chase = S.BurstSpeed * 0.5f;
+            Desired = Desired.GetSafeNormal() * FMath::Max((float)Desired.Size(), Chase);
+            MaxSpeed = FMath::Max(MaxSpeed, Chase);
+        }
     }
     // Shying away from a disturbance: a smooth turn and a quicker swim away from it.
     if (SimTime < AvoidUntil)
@@ -881,20 +1087,39 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed * (1.2f + AvoidStrength));
         if (bRooting) { bRooting = false; PhaseUntil = SimTime + 5; }
     }
+    // Keeping away from a predator that could eat it: it turns off and keeps its distance; a school
+    // closes up round its leader and turns away with it (a member darts off on its own only when the
+    // danger is right on it); a frightened crucian stops rooting.
+    const float Flight = bFollower ? FMath::Max(0.0f, Fear - 0.5f) * 1.2f : Fear * 1.6f;
+    if (Fear > 0.05f)
+        if (const ALakeFish* Danger = Threat.Get())
+        {
+            const FVector Away = (GetActorLocation() - Danger->GetActorLocation()).GetSafeNormal2D();
+            Desired += Away * S.CruiseSpeed * Flight;
+            MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed * (1.0f + 0.6f * Fear));
+            if (bRooting && Fear > 0.4f) { bRooting = false; PhaseUntil = SimTime + 4; }
+        }
     // Rushing at the fry with the school.
     if (SimTime < DashUntil)
     {
         Desired = (DashTarget - GetActorLocation()).GetSafeNormal() * S.BurstSpeed;
         MaxSpeed = S.BurstSpeed;
     }
-    if (Goal == EFishGoal::Feed && Species == EFishSpecies::Pike) UpdatePikeAmbush(DeltaSeconds, Desired, MaxSpeed);
+    // Predators: a strike under way; an ambusher waits in its lie, a pursuit hunter looks about it.
+    if (StrikeEnd > 0) UpdateStrike(Desired, MaxSpeed);
+    else if (Goal == EFishGoal::Feed && S.Feeding.PreyMaxWeight > 0)
+    {
+        if (S.Habitat.bAmbush) UpdatePikeAmbush(DeltaSeconds, Desired, MaxSpeed);
+        else LookForPrey();
+    }
     if (!Life) return;
 
     const FVector P = GetActorLocation();
     const FVector Surface(P.X, P.Y, LakeFish::SurfaceZ);
     // Just under the surface a fish now and then shows itself: a dimple, a fin, a little bulge.
     // (Roach sipping at the top already show their own rings.)
-    if (P.Z > LakeFish::SurfaceZ - 18 && SimTime >= NextSurfaceSign && !(Goal == EFishGoal::Feed && Species == EFishSpecies::Roach))
+    const bool bSipping = Goal == EFishGoal::Feed && (FeedOn == EFishFood::Insects || (FeedOn == EFishFood::None && S.Feeding.SipAtDusk > 0));
+    if (P.Z > LakeFish::SurfaceZ - 18 && SimTime >= NextSurfaceSign && !bSipping)
     {
         if (NextSurfaceSign > 0)
         {
@@ -914,7 +1139,7 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         Life->EmitSign(ELakeSign::Bubbles, Surface, 0.4f + WeightKg * 0.8f, Species, WeightKg);
         NextSign = SimTime + Random.FRandRange(4.0f, 9.0f) / Pace;
     }
-    else if (Goal == EFishGoal::Feed && Species == EFishSpecies::Roach && P.Z > LakeFish::SurfaceZ - 30)
+    else if (bSipping && P.Z > LakeFish::SurfaceZ - 30)
     {
         // Sipping an insect off the top: a small ring.
         Life->EmitSign(ELakeSign::Rise, Surface, 0.3f + WeightKg * 1.5f, Species, WeightKg);
@@ -923,49 +1148,126 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     else NextSign = SimTime + Random.FRandRange(2.0f, 5.0f);
 }
 
+void ALakeFish::UpdateStrike(FVector& Desired, float& MaxSpeed)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    ALakeLife* Life = ALakeLife::Get(GetWorld());
+    if (!Life) { StrikeEnd = -1; return; }
+    // The strike: a short explosive dash at the prey.
+    ALakeFish* Target = Prey.Get();
+    const FVector At = Target ? Target->GetActorLocation() : Life->FryLocation(PreyFry);
+    const FVector To = At - MouthLocation();
+    Desired = To.GetSafeNormal() * S.BurstSpeed;
+    MaxSpeed = S.BurstSpeed;
+    BurstTime = FMath::Max(BurstTime, 0.1f);
+    if (To.Size() > 35 && SimTime < StrikeEnd) return;
+    // Resolved: caught or missed. Near the top it breaks the surface, a little deeper it shows as a swirl.
+    const float Depth = LakeFish::SurfaceZ - At.Z;
+    const FVector Surface(At.X, At.Y, LakeFish::SurfaceZ);
+    const float Size = FMath::Min(0.6f + 0.3f * WeightKg, 1.8f);
+    if (Depth < 200) Life->EmitSign(Depth < 90 ? ELakeSign::Splash : ELakeSign::Swirl, Surface, Size, Species, WeightKg);
+    if (Target)
+    {
+        // A hungry predator strikes harder; prey on the alert more often slips away.
+        const bool bCaught = To.Size() < 60 && Target->IsFree() && Random.FRand() < S.Feeding.StrikeChance * (1 + Hunger) * (1 - 0.5f * Target->Fear);
+        if (bCaught)
+        {
+            Eat(FMath::Clamp(Target->WeightKg / FMath::Max(0.01f, WeightKg * S.Feeding.PreyMaxWeight), 0.3f, 0.9f));
+            Life->Devour(Target, this);
+        }
+        else
+        {
+            Target->Spook(GetActorLocation(), 4);
+            Life->Alarm(Target, 450);
+            // A fish that escapes near the top often leaps clear.
+            if (Depth < 90 && Random.FRand() < 0.35f)
+            {
+                const FVector Away = (At - GetActorLocation()).GetSafeNormal2D();
+                Life->EmitSign(ELakeSign::Jump, Surface, 1, Target->Species, Target->WeightKg, FMath::RadiansToDegrees(FMath::Atan2(Away.Y, Away.X)));
+            }
+        }
+    }
+    else if (PreyFry >= 0) Life->AttackFry(PreyFry, this);
+    StrikeEnd = -1;
+    Prey = nullptr;
+    PreyFry = -1;
+    NextLook = SimTime + Random.FRandRange(4.0f, 10.0f);
+}
+
+void ALakeFish::LookForPrey()
+{
+    // A pursuit hunter (a big perch) dashes at a small fish right in front of it.
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    ALakeLife* Life = ALakeLife::Get(GetWorld());
+    if (!Life || SimTime < NextLook || Hunger < 0.4f) return;
+    NextLook = SimTime + Random.FRandRange(0.5f, 0.9f);
+    const FVector Mouth = MouthLocation(), Forward = GetActorForwardVector();
+    ALakeFish* Best = nullptr;
+    float BestDist = 150;
+    Life->ForEachFishNear(Mouth, 150, [&](ALakeFish* Other)
+    {
+        if (Other == this || (School >= 0 && Other->School == School) || !Other->IsFree() || Other->WeightKg > WeightKg * S.Feeding.PreyMaxWeight) return;
+        const FVector To = Other->GetActorLocation() - Mouth;
+        const float Dist = To.Size();
+        if (Dist < BestDist && FVector::DotProduct(Forward, To / FMath::Max(1.0f, Dist)) > 0.6f) { Best = Other; BestDist = Dist; }
+    });
+    if (!Best || Random.FRand() > 0.3f * Hunger) return;
+    Prey = Best;
+    PreyFry = -1;
+    StrikeEnd = SimTime + 0.6f;
+    BurstTime = 0.6f;
+    Life->CountPikeStrike();
+}
+
+void ALakeFish::SenseThreats(float DeltaSeconds)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    // Fear fades within a few seconds once the predator is out of sight.
+    Fear = FMath::Max(0.0f, Fear - DeltaSeconds * 0.18f);
+    if (S.Feeding.Wariness <= 0 || SimTime < NextThreatLook) return;
+    NextThreatLook = SimTime + Random.FRandRange(0.4f, 0.7f);
+    const FVector P = GetActorLocation();
+    ALakeFish* Worst = nullptr;
+    float Level = 0;
+    auto Visit = [&](ALakeFish* Other)
+    {
+        if (Other == this || Other->bLifted || Other->State == EState::Hooked || (School >= 0 && Other->School == School)) return;
+        const FFishFeeding& F = LakeFish::Info(Other->Species).Feeding;
+        if (WeightKg > Other->WeightKg * F.PreyMaxWeight) return;   // too big for it to eat
+        // Seen (and felt along the lateral line) from a few metres when it moves; lying still, a
+        // camouflaged predator is noticed only close by. A hunting one is the more frightening.
+        const bool bMoving = Other->Vel.SizeSquared() > FMath::Square(8.0f) || Other->StrikeEnd > 0;
+        const float Range = 500.0f * (bMoving ? 1.0f : 1.0f - F.Camouflage);
+        const float Dist = FVector::Dist(P, Other->GetActorLocation());
+        if (Dist >= Range) return;
+        const float L = S.Feeding.Wariness * (1 - Dist / Range) * (Other->Goal == EFishGoal::Feed ? 1.0f : 0.6f) * (Other->StrikeEnd > 0 ? 1.5f : 1.0f);
+        if (L > Level) { Level = L; Worst = Other; }
+    };
+    if (const ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->ForEachFishNear(P, 500, Visit);
+    else for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It) Visit(*It);
+    if (Worst && Level >= Fear) Threat = Worst;
+    Fear = FMath::Clamp(FMath::Max(Fear, Level), 0.0f, 1.0f);
+}
+
+float ALakeFish::Clout() const
+{
+    return LakeFish::Info(Species).Feeding.Dominance * FMath::Pow(FMath::Max(WeightKg, 0.01f), 1.0f / 3.0f);
+}
+
+void ALakeFish::PushedOff(ALakeFish* By)
+{
+    // A bigger fish took the bait it was only trying: it gives way, and may come back when that one has gone.
+    if (State != EState::Nibble) return;
+    if (ALakeCharacter* Angler = TargetAngler.Get()) Angler->OnBiteMotion(this, FBiteStep());
+    DropBait();
+    if (By) Startle(By->GetActorLocation(), 0.35f);
+}
+
 void ALakeFish::UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     ALakeLife* Life = ALakeLife::Get(GetWorld());
     if (!Life) return;
-    if (StrikeEnd > 0)
-    {
-        // The strike: a short explosive dash at the prey.
-        ALakeFish* Target = Prey.Get();
-        const FVector At = Target ? Target->GetActorLocation() : Life->FryLocation(PreyFry);
-        const FVector To = At - MouthLocation();
-        Desired = To.GetSafeNormal() * S.BurstSpeed;
-        MaxSpeed = S.BurstSpeed;
-        BurstTime = FMath::Max(BurstTime, 0.1f);
-        if (To.Size() > 35 && SimTime < StrikeEnd) return;
-        // Resolved: caught or missed. Near the top it breaks the surface, a little deeper it shows as a swirl.
-        const float Depth = LakeFish::SurfaceZ - At.Z;
-        const FVector Surface(At.X, At.Y, LakeFish::SurfaceZ);
-        const float Size = FMath::Min(0.6f + 0.3f * WeightKg, 1.8f);
-        if (Depth < 200) Life->EmitSign(Depth < 90 ? ELakeSign::Splash : ELakeSign::Swirl, Surface, Size, Species, WeightKg);
-        if (Target)
-        {
-            const bool bCaught = To.Size() < 60 && Target->IsFree() && Random.FRand() < 0.3f + 0.35f * Hunger;
-            if (bCaught) { Life->Devour(Target, this); Eat(0.9f); }
-            else
-            {
-                Target->Spook(GetActorLocation(), 4);
-                Life->Alarm(Target, 450);
-                // A fish that escapes near the top often leaps clear.
-                if (Depth < 90 && Random.FRand() < 0.35f)
-                {
-                    const FVector Away = (At - GetActorLocation()).GetSafeNormal2D();
-                    Life->EmitSign(ELakeSign::Jump, Surface, 1, Target->Species, Target->WeightKg, FMath::RadiansToDegrees(FMath::Atan2(Away.Y, Away.X)));
-                }
-            }
-        }
-        else if (PreyFry >= 0) Life->AttackFry(PreyFry, this);
-        StrikeEnd = -1;
-        Prey = nullptr;
-        PreyFry = -1;
-        NextLook = SimTime + Random.FRandRange(4.0f, 10.0f);
-        return;
-    }
     if (!bAtSpot || Hunger < 0.3f) return;
     // Stalking: a fish nearby but not yet in front of the snout - the pike turns slowly towards it
     // with its fins and edges a little closer, the body stiff and the tail still.
@@ -984,7 +1286,7 @@ void ALakeFish::UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& Ma
     float BestDist = 260, NearDist = 450;
     Life->ForEachFishNear(Mouth, 450, [&](ALakeFish* Other)
     {
-        if (Other == this || Other->Species == EFishSpecies::Pike || !Other->IsFree() || Other->WeightKg > WeightKg * 0.3f) return;
+        if (Other == this || !Other->IsFree() || Other->WeightKg > WeightKg * S.Feeding.PreyMaxWeight) return;
         const FVector To = Other->GetActorLocation() - Mouth;
         const float Dist = To.Size();
         if (Dist < BestDist && FVector::DotProduct(Forward, To / FMath::Max(1.0f, Dist)) > 0.5f) { Best = Other; BestDist = Dist; }
@@ -1017,8 +1319,8 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
     if (SimTime >= NextMoodCheck)
     {
         NextMoodCheck = SimTime + 2.0f;
-        FFishConditions Conditions;
-        Activity = GetConditions(Conditions) ? LakeFish::Activity(Species, Conditions) : 1.0f;
+        bSeen = GetConditions(Seen);
+        Activity = bSeen ? LakeFish::Activity(Species, Seen) : 1.0f;
     }
     if (State == EState::Roam && SimTime >= NextThink && StrikeEnd < 0)
     {
@@ -1033,14 +1335,24 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
             if (Until && *Until > SimTime) continue;
             const FVector Bait = Candidate->BaitLocation();
             const float Dist = FVector::Dist(Bait, GetActorLocation());
-            if (Dist > S.SenseRadius) continue;
-            const float Interest = LakeFish::BaitInterest(Species, Candidate->Bait, Depth01(Bait.Z, Bait.X, Bait.Y))
-                * Hunger * Activity * Mind * FMath::Sqrt(1 - Dist / S.SenseRadius);
-            if (Random.FRand() < Interest * 0.7f)
+            // Back for another try at a bait it let go of a moment ago.
+            const bool bBack = ReturnTo.Get() == Candidate && Until && SimTime < *Until + 30 && Dist < S.SenseRadius * 1.5f;
+            if (!bBack && Dist > S.SenseRadius) continue;
+            // Feeding, it finds a bait in the layer it feeds in, likes one that goes with its food and
+            // is choosy amid plenty (a big hatch).
+            const bool bOnFood = Goal == EFishGoal::Feed && LakeFood::IsNatural(FeedOn);
+            const float FeedColumn = bOnFood ? Depth01(RoamTarget.Z, RoamTarget.X, RoamTarget.Y) : -1.0f;
+            float Interest = LakeFish::BaitInterest(Species, Candidate->Bait, Depth01(Bait.Z, Bait.X, Bait.Y), FeedColumn) * LakeFood::BaitMatch(FeedOn, Candidate->Bait)
+                * Hunger * Activity * Mind * FMath::Sqrt(FMath::Max(0.0f, 1 - Dist / S.SenseRadius)) * (1 - Fear);
+            if (bOnFood && bSeen)
+                if (const ALakeLife* Life = ALakeLife::Get(GetWorld()); Life && Life->Food().IsReady())
+                    Interest *= 1.15f - 0.35f * FMath::Clamp(Life->Food().Available(FeedOn, FVector2D(GetActorLocation()), Seen), 0.0f, 1.0f);
+            if (bBack || Random.FRand() < Interest * 0.7f)
             {
                 State = EState::Investigate;
                 StateTime = 0;
                 TargetAngler = Candidate;
+                ReturnTo = nullptr;
                 return;
             }
         }
@@ -1059,94 +1371,99 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
         {
             State = EState::Nibble;
             StateTime = 0;
-            // How this fish will take it (wary in bright sun on a glassy lake, more so with a poor appetite).
-            FFishConditions Conditions;
-            const bool bBright = GetConditions(Conditions) && LakeFish::IsBrightCalm(Conditions);
+            // The bite starts; the fish decides each step as it goes (LakeFish::NextBiteStep).
             const FVector BaitAt = Angler->BaitLocation();
-            const bool bOnBottom = BaitAt.Z <= BottomZ(BaitAt.X, BaitAt.Y) + 8;
-            Bite = LakeFish::MakeBite(Species, Size01, Activity, bOnBottom, bBright, Random);
-            BiteIndex = -1;
+            BiteState = FBiteState();
+            BiteNow = FBiteStep();
             BiteStepEnd = SimTime + Random.FRandRange(0.3f, 1.0f);
             // A crucian rooting at the bait sends bubbles up beside the float.
-            if (Species == EFishSpecies::Crucian)
+            if (LakeFish::Info(Species).Feeding.bRootsInSilt)
                 if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
                     Life->EmitSign(ELakeSign::Bubbles, FVector(BaitAt.X + Random.FRandRange(-40, 40), BaitAt.Y + Random.FRandRange(-40, 40), LakeFish::SurfaceZ), 0.4f + WeightKg * 0.6f, Species, WeightKg);
         }
         return;
     }
     if ((State == EState::Nibble || State == EState::Holding) && Angler && SimTime >= BiteStepEnd) NextBiteStep(Angler);
+    // Jerked under its nose while it only tries the bait, or a predator close by: it backs off at once.
+    else if (State == EState::Nibble && Angler && (Angler->RigDisturbance() > 0.8f || Fear > 0.6f))
+    {
+        BiteState.Felt += 1;
+        Angler->OnBiteMotion(this, FBiteStep());
+        DropBait();
+    }
+}
+
+float ALakeFish::BaitLike(const ALakeCharacter* Angler) const
+{
+    const FVector Bait = Angler->BaitLocation();
+    return FMath::Clamp(LakeFish::BaitInterest(Species, Angler->Bait, Depth01(Bait.Z, Bait.X, Bait.Y)), 0.0f, 1.0f);
 }
 
 void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
-    ++BiteIndex;
-    if (!Bite.IsValidIndex(BiteIndex))
+    // The step it said it would let go after is over: the float settles, the fish backs off.
+    if (BiteNow.bLetGo)
     {
-        // Done: a fish still only testing loses interest; one holding the bait spits it (the angler's timer).
-        BiteStepEnd = TNumericLimits<float>::Max();
-        if (State == EState::Nibble)
-        {
-            Angler->OnBiteMotion(this, FBiteStep());
-            Angler->ReleaseBaitClaim(this);
-            IgnoreBaitUntil.Add(Angler, SimTime + 30);
-            State = EState::Roam;
-            ChooseRoamTarget();
-        }
+        if (State == EState::Holding) Angler->OnFishLetGo(this);   // the angler's side; it calls DropBait
+        else Angler->OnBiteMotion(this, FBiteStep());
+        DropBait();   // (nothing more if the angler already made it let go)
         return;
     }
-    const FBiteStep Step = Bite[BiteIndex];
+    // Wary in bright sun on a glassy lake; it feels the rig move and the float pull.
+    FFishConditions Conditions;
+    const bool bBright = GetConditions(Conditions) && LakeFish::IsBrightCalm(Conditions);
+    const FVector BaitAt = Angler->BaitLocation();
+    const bool bOnBottom = BaitAt.Z <= BottomZ(BaitAt.X, BaitAt.Y) + 8;
+    const FBiteStep Step = LakeFish::NextBiteStep(Species, BiteState, Size01, Activity, bOnBottom, bBright, BaitLike(Angler), Angler->RigDisturbance(), Random);
+    BiteNow = Step;
     BiteStepEnd = SimTime + Step.Duration;
     if (Step.bTake && State == EState::Nibble)
     {
-        // It takes: the angler may strike for as long as it keeps the bait in its mouth.
-        float Window = 0;
-        for (int32 I = BiteIndex; I < Bite.Num(); ++I) if (Bite[I].bTake) Window += Bite[I].Duration;
-        Angler->OnFishTake(this, Window);
+        // It takes: the angler may strike while it has the bait in its mouth. It lets go by itself
+        // (the angler's timer is only a safety net).
+        Angler->OnFishTake(this, 60);
         State = EState::Holding;
         StateTime = 0;
     }
     Angler->OnBiteMotion(this, Step);
-    if (State == EState::Holding)
+    if (State != EState::Holding) return;
+    // Where it goes with the bait: up (lifting it), aside, nowhere (holding it, swallowing), or off.
+    const FVector P = GetActorLocation();
+    const FVector Away = (P - Angler->GetActorLocation()).GetSafeNormal2D();
+    const FVector Side = FVector::CrossProduct(Away, FVector::UpVector) * (Random.FRand() < 0.5f ? 1 : -1);
+    switch (Step.Motion)
     {
-        // Where it goes with the bait: up (lifting it), aside, or down and away.
-        const FVector P = GetActorLocation();
-        const FVector Away = (P - Angler->GetActorLocation()).GetSafeNormal2D();
-        const FVector Side = FVector::CrossProduct(Away, FVector::UpVector) * (Random.FRand() < 0.5f ? 1 : -1);
-        switch (Step.Motion)
-        {
-        case EBiteMotion::Lift:
-        {
-            // Rising with the bait high enough to lift the shot off it: the float loses its load.
-            const float Rise = FMath::Clamp(LakeFish::SurfaceZ - 15 - P.Z, 0.0f, 8 + 9 * Step.Amount);
-            RoamTarget = P + Side * 10 + FVector(0, 0, Rise);
-            HoldSpeed = FMath::Max(0.25f, Rise / FMath::Max(Step.Duration * 0.8f, 0.3f) / S.CruiseSpeed);
-            break;
-        }
-        case EBiteMotion::Drift:
-            RoamTarget = P + (Side * 0.8f + Away * 0.4f).GetSafeNormal() * 250;
-            HoldSpeed = 0.6f;
-            break;
-        default:
-            RoamTarget = P + (Away + Side * Random.FRandRange(-0.5f, 0.5f)).GetSafeNormal() * 400;
-            RoamTarget.Z = FMath::Max(BottomZ(RoamTarget.X, RoamTarget.Y) + 10, P.Z - 60);
-            HoldSpeed = FMath::Clamp(Step.Amount / S.CruiseSpeed * 0.6f, 0.6f, 2.5f);
-            break;
-        }
-        return;
+    case EBiteMotion::Lift:
+    {
+        // Rising with the bait high enough to lift the shot off it: the float loses its load.
+        const float Rise = FMath::Clamp(LakeFish::SurfaceZ - 15 - P.Z, 0.0f, 8 + 9 * Step.Amount);
+        RoamTarget = P + Side * 10 + FVector(0, 0, Rise);
+        HoldSpeed = FMath::Max(0.25f, Rise / FMath::Max(Step.Duration * 0.8f, 0.3f) / S.CruiseSpeed);
+        break;
     }
-    // A fish that does not like the bait much often gives up after tasting it.
-    if (Step.Motion != EBiteMotion::None)
+    case EBiteMotion::Drift:
+        RoamTarget = P + (Side * 0.8f + Away * 0.4f).GetSafeNormal() * 250;
+        HoldSpeed = 0.6f;
+        break;
+    case EBiteMotion::Hold:
+        // Still, nose a little down (a swallowing perch keeps the float under).
+        RoamTarget = FVector(P.X, P.Y, FMath::Max(BottomZ(P.X, P.Y) + 10, P.Z - 15));
+        HoldSpeed = 0.15f;
+        break;
+    case EBiteMotion::None:
+        RoamTarget = P;
+        HoldSpeed = 0.15f;
+        break;
+    default:
     {
-        const float Like = LakeFish::BaitInterest(Species, Angler->Bait, 0.5f);
-        if (Random.FRand() > FMath::Min(1.0f, (0.55f + Like * 0.45f) * FMath::Lerp(0.75f, 1.1f, FMath::Clamp(Activity, 0.0f, 1.0f))))
-        {
-            Angler->OnBiteMotion(this, FBiteStep());
-            Angler->ReleaseBaitClaim(this);
-            IgnoreBaitUntil.Add(Angler, SimTime + 30);
-            State = EState::Roam;
-            ChooseRoamTarget();
-        }
+        // Off and down; a pike runs several metres with it.
+        const float Run = Random.FRandRange(S.Bite.RunMin, FMath::Max(S.Bite.RunMin, S.Bite.RunMax));
+        RoamTarget = P + (Away + Side * Random.FRandRange(-0.5f, 0.5f)).GetSafeNormal() * Run;
+        RoamTarget.Z = FMath::Max(BottomZ(RoamTarget.X, RoamTarget.Y) + 10, P.Z - 60);
+        HoldSpeed = FMath::Clamp(Step.Amount / S.CruiseSpeed * 0.6f, 0.6f, FMath::Max(2.5f, S.BurstSpeed * 0.3f / S.CruiseSpeed));
+        break;
+    }
     }
 }
 
@@ -1157,6 +1474,8 @@ void ALakeFish::Spook(FVector From, float Seconds)
     if (State == EState::Hooked) return;
     if (ALakeCharacter* Angler = TargetAngler.Get()) Angler->ReleaseBaitClaim(this);
     TargetAngler = nullptr;
+    ReturnTo = nullptr;
+    BaitVisits = 0;
     State = EState::Flee;
     FleeFrom = From;
     FleeTime = Seconds;
@@ -1184,18 +1503,40 @@ void ALakeFish::ApplyLineForce(FVector Force) { PendingLineForce = Force; }
 void ALakeFish::DropBait()
 {
     if (State != EState::Nibble && State != EState::Holding) return;
-    if (ALakeCharacter* Angler = TargetAngler.Get())
+    ALakeCharacter* Angler = TargetAngler.Get();
+    bool bBack = false;
+    FVector BaitAt = GetActorLocation();
+    if (Angler)
     {
-        IgnoreBaitUntil.Add(Angler, SimTime + 40);
+        // Still hungry and liking the bait, it comes back for another try a few seconds later (a
+        // crucian again and again, a pike seldom); one that felt the tackle, or has tried a few
+        // times already, leaves it alone for a minute.
+        BaitAt = Angler->BaitLocation();
+        ++BaitVisits;
+        const FFishBiteStyle& Style = LakeFish::Info(Species).Bite;
+        const float Again = Hunger * (0.35f + 0.65f * BaitLike(Angler)) * FMath::Clamp(Activity, 0.2f, 1.0f) * Style.Comeback
+            * (1 - FMath::Clamp(BiteState.Felt * 0.6f, 0.0f, 0.9f));
+        bBack = BaitVisits < Style.MaxVisits && Random.FRand() < Again;
+        const float Delay = bBack ? Random.FRandRange(Style.ReturnMin, FMath::Max(Style.ReturnMin, Style.ReturnMax)) : 60.0f;
+        IgnoreBaitUntil.Add(Angler, SimTime + Delay);
+        ReturnTo = bBack ? Angler : nullptr;
+        if (!bBack) BaitVisits = 0;
         Angler->ReleaseBaitClaim(this);
     }
     TargetAngler = nullptr;
-    Bite.Reset();
-    BiteIndex = -1;
+    BiteNow = FBiteStep();
+    BiteState = FBiteState();
     BiteStepEnd = 0;
     State = EState::Roam;
     StateTime = 0;
     ChooseRoamTarget();
+    if (bBack)
+    {
+        // It backs off a metre or two and hangs about there.
+        const FVector2D Off = FVector2D(GetActorLocation() - BaitAt).GetSafeNormal();
+        const FVector2D To = FVector2D(BaitAt) + (Off.IsNearlyZero() ? FVector2D(1, 0) : Off) * Random.FRandRange(120.0f, 250.0f);
+        if (LakeMap::IsWater(To.X, To.Y)) RoamTarget = FVector(To, FMath::Clamp(BaitAt.Z, BottomZ(To.X, To.Y) + 10, LakeFish::SurfaceZ - 15));
+    }
 }
 
 void ALakeFish::LiftOut()
@@ -1425,6 +1766,7 @@ void ALakeFish::Simulate(float DeltaSeconds)
     SimTime += DeltaSeconds;
     StateTime += DeltaSeconds;
     BurstTime = FMath::Max(0.0f, BurstTime - DeltaSeconds);
+    if (State != EState::Hooked && !bLifted) SenseThreats(DeltaSeconds);
     UpdateBait(DeltaSeconds);
 
     FVector Desired = FVector::ZeroVector;
@@ -1460,7 +1802,7 @@ void ALakeFish::Simulate(float DeltaSeconds)
     case EState::Holding:
         Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * S.CruiseSpeed * HoldSpeed;
         MaxSpeed = FMath::Max(S.CruiseSpeed, S.CruiseSpeed * HoldSpeed);
-        bPrecise = Bite.IsValidIndex(BiteIndex) && Bite[BiteIndex].Motion == EBiteMotion::Lift;
+        bPrecise = BiteNow.Motion == EBiteMotion::Lift || BiteNow.Motion == EBiteMotion::Hold;
         break;
     case EState::Hooked:
     {
@@ -1481,7 +1823,7 @@ void ALakeFish::Simulate(float DeltaSeconds)
             RoamTarget.Z = Fresh < 0.3f ? LakeFish::SurfaceZ - 12                                 // tired: up to the surface
                          : Pick > 0.75f ? Bottom + 10                                                 // dive
                          : FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, S.DepthMax);
-            if (Random.FRand() < 0.55f * Fresh) BurstTime = (Species == EFishSpecies::Pike ? 1.2f : 0.5f) + 1.5f * Size01;
+            if (Random.FRand() < 0.55f * Fresh) BurstTime = S.RunBurst + 1.5f * Size01;
         }
         Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * S.BurstSpeed;
         MaxSpeed = FMath::Lerp(S.CruiseSpeed * 0.5f, S.BurstSpeed, Fresh);
@@ -1549,6 +1891,7 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
     FVector ShownVel = HasAuthority() ? Vel : Smooth.Velocity;
     float Turn = HasAuthority() ? YawRate : Smooth.YawRate;
     ShownWindow += DeltaSeconds;
+    if (HasAuthority() ? BurstTime > 0 : bNetBurst) BurstSeenAt = GetWorld()->GetTimeSeconds();
     // After this machine stood still the fish starts afresh where the server has it: a new
     // stretch of motion, not a step within one.
     const bool bRestarted = !HasAuthority() && Smooth.bRestarted;
@@ -1575,7 +1918,8 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
         const float WindowTurn = FMath::FindDeltaAngleDegrees(ShownPrevYaw, CurrentYaw) / ShownWindow;
         if (ALakeLife* Life = ALakeLife::Get(GetWorld()); Life && ShownPrevVelocity != FVector::ZeroVector)
             Life->RecordShownMotion(Here, (float)((WindowVel - ShownPrevVelocity).Size() / ShownWindow),
-                                    FMath::Abs(WindowTurn - ShownPrevFrameTurn) / ShownWindow, Species);
+                                    FMath::Abs(WindowTurn - ShownPrevFrameTurn) / ShownWindow, Species,
+                                    GetWorld()->GetTimeSeconds() - BurstSeenAt < 0.5f);
         ShownPrevVelocity = WindowVel;
         ShownPrevFrameTurn = WindowTurn;
         ShownPrevLocation = Here;
@@ -1640,6 +1984,9 @@ void ALakeFish::Tick(float DeltaSeconds)
         NetVelocity = Vel;
         NetRotation = GetActorRotation();
         NetEffort = Effort;
+        NetFeedOn = (uint8)FeedOn;
+        // A burst starts: the clients hear of it at once and follow the fast start without lagging.
+        if ((BurstTime > 0) != bNetBurst) { bNetBurst = BurstTime > 0; if (bNetBurst) ForceNetUpdate(); }
     }
     else if (!HasAuthority() && !bHanging)
     {

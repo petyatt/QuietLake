@@ -2,6 +2,7 @@
 #include "LakeGame.h"
 #include "LakeFish.h"
 #include "LakeLife.h"
+#include "LakeFood.h"
 #include "LakeMap.h"
 #include "LakeMenu.h"
 #include "LakeWeather.h"
@@ -111,8 +112,11 @@ void ALakeHUD::DrawLifePanel(float S)
     // markers over the fish within 30 m (green: feeding or hunting, blue: resting, grey: cruising).
     UFont* Font = GEngine->GetMediumFont();
     const ALakeLife* Life = ALakeLife::Get(GetWorld());
-    int32 Count[(int32)EFishSpecies::Count][(int32)EFishGoal::Count] = {};
-    int32 Total[(int32)EFishSpecies::Count] = {};
+    const int32 Kinds = LakeFish::NumSpecies();
+    TArray<int32> Count, Total, Food;
+    Count.Init(0, Kinds * (int32)EFishGoal::Count);
+    Total.Init(0, Kinds);
+    Food.Init(0, Kinds * 7);   // what the feeding fish are on
     const FLinearColor GoalColour[] = { FLinearColor(0.7f, 0.72f, 0.72f), FLinearColor(0.45f, 0.95f, 0.45f), FLinearColor(0.45f, 0.7f, 1.0f) };
     const APlayerController* PC = GetOwningPlayerController();
     FVector ViewPos = FVector::ZeroVector;
@@ -121,8 +125,10 @@ void ALakeHUD::DrawLifePanel(float S)
     for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
     {
         const ALakeFish* Fish = *It;
-        ++Count[(int32)Fish->Species][(int32)Fish->GetGoal()];
+        if ((int32)Fish->Species >= Kinds) continue;
+        ++Count[(int32)Fish->Species * (int32)EFishGoal::Count + (int32)Fish->GetGoal()];
         ++Total[(int32)Fish->Species];
+        if (Fish->GetGoal() == EFishGoal::Feed) ++Food[(int32)Fish->Species * 7 + FMath::Clamp((int32)Fish->GetFeedOn(), 0, 6)];
         const FVector P = Fish->GetActorLocation();
         if (FVector::Dist(P, ViewPos) > 3000 || FVector::DotProduct(P - ViewPos, ViewRot.Vector()) < 50) continue;
         const FVector Screen = Canvas->Project(P);
@@ -132,13 +138,18 @@ void ALakeHUD::DrawLifePanel(float S)
     }
     TArray<TPair<FString, FLinearColor>> Lines;
     Lines.Add({ TEXT("Live Fish  (F3)"), FLinearColor(0.95f, 0.94f, 0.9f) });
-    for (int32 Sp = 0; Sp < (int32)EFishSpecies::Count; ++Sp)
+    auto Of = [&](int32 Sp, EFishGoal G) { return Count[Sp * (int32)EFishGoal::Count + (int32)G]; };
+    for (int32 Sp = 0; Sp < Kinds; ++Sp)
     {
         const EFishSpecies Species = (EFishSpecies)Sp;
-        Lines.Add({ FString::Printf(TEXT("%s %d:  %s %d  ·  %s %d  ·  %s %d"), LakeFish::Info(Species).Name, Total[Sp],
-            LakeFish::GoalName(Species, EFishGoal::Feed), Count[Sp][(int32)EFishGoal::Feed],
-            LakeFish::GoalName(Species, EFishGoal::Rest), Count[Sp][(int32)EFishGoal::Rest],
-            LakeFish::GoalName(Species, EFishGoal::Cruise), Count[Sp][(int32)EFishGoal::Cruise]), FLinearColor(0.8f, 0.83f, 0.8f) });
+        // The food most of the feeding ones are on.
+        int32 Main = 0;
+        for (int32 F = 1; F < 7; ++F) if (Food[Sp * 7 + F] > Food[Sp * 7 + Main]) Main = F;
+        const FString On = Main > 0 ? FString::Printf(TEXT(" (%s)"), LakeFood::Name((EFishFood)Main)) : FString();
+        Lines.Add({ FString::Printf(TEXT("%s %d:  %s %d%s  ·  %s %d  ·  %s %d"), *LakeFish::Info(Species).Name, Total[Sp],
+            LakeFish::GoalName(Species, EFishGoal::Feed), Of(Sp, EFishGoal::Feed), *On,
+            LakeFish::GoalName(Species, EFishGoal::Rest), Of(Sp, EFishGoal::Rest),
+            LakeFish::GoalName(Species, EFishGoal::Cruise), Of(Sp, EFishGoal::Cruise)), FLinearColor(0.8f, 0.83f, 0.8f) });
     }
     if (Life)
     {

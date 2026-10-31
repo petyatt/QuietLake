@@ -162,10 +162,22 @@ public:
     bool ClaimBait(ALakeFish* Fish);
     void ReleaseBaitClaim(ALakeFish* Fish);
     void OnFishNibble(ALakeFish* Fish);
-    /** The fish takes: the float may be struck for Window seconds (< 0: a default by species). */
+    /**
+     * The fish takes: the float may be struck until the fish lets go of the bait (it decides that
+     * itself, see LakeFish::NextBiteStep), at most Window seconds (< 0: a typical hold for the
+     * species, for a fish set on the bait directly).
+     */
     void OnFishTake(ALakeFish* Fish, float Window = -1);
+    /**
+     * How much the rig moves under a fish's nose right now, 0..1: the rod swung or lifted quickly
+     * (anything above ~15 deg/s), or the rig being drawn out. A fish testing the bait backs off; one
+     * holding it feels it and spits it sooner.
+     */
+    float RigDisturbance() const;
     /** The float starts a new motion of the bite. */
     void OnBiteMotion(ALakeFish* Fish, const FBiteStep& Step);
+    /** The fish holding the bait lets go of it without being struck (as when the time to strike runs out). */
+    void OnFishLetGo(ALakeFish* Fish) { if (BaitFish.Get() == Fish) Escape(); }
 private:
     friend class FLakeFishingTest;
     friend struct FLakeFishingFixture;

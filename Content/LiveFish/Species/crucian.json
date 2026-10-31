@@ -1,0 +1,64 @@
+{
+  "order": 2,
+  "name": "Карась",
+  "noun": "карась",
+  "description": "Тёплая заросшая вода: заводь, кувшинки, ил. Кормится у дна, роется в иле — на воде пузыри. Долго пробует наживку (поплавок дрожит), со дна поднимает и кладёт поплавок, медленно ведёт. Тёплыми ночами выходит на мелководье.",
+  "mesh": "/Game/Fish/SM_Fish_Crucian.SM_Fish_Crucian",
+  "meshLength": 20,
+  "condition": 1.9,
+  "minWeight": 0.15,
+  "maxWeight": 0.9,
+  "girthGrowth": 0.18,
+
+  "habitat":     { "shallows": 1.0, "reedEdge": 0.4, "dropOff": 0.0, "cover": 0.2, "deep": 0.0, "open": 0.0, "minDepthM": 0.35, "maxDepthM": 1.8 },
+  "feedHabitat": { "shallows": 1.0, "reedEdge": 0.5, "dropOff": 0.0, "cover": 0.1, "deep": 0.0, "open": 0.0, "minDepthM": 0.3, "maxDepthM": 1.6 },
+  "restHabitat": { "shallows": 0.8, "reedEdge": 0.3, "dropOff": 0.0, "cover": 0.6, "deep": 0.0, "open": 0.0, "minDepthM": 0.6, "maxDepthM": 2.2 },
+  "depthMin": 0.75,
+  "depthMax": 1.0,
+
+  "cruiseSpeed": 12,
+  "burstSpeed": 80,
+  "turnRate": 110,
+  "acceleration": 160,
+  "tailBeat": 6,
+  "gait": { "hoverTurn": 30, "turnRadius": 0.5, "turnAccel": 200, "response": 0.6, "wanderDeg": 30, "wanderHz": 0.07, "kick": 1.0, "kickPeriod": 1.0, "spacing": 2.0 },
+
+  "senseRadius": 350,
+  "baits": { "worm": 0.55, "maggot": 0.7, "bread": 1.0 },
+  "bite": {
+    "minTries": 1, "smallExtraTries": 2, "maxTries": 10,
+    "takeChance": 0.32, "takeSmall": 0.5, "takeBig": 1.2,
+    "pauseMin": 0.8, "pauseMax": 3.5,
+    "tries": [ { "motion": "Tremble", "seconds": 0.6, "secondsMax": 1.8, "amount": 0.3, "amountMax": 0.9, "amountSmall": 1.0, "amountBig": 0.6, "bTake": false } ],
+    "take": [
+      { "motion": "Peck", "seconds": 0.35, "amount": 0.8, "amountMax": 1.5, "bTake": false },
+      { "motion": "Drift", "seconds": 2.0, "secondsMax": 3.2, "amount": 6, "amountMax": 12, "bPaced": true, "felt": 0.1 },
+      { "motion": "Drift", "seconds": 1.5, "secondsMax": 2.5, "amount": 2, "amountMax": 5, "bPaced": true }
+    ],
+    "takeFromBottom": [
+      { "motion": "Lift", "seconds": 1.2, "secondsMax": 2.4, "amount": 1.2, "amountMax": 3.6, "amountSmall": 0.6, "amountBig": 1.2, "hook": 0.7 },
+      { "motion": "Drift", "seconds": 2.0, "secondsMax": 3.5, "amount": 3, "amountMax": 8, "bPaced": true, "felt": 0.1 },
+      { "motion": "Drift", "seconds": 1.5, "secondsMax": 3.0, "amount": 2, "amountMax": 5, "bPaced": true }
+    ],
+    "fromBottomChance": 0.8,
+    "sensitive": 0.6,
+    "comeback": 0.9, "maxVisits": 4, "returnMin": 5, "returnMax": 15,
+    "directHold": 5.5
+  },
+  "feeding": {
+    "lightShy": 0.3,
+    "wariness": 0.6, "dominance": 0.9,
+    "bRootsInSilt": true, "restColumn": 0.75,
+    "browseStep": 160, "browseSpeed": 0.55, "fillRate": 0.012,
+    "bask": 0.3, "nightShallows": 0.4, "bJumps": true
+  },
+  "diet":    { "plankton": 0.25, "insects": 0.1, "benthos": 1.0, "plants": 0.6 },
+  "mood": { "dawn": 1.0, "day": 0.4, "dusk": 0.9, "night": 0.7, "tempLow": 12, "tempBest": 23, "tempHigh": 29, "overcast": 0.3,
+            "lightRain": 1.25, "heavyRain": 0.5, "ripple": 0.85, "strongWind": 0.35, "fog": 1.2, "front": 1.0 },
+
+  "strength": 0.9,
+  "stamina": 14,
+  "runBurst": 0.5,
+  "stock": { "count": 240, "schoolSize": 1 },
+  "signs": { "bubbles": "Карась роется в иле — пузыри", "jump": "Из воды выпрыгнул карась" }
+}

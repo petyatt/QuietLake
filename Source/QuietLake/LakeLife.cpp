@@ -36,16 +36,7 @@ namespace
     constexpr float FryDepth = 9;            // cm under the surface
     constexpr float NearPlayer = 6000;       // full detail within 60 m of a player
     FIntPoint CellOf(const FVector& P) { return FIntPoint(FMath::FloorToInt(P.X / GridCell), FMath::FloorToInt(P.Y / GridCell)); }
-    const TCHAR* SpeciesNoun(EFishSpecies S)
-    {
-        switch (S)
-        {
-        case EFishSpecies::Perch: return TEXT("окунь");
-        case EFishSpecies::Roach: return TEXT("плотва");
-        case EFishSpecies::Crucian: return TEXT("карась");
-        default: return TEXT("щука");
-        }
-    }
+    const TCHAR* SpeciesNoun(EFishSpecies S) { return *LakeFish::Info(S).Noun; }
 }
 
 ALakeLife::ALakeLife()
@@ -83,6 +74,7 @@ void ALakeLife::BeginPlay()
     Super::BeginPlay();
     if (HasAuthority())
     {
+        FoodField.Init();
         SpawnFry();
         // A game (not a test world): Live Fish stocks the pond.
         if (GetWorld()->GetAuthGameMode<ALakeGameMode>()) StockPond();
@@ -142,6 +134,8 @@ float ALakeLife::ServerTime() const
 void ALakeLife::Step(float DeltaSeconds)
 {
     Time += DeltaSeconds;
+    if (!FoodField.IsReady()) FoodField.Init();   // test worlds
+    FoodField.Step(DeltaSeconds);
     Grid.Reset();
     Schools.Reset();
     AllFish.Reset();
@@ -160,7 +154,7 @@ void ALakeLife::Step(float DeltaSeconds)
     if (Time >= NextSteps) { NextSteps = Time + 0.5f; UpdateFootsteps(); }
     if (Time >= NextSample) { SampleMotion(Time - NextSample + 0.2f); NextSample = Time + 0.2f; }
     if (Time >= NextEvent) { NextEvent = Time + Random.FRandRange(6.0f, 14.0f); UpdateRandomEvents(); }
-    if (Time >= NextSpotSample) { NextSpotSample = Time + 5; SampleSpots(); }
+    if (Time >= NextSpotSample) { NextSpotSample = Time + 5; SampleSpots(); SamplePrey(); }
     if (!bStockLogged && Time > 2 && AllFish.Num() > 50) { bStockLogged = true; LogStock(); }
     if (Time >= NextLog) { NextLog = Time + 30; if (Time > 1) LogStats(); }
 }
@@ -201,6 +195,7 @@ void ALakeLife::SampleSpots()
         FSpotWatch& W = SpotWatch[I];
         int32 Here = 0, Feeding = 0;
         float Nearest = 3000;
+        if (W.Fish.Num() < LakeFish::NumSpecies()) W.Fish.SetNumZeroed(LakeFish::NumSpecies());
         FVector2D A, B;
         FishingWater(Spot, A, B);
         // A fish counts when it would sense a bait somewhere in that water (its species' sense radius).
@@ -234,8 +229,9 @@ void ALakeLife::LogSpots()
         FSpotWatch& W = SpotWatch[I];
         if (!W.Samples) continue;
         const float N = W.Samples;
-        Line += FString::Printf(TEXT(" | %s %.0f%% feed %.0f%% %.1f/%.1f/%.1f/%.1f nearest %.0f m"), Spots[I].Name, W.Occupied * 100 / N, W.Feeding * 100 / N,
-            W.Fish[0] / N, W.Fish[1] / N, W.Fish[2] / N, W.Fish[3] / N, W.Nearest / N / 100);
+        FString Kinds;
+        for (int32 Sp = 0; Sp < W.Fish.Num(); ++Sp) Kinds += FString::Printf(TEXT("%s%.1f"), Sp ? TEXT("/") : TEXT(""), W.Fish[Sp] / N);
+        Line += FString::Printf(TEXT(" | %s %.0f%% feed %.0f%% %s nearest %.0f m"), Spots[I].Name, W.Occupied * 100 / N, W.Feeding * 100 / N, *Kinds, W.Nearest / N / 100);
         Empty += W.Occupied == 0;
         W = FSpotWatch();
         // Where the spot's own schools are now: along the bank and out from the waterline (m), what they do.
@@ -244,8 +240,10 @@ void ALakeLife::LogSpots()
                 if (const ALakeFish* Lead = SchoolLeader(School))
                 {
                     const FVector2D Local = FVector2D(Lead->GetActorLocation()) - Spots[I].Location;
-                    Line += FString::Printf(TEXT(" [%s %+.0f/%.0f %s]"), SpeciesNoun(Lead->Species), FVector2D::DotProduct(Local, FVector2D(-Spots[I].Outward.Y, Spots[I].Outward.X)) / 100,
-                        -FVector2D::DotProduct(Local, Spots[I].Outward) / 100, Lead->GetGoal() == EFishGoal::Feed ? TEXT("feed") : Lead->GetGoal() == EFishGoal::Rest ? TEXT("rest") : TEXT("cruise"));
+                    const FString Doing = Lead->GetGoal() == EFishGoal::Feed ? FString::Printf(TEXT("feed:%s"), LakeFood::Name(Lead->GetFeedOn()))
+                                        : Lead->GetGoal() == EFishGoal::Rest ? FString(TEXT("rest")) : FString(TEXT("cruise"));
+                    Line += FString::Printf(TEXT(" [%s %.2f kg %+.0f/%.0f %s]"), SpeciesNoun(Lead->Species), Lead->WeightKg, FVector2D::DotProduct(Local, FVector2D(-Spots[I].Outward.Y, Spots[I].Outward.X)) / 100,
+                        -FVector2D::DotProduct(Local, Spots[I].Outward) / 100, *Doing);
                 }
     }
     const ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
@@ -257,7 +255,7 @@ void ALakeLife::LogStock()
     // Where each species lives: depth under it, the share in the weedy shallows, within 15 m of the
     // bank, and in reach of a fishing spot; then the schools and how many fish each spot has in reach.
     const TConstArrayView<LakeMap::FSpot> Spots = LakeMap::Spots();
-    for (int32 S = 0; S < (int32)EFishSpecies::Count; ++S)
+    for (int32 S = 0; S < LakeFish::NumSpecies(); ++S)
     {
         int32 Count = 0, Shallows = 0, Bank = 0, Reach = 0;
         double Depth = 0;
@@ -284,7 +282,10 @@ void ALakeLife::LogStock()
     SampleSpots();
     FString Line;
     for (int32 I = 0; I < Spots.Num(); ++I)
-        Line += FString::Printf(TEXT(" | %s %.0f/%.0f/%.0f/%.0f"), Spots[I].Name, SpotWatch[I].Fish[0], SpotWatch[I].Fish[1], SpotWatch[I].Fish[2], SpotWatch[I].Fish[3]);
+    {
+        Line += FString::Printf(TEXT(" | %s "), Spots[I].Name);
+        for (int32 Sp = 0; Sp < SpotWatch[I].Fish.Num(); ++Sp) Line += FString::Printf(TEXT("%s%.0f"), Sp ? TEXT("/") : TEXT(""), SpotWatch[I].Fish[Sp]);
+    }
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_STOCK in reach of each spot (perch/roach/crucian/pike)%s"), *Line);
     SpotWatch.Reset();
 }
@@ -294,7 +295,8 @@ void ALakeLife::LogStock()
 void ALakeLife::BuildStockPlaces()
 {
     // The map's lazily built tables (ground, lilies, snags, spots) are made before the parallel loop.
-    for (int32 S = 0; S < (int32)EFishSpecies::Count; ++S) LakeFish::HabitatScore((EFishSpecies)S, LakeMap::Centre.X, LakeMap::Centre.Y);
+    const int32 Kinds = LakeFish::NumSpecies();
+    for (int32 S = 0; S < Kinds; ++S) LakeFish::HabitatScore((EFishSpecies)S, LakeMap::Centre.X, LakeMap::Centre.Y);
     const FBox2D Box = LakeMap::LakeBounds();
     constexpr float Step = 300;
     const int32 NX = FMath::CeilToInt(Box.GetSize().X / Step), NY = FMath::CeilToInt(Box.GetSize().Y / Step);
@@ -310,13 +312,15 @@ void ALakeLife::BuildStockPlaces()
             if (LakeMap::ShoreDistance(P.X, P.Y) < 300 || LakeMap::Depth(P.X, P.Y) < 45) continue;
             FStockPlace Place;
             Place.P = P;
-            for (int32 S = 0; S < (int32)EFishSpecies::Count; ++S) Place.Score[S] = LakeFish::HabitatScore((EFishSpecies)S, P.X, P.Y);
+            Place.Score.SetNum(Kinds);
+            for (int32 S = 0; S < Kinds; ++S) Place.Score[S] = LakeFish::HabitatScore((EFishSpecies)S, P.X, P.Y);
             Rows[Y].Add(Place);
         }
     });
     StockPlaces.Reset();
     for (TArray<FStockPlace>& Row : Rows) StockPlaces.Append(Row);
-    for (int32 S = 0; S < (int32)EFishSpecies::Count; ++S)
+    StockRef.Init(1.0f, Kinds);
+    for (int32 S = 0; S < Kinds; ++S)
     {
         TArray<float> Scores;
         for (const FStockPlace& Place : StockPlaces) Scores.Add(Place.Score[S]);
@@ -351,11 +355,11 @@ bool ALakeLife::DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candid
     return false;
 }
 
-ALakeFish* ALakeLife::SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift)
+ALakeFish* ALakeLife::SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift, float Weight)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     // Most fish are small, big ones are rare; each keeps to its species' layer of the water.
-    const float Weight = FMath::Lerp(S.MinWeight, S.MaxWeight, FMath::Pow(StockRandom.FRand(), 2.5f));
+    if (Weight < 0) Weight = FMath::Lerp(S.MinWeight, S.MaxWeight, FMath::Pow(StockRandom.FRand(), 2.5f));
     const float Z = FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(At.X, At.Y) + 8, StockRandom.FRandRange(S.DepthMin, S.DepthMax));
     ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(FVector(At, Z), FRotator(0, StockRandom.FRandRange(0, 360), 0));
     if (!Fish) return nullptr;
@@ -369,12 +373,19 @@ void ALakeLife::StockPond()
     const double Begin = FPlatformTime::Seconds();
     StockRandom.Initialize(20261027);
     BuildStockPlaces();
-    using enum EFishSpecies;
-    // The pond: 24 schools of 6 perch, 26 schools of 8 roach, 240 crucian and 24 pike.
-    const int32 SchoolSize[] = { 6, 8 };
-    int32 SchoolsLeft[] = { 24, 26 }, LonersLeft[] = { 0, 0, 240, 24 };
-    // Homes of the schools and the pike: schools keep apart, pike keep their own patch of water.
-    TArray<FVector2D> SchoolHomes, PikeHomes;
+    // How many of each species, from the passports (stock.count, in schools of stock.schoolSize).
+    const int32 Kinds = LakeFish::NumSpecies();
+    TArray<int32> SchoolsLeft, LonersLeft, Resident;
+    SchoolsLeft.Init(0, Kinds); LonersLeft.Init(0, Kinds); Resident.Init(0, Kinds);
+    TArray<EFishSpecies> Schooling, Ambushers, Loners;
+    for (int32 Sp = 0; Sp < Kinds; ++Sp)
+    {
+        const FFishSpeciesInfo& S = LakeFish::Info((EFishSpecies)Sp);
+        if (S.IsSchooling()) { SchoolsLeft[Sp] = S.Stock.Count / S.Stock.SchoolSize; Schooling.Add((EFishSpecies)Sp); }
+        else { LonersLeft[Sp] = S.Stock.Count; (S.Habitat.bAmbush ? Ambushers : Loners).Add((EFishSpecies)Sp); }
+    }
+    // Homes of the schools and the ambushers: schools keep apart, ambushers keep their own patch of water.
+    TArray<FVector2D> SchoolHomes, LieHomes;
     int32 NextSchool = 0;
     // Anywhere in the lake, keeping Spacing from the others if the water allows (less if it does not).
     auto DrawSpaced = [&](EFishSpecies Species, const TArray<FVector2D>& Taken, float Spacing, FVector2D& Out)
@@ -388,17 +399,20 @@ void ALakeLife::StockPond()
         const FFishSpeciesInfo& S = LakeFish::Info(Species);
         const FVector Home3(Home, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(Home.X, Home.Y) + 8, (S.DepthMin + S.DepthMax) * 0.5f));
         const int32 School = NextSchool++;
-        for (int32 I = 0; I < SchoolSize[(int32)Species]; ++I)
+        // Fish school with fish of their own size: one age, within a fifth of each other's weight.
+        const float Age = FMath::Lerp(S.MinWeight, S.MaxWeight, FMath::Pow(StockRandom.FRand(), 2.5f));
+        for (int32 I = 0; I < S.Stock.SchoolSize; ++I)
         {
             const FVector2D At = Home + FVector2D(StockRandom.FRandRange(-80, 80), StockRandom.FRandRange(-80, 80));
-            SpawnStocked(Species, LakeMap::IsWater(At.X, At.Y) ? At : Home, Home3, School, Drift);
+            const float Weight = FMath::Clamp(Age * StockRandom.FRandRange(0.8f, 1.2f), S.MinWeight, S.MaxWeight);
+            SpawnStocked(Species, LakeMap::IsWater(At.X, At.Y) ? At : Home, Home3, School, Drift, Weight);
         }
         SchoolHomes.Add(Home);
         --SchoolsLeft[(int32)Species];
     };
+    auto Jitter = [&](FVector2D P) { return P + FVector2D(StockRandom.FRandRange(-100, 100), StockRandom.FRandRange(-100, 100)); };
     // 1. The fish that live at each fishing spot, in the water its pole reaches and a few metres round.
     FString Plan;
-    int32 Resident[] = { 0, 0, 0, 0 };
     SpotSchools.Reset();
     for (const LakeMap::FSpot& Spot : LakeMap::Spots())
     {
@@ -418,66 +432,81 @@ void ALakeLife::StockPond()
             for (int32 I : Places) Sum += StockPlaces[I].Score[(int32)Species];
             return Places.Num() ? Sum / Places.Num() / StockRef[(int32)Species] : 0.0f;
         };
-        // A school of whichever of perch and roach likes the water better, and a school of the
-        // other too where the water suits it well enough (a bit closer, the strip is narrow).
-        const float PerchFit = Fit(Perch, Near), RoachFit = Fit(Roach, Near);
-        const EFishSpecies Kind = PerchFit >= RoachFit ? Perch : Roach;
-        const EFishSpecies Other = Kind == Perch ? Roach : Perch;
-        const float OtherFit = Other == Perch ? PerchFit : RoachFit;
+        Plan += FString::Printf(TEXT(" | %s ("), Spot.Name);
+        for (int32 Sp = 0; Sp < Kinds; ++Sp) Plan += FString::Printf(TEXT("%s%s %.2f"), Sp ? TEXT(", ") : TEXT(""), SpeciesNoun((EFishSpecies)Sp), Fit((EFishSpecies)Sp, Sp < Kinds && LakeFish::Info((EFishSpecies)Sp).IsSchooling() ? Near : Round));
+        Plan += TEXT("):");
         FVector2D Home;
-        Plan += FString::Printf(TEXT(" | %s (окунь %.2f, плотва %.2f, щука %.2f, карась %.2f):"), Spot.Name, PerchFit, RoachFit, Fit(Pike, Round), Fit(Crucian, Round));
-        for (const EFishSpecies Species : { Kind, Other })
+        // A school of the species that likes the water best, and of every other one that likes it
+        // well enough (a bit closer, the strip is narrow).
+        TArray<EFishSpecies> ByFit = Schooling;
+        ByFit.Sort([&](EFishSpecies A, EFishSpecies B) { return Fit(A, Near) > Fit(B, Near); });
+        for (int32 K = 0; K < ByFit.Num(); ++K)
         {
-            if (Species == Other && OtherFit < 0.6f) break;
-            if (!DrawStockPlace(Species, Near, SchoolHomes, Species == Kind ? 600.0f : 350.0f, 0, Home)) continue;
+            const EFishSpecies Species = ByFit[K];
+            if ((K > 0 && Fit(Species, Near) < 0.6f) || SchoolsLeft[(int32)Species] <= 0) continue;
+            if (!DrawStockPlace(Species, Near, SchoolHomes, K == 0 ? 600.0f : 350.0f, 0, Home)) continue;
             Own.Add(NextSchool);
             StockSchool(Species, Home, 500);
             ++Resident[(int32)Species];
-            Plan += FString::Printf(TEXT(" %s %d,"), SpeciesNoun(Species), SchoolSize[(int32)Species]);
+            Plan += FString::Printf(TEXT(" %s %d,"), SpeciesNoun(Species), LakeFish::Info(Species).Stock.SchoolSize);
         }
-        // A pike where there is cover or a weed edge for its lie.
-        const float PikeFit = Fit(Pike, Round);
-        if (PikeFit > 0.6f && Resident[(int32)Pike] < 13 && DrawStockPlace(Pike, Round, PikeHomes, 1500, 0, Home))
+        // An ambusher where there is cover or a weed edge for its lie (at most about half of them live at the spots).
+        for (const EFishSpecies Species : Ambushers)
         {
-            SpawnStocked(Pike, Home, FVector::ZeroVector, -1, 400);
-            PikeHomes.Add(Home);
-            ++Resident[(int32)Pike];
-            --LonersLeft[(int32)Pike];
-            Plan += TEXT(" щука,");
+            if (Fit(Species, Round) <= 0.6f || LonersLeft[(int32)Species] <= 0 || Resident[(int32)Species] >= (LakeFish::Info(Species).Stock.Count + 1) * 55 / 100) continue;
+            if (!DrawStockPlace(Species, Round, LieHomes, 1500, 0, Home)) continue;
+            SpawnStocked(Species, Home, FVector::ZeroVector, -1, 400);
+            LieHomes.Add(Home);
+            ++Resident[(int32)Species];
+            --LonersLeft[(int32)Species];
+            Plan += FString::Printf(TEXT(" %s,"), SpeciesNoun(Species));
+            break;
         }
-        // Crucian: a shoal of them where the water is warm and weedy, a few at the other spots.
-        const float CrucianFit = Fit(Crucian, Round);
-        const int32 Crucians = CrucianFit > 0.7f ? 8 : CrucianFit > 0.3f ? 3 : 1;
-        int32 Placed = 0;
-        for (int32 I = 0; I < Crucians; ++I)
-            if (DrawStockPlace(Crucian, Round, {}, 0, 0, Home)) { SpawnStocked(Crucian, Home + FVector2D(StockRandom.FRandRange(-100, 100), StockRandom.FRandRange(-100, 100)), FVector::ZeroVector, -1, 2500); ++Placed; }
-        LonersLeft[(int32)Crucian] -= Placed;
-        Resident[(int32)Crucian] += Placed;
-        Plan += FString::Printf(TEXT(" карась %d"), Placed);
+        // The others: a shoal of them where the water suits them, a few at the other spots.
+        for (const EFishSpecies Species : Loners)
+        {
+            const float LonerFit = Fit(Species, Round);
+            const int32 Want = FMath::Min(LonerFit > 0.7f ? 8 : LonerFit > 0.3f ? 3 : 1, LonersLeft[(int32)Species]);
+            int32 Placed = 0;
+            for (int32 I = 0; I < Want; ++I)
+                if (DrawStockPlace(Species, Round, {}, 0, 0, Home)) { SpawnStocked(Species, Jitter(Home), FVector::ZeroVector, -1, 2500); ++Placed; }
+            LonersLeft[(int32)Species] -= Placed;
+            Resident[(int32)Species] += Placed;
+            Plan += FString::Printf(TEXT(" %s %d"), SpeciesNoun(Species), Placed);
+        }
     }
-    // 2. The rest of each species over the whole lake, as well as the water suits it; perch and
-    // roach schools in turn, so neither takes all the best water.
-    for (int32 I = 0; SchoolsLeft[0] > 0 || SchoolsLeft[1] > 0; ++I)
+    // 2. The rest of each species over the whole lake, as well as the water suits it; the schooling
+    // species in turn, so none takes all the best water.
+    for (bool bAny = true; bAny; )
     {
-        const EFishSpecies Kind = (I % 2 == 0 && SchoolsLeft[0] > 0) || SchoolsLeft[1] == 0 ? Perch : Roach;
-        FVector2D Home;
-        if (DrawSpaced(Kind, SchoolHomes, 2500, Home)) StockSchool(Kind, Home, 2500);
-        else --SchoolsLeft[(int32)Kind];
+        bAny = false;
+        for (const EFishSpecies Species : Schooling)
+        {
+            if (SchoolsLeft[(int32)Species] <= 0) continue;
+            bAny = true;
+            FVector2D Home;
+            if (DrawSpaced(Species, SchoolHomes, 2500, Home)) StockSchool(Species, Home, 2500);
+            else --SchoolsLeft[(int32)Species];
+        }
     }
-    for (; LonersLeft[(int32)Pike] > 0; --LonersLeft[(int32)Pike])
-    {
-        FVector2D Home;
-        if (!DrawSpaced(Pike, PikeHomes, 1500, Home)) continue;
-        SpawnStocked(Pike, Home, FVector::ZeroVector, -1, 2500);
-        PikeHomes.Add(Home);
-    }
-    for (; LonersLeft[(int32)Crucian] > 0; --LonersLeft[(int32)Crucian])
-    {
-        FVector2D Home;
-        if (DrawStockPlace(Crucian, {}, {}, 0, 0, Home)) SpawnStocked(Crucian, Home + FVector2D(StockRandom.FRandRange(-100, 100), StockRandom.FRandRange(-100, 100)), FVector::ZeroVector, -1, 2500);
-    }
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_STOCK pond stocked from %d places in %.2f s; at the spots %d perch and %d roach schools, %d pike, %d crucian%s"),
-        StockPlaces.Num(), FPlatformTime::Seconds() - Begin, Resident[0], Resident[1], Resident[3], Resident[2], *Plan);
+    for (const EFishSpecies Species : Ambushers)
+        for (; LonersLeft[(int32)Species] > 0; --LonersLeft[(int32)Species])
+        {
+            FVector2D Home;
+            if (!DrawSpaced(Species, LieHomes, 1500, Home)) continue;
+            SpawnStocked(Species, Home, FVector::ZeroVector, -1, 2500);
+            LieHomes.Add(Home);
+        }
+    for (const EFishSpecies Species : Loners)
+        for (; LonersLeft[(int32)Species] > 0; --LonersLeft[(int32)Species])
+        {
+            FVector2D Home;
+            if (DrawStockPlace(Species, {}, {}, 0, 0, Home)) SpawnStocked(Species, Jitter(Home), FVector::ZeroVector, -1, 2500);
+        }
+    FString Residents;
+    for (int32 Sp = 0; Sp < Kinds; ++Sp) Residents += FString::Printf(TEXT("%s%s %d"), Sp ? TEXT(", ") : TEXT(""), SpeciesNoun((EFishSpecies)Sp), Resident[Sp]);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_STOCK pond stocked from %d places in %.2f s; living at the spots (schools or fish): %s%s"),
+        StockPlaces.Num(), FPlatformTime::Seconds() - Begin, *Residents, *Plan);
 }
 
 void ALakeLife::Restock(const ALakeFish* Gone)
@@ -496,6 +525,10 @@ void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor,
         constexpr float Unseen = 2500;
         FVector2D At(Anchor);
         bool bPlaced = false;
+        // A newcomer to a school is of its size.
+        float Weight = -1;
+        if (const ALakeFish* Mate = School >= 0 ? SchoolLeader(School) : nullptr)
+            Weight = FMath::Clamp(Mate->WeightKg * StockRandom.FRandRange(0.8f, 1.2f), LakeFish::Info(Species).MinWeight, LakeFish::Info(Species).MaxWeight);
         if (School >= 0)
             if (const ALakeFish* Lead = SchoolLeader(School); Lead && !IsNearPlayer(Lead->GetActorLocation(), Unseen))
             {
@@ -511,7 +544,7 @@ void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor,
             FVector2D Elsewhere;
             if (DrawStockPlace(Species, {}, {}, 0, Unseen, Elsewhere)) At = Elsewhere;
         }
-        SpawnStocked(Species, At, Anchor, School, Drift);
+        SpawnStocked(Species, At, Anchor, School, Drift, Weight);
     }), Delay, false);
 }
 
@@ -582,7 +615,8 @@ void ALakeLife::Alarm(ALakeFish* Victim, float Radius)
     const FVector From = Victim->GetActorLocation();
     ForEachFishNear(From, Radius, [&](ALakeFish* Fish)
     {
-        if (Fish != Victim && Fish->Species != EFishSpecies::Pike && Fish->IsFree())
+        // (A fish big enough to eat the victim is not frightened by its struggle.)
+        if (Fish != Victim && Fish->WeightKg * LakeFish::Info(Fish->Species).Feeding.PreyMaxWeight < Victim->WeightKg && Fish->IsFree())
             Fish->Startle(From, 1.0f - 0.6f * FVector::Dist(From, Fish->GetActorLocation()) / Radius);
     });
 }
@@ -617,7 +651,7 @@ void ALakeLife::SampleMotion(float DeltaSeconds)
         ALakeFish* Fish = Weak.Get();
         if (!Fish || !Fish->IsFree()) { LastTurn.Remove(Weak); continue; }
         const FFishSpeciesInfo& S = LakeFish::Info(Fish->Species);
-        FMotionStats& M = Motion[(int32)Fish->Species];
+        FMotionStats& M = MotionOf(Fish->Species);
         const float Speed = Fish->Velocity().Size();
         const float Turn = Fish->TurnRateNow();
         M.Speed += Speed;
@@ -656,7 +690,7 @@ void ALakeLife::SampleMotion(float DeltaSeconds)
             Spacing += Nearest / LakeFish::LengthCm(Fish->Species, Fish->WeightKg) / Free.Num();
         }
         if (Speed < 3) continue;
-        FMotionStats& M = Motion[(int32)Free[0]->Species];
+        FMotionStats& M = MotionOf(Free[0]->Species);
         M.Spacing += Spacing;
         M.Order += Sum.Size() / Free.Num();
         ++M.SchoolSamples;
@@ -665,7 +699,7 @@ void ALakeLife::SampleMotion(float DeltaSeconds)
 
 void ALakeLife::LogMotion()
 {
-    for (int32 Sp = 0; Sp < (int32)EFishSpecies::Count; ++Sp)
+    for (int32 Sp = 0; Sp < Motion.Num(); ++Sp)
     {
         FMotionStats& M = Motion[Sp];
         if (M.Samples == 0) continue;
@@ -690,24 +724,37 @@ float ALakeLife::Percentile(const int32* Buckets, int32 Count, int32 Total, floa
     return Count * Step;
 }
 
-void ALakeLife::RecordShownMotion(const FVector& Where, float Accel, float TurnAccel, EFishSpecies Species)
+void ALakeLife::RecordShownMotion(const FVector& Where, float Accel, float TurnAccel, EFishSpecies Species, bool bBurst)
 {
     // Only the fish this player can actually see swimming close by.
     if (FVector::DistSquared(Where, ViewLocation()) > FMath::Square(5000.0f)) return;
+    // A burst (a strike, a rush at the fry) is a fast start of the fish's own, sharp on the server
+    // too: kept apart, so the measure shows how smoothly the swimming between updates is shown.
+    if (bBurst) { ++Shown.BurstSamples; ++Shown.BurstAccel[FMath::Clamp(FMath::FloorToInt(Accel / 50), 0, 63)]; return; }
     ++Shown.Samples;
     ++Shown.Accel[FMath::Clamp(FMath::FloorToInt(Accel / 50), 0, 63)];
     ++Shown.Turn[FMath::Clamp(FMath::FloorToInt(TurnAccel / 50), 0, 63)];
     Shown.MaxAccel = FMath::Max(Shown.MaxAccel, Accel);
     Shown.MaxTurn = FMath::Max(Shown.MaxTurn, TurnAccel);
+    const int32 Sp = (int32)Species;
+    if (Shown.BySpecies.Num() <= Sp) { Shown.BySpecies.SetNumZeroed(Sp + 1); Shown.JerkyBySpecies.SetNumZeroed(Sp + 1); }
+    ++Shown.BySpecies[Sp];
+    if (Accel > 600) ++Shown.JerkyBySpecies[Sp];
 }
 
 void ALakeLife::LogShownMotion()
 {
     if (Shown.Samples < 100) return;
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_SMOOTH netmode=%d samples=%d accel p50=%.0f p99=%.0f max=%.0f cm/s2 turn-accel p50=%.0f p99=%.0f max=%.0f deg/s2"),
+    // Which species the jerks come from.
+    FString Jerky;
+    for (int32 Sp = 0; Sp < Shown.BySpecies.Num(); ++Sp)
+        if (Shown.BySpecies[Sp] > 0)
+            Jerky += FString::Printf(TEXT(" %s %.1f%% of %d"), SpeciesNoun((EFishSpecies)Sp), 100.0f * Shown.JerkyBySpecies[Sp] / Shown.BySpecies[Sp], Shown.BySpecies[Sp]);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_SMOOTH netmode=%d samples=%d accel p50=%.0f p99=%.0f max=%.0f cm/s2 turn-accel p50=%.0f p99=%.0f max=%.0f deg/s2 | over 600 cm/s2:%s | bursts kept apart: %d samples, p99 %.0f cm/s2"),
         (int32)GetNetMode(), Shown.Samples,
         Percentile(Shown.Accel, 64, Shown.Samples, 0.5f, 50), Percentile(Shown.Accel, 64, Shown.Samples, 0.99f, 50), Shown.MaxAccel,
-        Percentile(Shown.Turn, 64, Shown.Samples, 0.5f, 50), Percentile(Shown.Turn, 64, Shown.Samples, 0.99f, 50), Shown.MaxTurn);
+        Percentile(Shown.Turn, 64, Shown.Samples, 0.5f, 50), Percentile(Shown.Turn, 64, Shown.Samples, 0.99f, 50), Shown.MaxTurn, *Jerky,
+        Shown.BurstSamples, Shown.BurstSamples ? Percentile(Shown.BurstAccel, 64, Shown.BurstSamples, 0.99f, 50) : 0.0f);
     Shown = FShownStats();
 }
 
@@ -715,6 +762,12 @@ void ALakeLife::Devour(ALakeFish* Prey, ALakeFish* Predator)
 {
     if (!IsValid(Prey) || Prey->IsBusy()) return;
     ++Counters.Eaten;
+    if (Predator)
+    {
+        const int32 Kinds = LakeFish::NumSpecies();
+        if (Kills.Num() < Kinds * Kinds) Kills.SetNumZeroed(Kinds * Kinds);
+        ++Kills[(int32)Predator->Species * Kinds + (int32)Prey->Species];
+    }
     Alarm(Prey, 500);
     // The pond stays stocked: another fish of the species takes its place later, in its school and its water.
     Restock(Prey);
@@ -738,7 +791,7 @@ void ALakeLife::UpdateRandomEvents()
         if (ALakeFish* Fish = Weak.Get())
         {
             const FVector P = Fish->GetActorLocation();
-            if ((Fish->Species == EFishSpecies::Roach || Fish->Species == EFishSpecies::Crucian) && Fish->IsFree()
+            if (LakeFish::Info(Fish->Species).Feeding.bJumps && Fish->IsFree()
                 && P.Z > LakeFish::SurfaceZ - 90 && IsNearPlayer(P, 5500)) Candidates.Add(Fish);
         }
     if (Candidates.IsEmpty()) return;
@@ -748,24 +801,124 @@ void ALakeLife::UpdateRandomEvents()
 
 void ALakeLife::LogStats()
 {
-    int32 Count[(int32)EFishSpecies::Count][(int32)EFishGoal::Count] = {};
+    TArray<int32> Count;
+    Count.Init(0, LakeFish::NumSpecies() * (int32)EFishGoal::Count);
     int32 Near = 0;
     for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
         if (const ALakeFish* Fish = Weak.Get())
         {
-            ++Count[(int32)Fish->Species][(int32)Fish->GetGoal()];
+            ++Count[(int32)Fish->Species * (int32)EFishGoal::Count + (int32)Fish->GetGoal()];
             Near += IsNearPlayer(Fish->GetActorLocation(), NearPlayer);
         }
     FString Line;
-    for (int32 S = 0; S < (int32)EFishSpecies::Count; ++S)
-        Line += FString::Printf(TEXT(" | %s feed %d rest %d cruise %d"), SpeciesNoun((EFishSpecies)S),
-            Count[S][(int32)EFishGoal::Feed], Count[S][(int32)EFishGoal::Rest], Count[S][(int32)EFishGoal::Cruise]);
+    auto Of = [&](int32 S, EFishGoal G) { return Count[S * (int32)EFishGoal::Count + (int32)G]; };
+    for (int32 S = 0; S < LakeFish::NumSpecies(); ++S)
+        Line += FString::Printf(TEXT(" | %s feed %d rest %d cruise %d"), SpeciesNoun((EFishSpecies)S), Of(S, EFishGoal::Feed), Of(S, EFishGoal::Rest), Of(S, EFishGoal::Cruise));
     const ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
     const int32* N = Counters.Signs;
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LIFE hour=%.1f fish=%d near=%d%s | signs rise %d bubbles %d swirl %d splash %d scatter %d jump %d | fry attacks %d pike strikes %d eaten %d"),
         Weather ? Weather->Hours() : -1.0f, AllFish.Num(), Near, *Line, N[0], N[1], N[2], N[3], N[4], N[5], Counters.FryAttacks, Counters.PikeStrikes, Counters.Eaten);
     LogMotion();
     LogSpots();
+    LogPrey();
+    LogFood();
+}
+
+void ALakeLife::LogFood()
+{
+    const ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
+    if (!Weather || !FoodField.IsReady()) return;
+    const FFishConditions C = Weather->FishConditions();
+    FString Line = FString::Printf(TEXT("QUIET_LAKE_FOOD hour=%.1f plankton at %.1f m, insects %.2f, silt fauna %.2f | patches eaten below 70%%: plankton %d insects %d silt fauna %d weed %d"),
+        Weather->Hours(), LakeFood::PlanktonDepthM(C), LakeFood::Season(EFishFood::Insects, C), LakeFood::Season(EFishFood::Benthos, C),
+        FoodField.EatenPatches(EFishFood::Plankton), FoodField.EatenPatches(EFishFood::Insects), FoodField.EatenPatches(EFishFood::Benthos), FoodField.EatenPatches(EFishFood::Plants));
+    // By species: what the feeding fish are on and how deep they feed; how far from the bank all of them are.
+    for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp)
+    {
+        int32 On[7] = {};
+        int32 Feeding = 0, All = 0;
+        double Depth = 0, Column = 0, Bank = 0, Water = 0;
+        for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
+        {
+            const ALakeFish* Fish = Weak.Get();
+            if (!Fish || (int32)Fish->Species != Sp || !Fish->IsFree()) continue;
+            const FVector P = Fish->GetActorLocation();
+            ++All;
+            Bank += LakeMap::ShoreDistance(P.X, P.Y) / 100;
+            Water += LakeMap::Depth(P.X, P.Y) / 100;
+            if (Fish->GetGoal() != EFishGoal::Feed) continue;
+            ++Feeding;
+            ++On[FMath::Clamp((int32)Fish->GetFeedOn(), 0, 6)];
+            Depth += (LakeFish::SurfaceZ - P.Z) / 100;
+            Column += FMath::Clamp((LakeFish::SurfaceZ - P.Z) / FMath::Max(1.0f, LakeFish::SurfaceZ - ALakeFish::BottomZ(P.X, P.Y)), 0.0f, 1.0f);
+        }
+        if (!All) continue;
+        Line += FString::Printf(TEXT(" | %s: feeding %d"), SpeciesNoun((EFishSpecies)Sp), Feeding);
+        for (int32 F = 0; F < 7; ++F)
+            if (On[F]) Line += FString::Printf(TEXT(" %s %.0f%%"), LakeFood::Name((EFishFood)F), 100.0f * On[F] / Feeding);
+        if (Feeding) Line += FString::Printf(TEXT(", at %.1f m (%.2f of the depth)"), Depth / Feeding, Column / Feeding);
+        Line += FString::Printf(TEXT("; all %d: %.1f m from the bank over %.1f m of water"), All, Bank / All, Water / All);
+    }
+    UE_LOG(LogTemp, Display, TEXT("%s"), *Line);
+}
+
+void ALakeLife::SamplePrey()
+{
+    const int32 Kinds = LakeFish::NumSpecies();
+    if (PreyWatch.Num() < Kinds) PreyWatch.SetNum(Kinds);
+    for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
+    {
+        const ALakeFish* Fish = Weak.Get();
+        if (!Fish || !Fish->IsFree()) continue;
+        FPreyWatch& W = PreyWatch[(int32)Fish->Species];
+        ++W.Samples;
+        // The nearest fish that could eat this one (big enough, and a fish-eater).
+        const FVector P = Fish->GetActorLocation();
+        float Threat = 1e9f, Mate = 1e9f, Seen = 1e9f;
+        ForEachFishNear(P, 800, [&](ALakeFish* Other)
+        {
+            if (Other == Fish) return;
+            const float Dist = FVector::Dist(P, Other->GetActorLocation());
+            if (Other->GetSchool() >= 0 && Other->GetSchool() == Fish->GetSchool()) { Mate = FMath::Min(Mate, Dist); return; }
+            if (Fish->WeightKg > Other->WeightKg * LakeFish::Info(Other->Species).Feeding.PreyMaxWeight) return;
+            Threat = FMath::Min(Threat, Dist);
+            // One it can tell is there: on the move or hunting (not lying still in ambush).
+            if (Other->Velocity().SizeSquared() > FMath::Square(8.0f) || Other->GetGoal() == EFishGoal::Feed && !LakeFish::Info(Other->Species).Habitat.bAmbush) Seen = FMath::Min(Seen, Dist);
+        });
+        W.Seen += Seen < 800;
+        W.SeenWithin150 += Seen < 150;
+        const bool bThreat = Threat < 800;
+        W.Threatened += bThreat;
+        W.Within150 += Threat < 150;
+        W.Within300 += Threat < 300;
+        // School mates: how tight the school is (body lengths to the nearest mate), the fish afraid of a predator and not.
+        if (Fish->GetSchool() >= 0 && Mate < 800)
+        {
+            const float Lengths = Mate / LakeFish::LengthCm(Fish->Species, Fish->WeightKg);
+            if (Fish->FearNow() > 0.3f) { W.SpacingAfraid += Lengths; ++W.MatesAfraid; }
+            else { W.Spacing += Lengths; ++W.Mates; }
+        }
+    }
+}
+
+void ALakeLife::LogPrey()
+{
+    FString Line, Eaten;
+    for (int32 Sp = 0; Sp < PreyWatch.Num(); ++Sp)
+    {
+        FPreyWatch& W = PreyWatch[Sp];
+        if (!W.Samples) continue;
+        Line += FString::Printf(TEXT(" | %s: a predator within 8 m %.0f%%, of those within 3 m %.0f%%, within 1.5 m %.0f%%"), SpeciesNoun((EFishSpecies)Sp),
+            100.0f * W.Threatened / W.Samples, W.Threatened ? 100.0f * W.Within300 / W.Threatened : 0.0f, W.Threatened ? 100.0f * W.Within150 / W.Threatened : 0.0f);
+        Line += FString::Printf(TEXT(", within 1.5 m of one on the move %.0f%%"), W.Seen ? 100.0f * W.SeenWithin150 / W.Seen : 0.0f);
+        if (W.Mates) Line += FString::Printf(TEXT(", school %.2f lengths (%.2f afraid, %d)"), W.Spacing / W.Mates, W.MatesAfraid ? W.SpacingAfraid / W.MatesAfraid : 0.0, W.MatesAfraid);
+        W = FPreyWatch();
+    }
+    const int32 Kinds = LakeFish::NumSpecies();
+    for (int32 I = 0; I < Kills.Num(); ++I)
+        if (Kills[I]) Eaten += FString::Printf(TEXT(" %s>%s %d"), SpeciesNoun((EFishSpecies)(I / Kinds)), SpeciesNoun((EFishSpecies)(I % Kinds)), Kills[I]);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_PREY%s | eaten so far:%s | fry: %d rushes at them, about %.0f caught, %d times they darted off before a strike"),
+        *Line, Eaten.IsEmpty() ? TEXT(" none") : *Eaten, Counters.FryAttacks, Counters.FryEaten, Counters.FryFlights);
 }
 
 // --- fry ----------------------------------------------------------------------------------
@@ -819,6 +972,34 @@ void ALakeLife::UpdateFry(float DeltaSeconds)
     for (FFryShoal& F : Fry)
     {
         FVector L = F.Location;
+        // Fry keep watch: a hunting perch or pike within a few metres sends the shoal darting off,
+        // away from it and into the weeds.
+        F.Alert = FMath::Max(0.0f, F.Alert - DeltaSeconds * 0.15f);
+        if (Time >= F.NextLook && F.Panic < 2)
+        {
+            F.NextLook = Time + Random.FRandRange(0.4f, 0.8f);
+            const ALakeFish* Danger = nullptr;
+            float Nearest = 250;
+            ForEachFishNear(L, 250, [&](ALakeFish* Fish)
+            {
+                const FFishFeeding& Eats = LakeFish::Info(Fish->Species).Feeding;
+                if (!(Eats.bHuntsFry || Eats.PreyMaxWeight > 0) || !Fish->IsFree()) return;
+                // A hunting one from a few metres (a pike lying still only close by), any other only when it comes right up.
+                const float Dist = FVector::Dist(L, Fish->GetActorLocation());
+                const bool bMoving = Fish->Velocity().SizeSquared() > FMath::Square(8.0f);
+                const float Range = Fish->GetGoal() == EFishGoal::Feed ? (bMoving ? 250.0f : 250.0f * (1 - Eats.Camouflage)) : 100.0f;
+                if (Dist < Range && Dist < Nearest) { Nearest = Dist; Danger = Fish; }
+            });
+            if (Danger && F.Alert < 0.5f)
+            {
+                const FVector2D Away = FVector2D(L - Danger->GetActorLocation()).GetSafeNormal() * Random.FRandRange(300.0f, 600.0f);
+                F.Target = FrySpotNear(FVector2D(L) + Away, 250);
+                F.Speed = 70;
+                F.NextWander = Time + Random.FRandRange(10.0f, 20.0f);
+                F.Alert = 1;
+                ++Counters.FryFlights;
+            }
+        }
         if (F.Panic <= 0 && Time >= F.NextWander)
         {
             F.Target = FrySpotNear(FVector2D(L), 600);
@@ -858,19 +1039,24 @@ void ALakeLife::AttackFry(int32 Index, ALakeFish* Hunter)
     F.ScatteredAt = ServerTime();
     ++Counters.FryAttacks;
     F.Panic += 1;
-    if (F.Count > 6) F.Count -= (uint8)Random.RandRange(1, 3);
+    // Among the lilies and the reeds, and on the alert, fry are harder to catch.
+    const LakeMap::FZones Zones = LakeMap::ZonesAt(F.Location.X, F.Location.Y);
+    const float Cover = FMath::Max(LakeMap::LilyAmount(F.Location.X, F.Location.Y), 0.6f * Zones.ReedEdge);
+    const float Catch = (1 - 0.6f * Cover) * (1 - 0.4f * F.Alert);
+    if (F.Count > 6 && Random.FRand() < Catch) { const int32 Lost = Random.RandRange(1, 3); F.Count -= (uint8)Lost; Counters.FryEaten += Lost; }
     const FVector Surface(F.Location.X, F.Location.Y, LakeFish::SurfaceZ);
     const EFishSpecies Species = Hunter ? Hunter->Species : EFishSpecies::Perch;
     const float Weight = Hunter ? Hunter->WeightKg : 0.2f;
     EmitSign(ELakeSign::Scatter, Surface, FMath::Clamp(0.6f + F.Count / 60.0f, 0.6f, 1.3f), Species, Weight);
-    if (Species == EFishSpecies::Pike || Random.FRand() < 0.3f)
+    if (LakeFish::Info(Species).Habitat.bAmbush || Random.FRand() < 0.3f)
         EmitSign(ELakeSign::Splash, Surface + FVector(Random.FRandRange(-50, 50), Random.FRandRange(-50, 50), 0), FMath::Min(0.35f + 0.3f * Weight, 1.4f), Species, Weight);
-    // Every hungry perch close by rushes in and snatches a mouthful.
+    // Every hungry perch close by rushes in and snatches a mouthful (a full one only keeps with the school).
     ForEachFishNear(F.Location, 700, [&](ALakeFish* Fish)
     {
-        if (Fish->Species != EFishSpecies::Perch || Fish->GetGoal() != EFishGoal::Feed || !Fish->IsFree()) return;
+        if (!LakeFish::Info(Fish->Species).Feeding.bHuntsFry || Fish->GetGoal() != EFishGoal::Feed || !Fish->IsFree()) return;
+        if (Fish != Hunter && Fish->Hunger < 0.15f) return;
         Fish->Dash(FVector(F.Location) + FVector(Random.FRandRange(-70, 70), Random.FRandRange(-70, 70), -10), 0.45f);
-        Fish->Eat(0.1f);
+        Fish->Eat(0.1f * (0.5f + 0.5f * Catch));
     });
     // After a few rushes the shoal bolts along the bank and the hunt moves with it.
     if (F.Panic >= 3 + Random.FRand() * 2)
@@ -1103,16 +1289,18 @@ void ALakeLife::ShowSign(const FLakeSign& Sign)
     }
     // A note for the HUD panel, if it happened within sight.
     if (Sign.bQuiet || Dist > 6000) return;
+    // What the species' passport says of this sign (or a general note).
+    const FFishSigns& Says = LakeFish::Info(Sign.Species).Signs;
+    auto Note = [](const FString& Own, const TCHAR* General) { return Own.IsEmpty() ? FString(General) : Own; };
     FString Text;
-    const bool bPike = Sign.Species == EFishSpecies::Pike;
     switch (Sign.Kind)
     {
-    case ELakeSign::Rise: Text = Sign.Species == EFishSpecies::Roach ? TEXT("Плотва берёт с поверхности — круги") : TEXT("Круги на воде"); break;
-    case ELakeSign::Bubbles: Text = TEXT("Карась роется в иле — пузыри"); break;
-    case ELakeSign::Swirl: Text = bPike ? TEXT("Бурун — щука ударила под водой") : TEXT("Бурун на воде"); break;
-    case ELakeSign::Splash: Text = bPike ? TEXT("Всплеск — удар щуки") : Sign.Species == EFishSpecies::Perch ? TEXT("Окунь бьёт малька") : TEXT("Всплеск"); break;
-    case ELakeSign::Scatter: Text = bPike ? TEXT("Щука влетела в стайку малька") : TEXT("Окуни гоняют малька — «котёл»"); break;
-    case ELakeSign::Jump: Text = FString::Printf(TEXT("Из воды выпрыгнул%s %s"), Sign.Species == EFishSpecies::Roach || bPike ? TEXT("а") : TEXT(""), SpeciesNoun(Sign.Species)); break;
+    case ELakeSign::Rise: Text = Note(Says.Rise, TEXT("Круги на воде")); break;
+    case ELakeSign::Bubbles: Text = Note(Says.Bubbles, TEXT("Пузыри на воде")); break;
+    case ELakeSign::Swirl: Text = Note(Says.Swirl, TEXT("Бурун на воде")); break;
+    case ELakeSign::Splash: Text = Note(Says.Splash, TEXT("Всплеск")); break;
+    case ELakeSign::Scatter: Text = Note(Says.Scatter, TEXT("Малёк брызнул из воды")); break;
+    case ELakeSign::Jump: Text = Note(Says.Jump, TEXT("Из воды выпрыгнула рыба")); break;
     default: break;
     }
     RecentNotes.Insert({ (float)GetWorld()->GetRealTimeSeconds(), FString::Printf(TEXT("%s · %.0f м"), *Text, Dist / 100) }, 0);
@@ -1154,7 +1342,7 @@ void ALakeLife::UpdateFryVisuals(float DeltaSeconds)
     const float Now = World->GetTimeSeconds();
     const float ServerNow = ServerTime();
     static UStaticMesh* FryMesh = nullptr;
-    if (!FryMesh) FryMesh = LoadObject<UStaticMesh>(nullptr, LakeFish::Info(EFishSpecies::Roach).Mesh);
+    if (!FryMesh) FryMesh = LoadObject<UStaticMesh>(nullptr, *LakeFish::Info(EFishSpecies::Roach).Mesh);
     const float MeshLength = LakeFish::Info(EFishSpecies::Roach).MeshLength;
     SwarmViews.SetNum(Fry.Num());
     FrySwarms.SetNum(Fry.Num());

@@ -5,11 +5,15 @@
 #include "LakeFish.h"
 #include "LakeMap.h"
 #include "LakeLife.h"
+#include "LakeFood.h"
 #include "LakeWeather.h"
 #include "LakeRipples.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Engine/StaticMesh.h"
 #include "TimerManager.h"
 #include "GameFramework/PlayerController.h"
 
@@ -101,6 +105,9 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     for (int32 Step = 0; Step < 6000 && Fisher->FishingState == EFishingState::Waiting; ++Step) Perch->Simulate(0.05f);
     TestTrue(TEXT("Perch takes the worm by itself"), Fisher->FishingState == EFishingState::Bite);
     TestEqual(TEXT("Taking the bait is not a catch"), Fisher->CatchCount, 0);
+    // Strike once it stands swallowing the worm: then the hook always goes home (pulling the float
+    // under, a perch is hooked nine times in ten).
+    for (int32 Step = 0; Step < 200 && Fisher->FishingState == EFishingState::Bite && Perch->StrikeHookChance() < 1; ++Step) Perch->Simulate(0.05f);
     Fisher->NextActionTime = 0;
     Fisher->ServerCancel_Implementation();
     TestTrue(TEXT("Strike hooks the fish"), Fisher->FishingState == EFishingState::Fight);
@@ -511,8 +518,9 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
         return S;
     };
     constexpr int32 N = 300;
-    int32 CrucianLifts = 0, CrucianOffBottomLifts = 0, RoachWithPecks = 0, PerchFastSinks = 0;
+    int32 CrucianLifts = 0, CrucianOffBottomLifts = 0, RoachTested = 0, PerchFastSinks = 0, PerchSwallows = 0, PikeEarlyMisses = 0, PikeLateHooks = 0;
     float CrucianBefore = 0, PerchBefore = 0, SmallTries = 0, BigTries = 0, EagerWindow = 0, SluggishWindow = 0;
+    float Window[4] = {};   // the four built-in species
     for (int32 I = 0; I < N; ++I)
     {
         const FSummary Crucian = Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 1.0f, true, false, R));
@@ -524,20 +532,39 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
         EagerWindow += Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 1.2f, false, false, R)).Window / N;
         SluggishWindow += Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 0.2f, false, true, R)).Window / N;
         const TArray<FBiteStep> Roach = MakeBite(EFishSpecies::Roach, 0.5f, 1.0f, false, false, R);
-        RoachWithPecks += Roach.ContainsByPredicate([](const FBiteStep& S) { return S.Motion == EBiteMotion::Peck && !S.bTake; });
-        const FSummary Perch = Summarise(MakeBite(EFishSpecies::Perch, 0.5f, 1.0f, true, false, R));
+        const int32 RoachTake = Roach.IndexOfByPredicate([](const FBiteStep& S) { return S.bTake; });
+        const int32 RoachTry = Roach.IndexOfByPredicate([](const FBiteStep& S) { return !S.bTake && (S.Motion == EBiteMotion::Peck || S.Motion == EBiteMotion::Tremble); });
+        RoachTested += RoachTake == INDEX_NONE || (RoachTry != INDEX_NONE && RoachTry < RoachTake);
+        Window[(int32)EFishSpecies::Roach] += Summarise(Roach).Window / N;
+        const TArray<FBiteStep> PerchBite = MakeBite(EFishSpecies::Perch, 0.5f, 1.0f, true, false, R);
+        const FSummary Perch = Summarise(PerchBite);
         PerchFastSinks += Perch.Take == EBiteMotion::Sink && Perch.TakeAmount >= 45;
+        PerchSwallows += PerchBite.Last().Motion == EBiteMotion::Hold && PerchBite.Last().bTake && PerchBite.Last().Hook >= 1;
         PerchBefore += Perch.Before / N;
+        Window[(int32)EFishSpecies::Perch] += Perch.Window / N;
+        Window[(int32)EFishSpecies::Crucian] += Crucian.Window / N;
+        const TArray<FBiteStep> Pike = MakeBite(EFishSpecies::Pike, 0.5f, 1.0f, false, false, R);
+        Window[(int32)EFishSpecies::Pike] += Summarise(Pike).Window / N;
+        const int32 PikeTake = Pike.IndexOfByPredicate([](const FBiteStep& S) { return S.bTake; });
+        PikeEarlyMisses += PikeTake != INDEX_NONE && Pike[PikeTake].Hook < 0.6f;
+        PikeLateHooks += Pike.Last().bTake && Pike.Last().Hook >= 0.9f;
     }
     AddInfo(FString::Printf(TEXT("Crucian: lifts %d/%d from the bottom, %d off it; %.1f s of testing; tries small %.1f, big %.1f; take window eager %.1f s, sluggish %.1f s"),
         CrucianLifts, N, CrucianOffBottomLifts, CrucianBefore, SmallTries, BigTries, EagerWindow, SluggishWindow));
-    AddInfo(FString::Printf(TEXT("Perch: %.1f s before the take, fast sinks %d/%d; roach with pecks %d/%d"), PerchBefore, PerchFastSinks, N, RoachWithPecks, N));
+    AddInfo(FString::Printf(TEXT("Perch: %.1f s before the take, fast sinks %d/%d, swallowing %d/%d; roach tested first %d/%d; pike: early strike unsure %d/%d, last run sure %d/%d"),
+        PerchBefore, PerchFastSinks, N, PerchSwallows, N, RoachTested, N, PikeEarlyMisses, N, PikeLateHooks, N));
+    AddInfo(FString::Printf(TEXT("Time to strike (undisturbed, favourite bait): perch %.1f s, roach %.1f s, crucian %.1f s, pike %.1f s"),
+        Window[0], Window[1], Window[2], Window[3]));
     TestTrue(TEXT("A crucian with the bait on the bottom usually lifts the float"), CrucianLifts > N * 0.7f);
     TestEqual(TEXT("No lift when the bait hangs off the bottom"), CrucianOffBottomLifts, 0);
     TestTrue(TEXT("Small crucian keep trembling the float longer than big ones"), SmallTries > BigTries + 1.0f);
     TestTrue(TEXT("A sluggish crucian lets go sooner"), SluggishWindow < EagerWindow * 0.8f);
-    TestTrue(TEXT("Roach peck before taking"), RoachWithPecks == N);
+    TestTrue(TEXT("Roach test the bait (pecks, trembles) before taking it"), RoachTested == N);
     TestTrue(TEXT("Perch pull the float under sharply"), PerchFastSinks == N);
+    TestTrue(TEXT("Then perch stand swallowing the worm: a late strike still hooks"), PerchSwallows == N);
+    TestTrue(TEXT("A pike carrying the bait across its jaws is often missed, on its second run it is hooked"), PikeEarlyMisses == N && PikeLateHooks == N);
+    TestTrue(TEXT("Time enough to strike: roach 2.5 s, crucian and perch 4 s, pike 7 s"),
+        Window[1] >= 2.5f && Window[2] >= 4.0f && Window[0] >= 4.0f && Window[3] >= 7.0f);
     TestTrue(TEXT("Perch take far more boldly than crucian"), PerchBefore < CrucianBefore * 0.4f);
 
     // A real crucian at a bait lying on the bottom: trembles first, then lifts or leads the float off.
@@ -568,6 +595,87 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     AddInfo(FString::Printf(TEXT("Crucian take shown as motion %d; the float trembled first: %d"), (int32)FirstTake, Seen.Contains(EBiteMotion::Tremble)));
     TestTrue(TEXT("The crucian tests the bait first: the float trembles"), Seen.Contains(EBiteMotion::Tremble));
     TestTrue(TEXT("Its take lifts the float or leads it off"), FirstTake == EBiteMotion::Lift || FirstTake == EBiteMotion::Drift);
+
+    // Bites as the angler sees them, with real fish and nobody striking: how long each species tests
+    // the bait, how long it holds it (the time there is to strike), and whether it comes back after
+    // letting go. Logged as QUIET_LAKE_BITE_SURVEY.
+    struct FKind { EFishSpecies Species; EBait Bait; bool bBottom; float Weight; };
+    const FKind Kinds[] = { { EFishSpecies::Roach, EBait::Maggot, false, 0.15f }, { EFishSpecies::Perch, EBait::Worm, false, 0.3f },
+                            { EFishSpecies::Crucian, EBait::Bread, true, 0.5f }, { EFishSpecies::Pike, EBait::Worm, false, 2.0f } };
+    struct FSurvey { int32 Trials = 0, Takes = 0, Returns = 0, LeftUntaken = 0; float Testing = 0, Window = 0, MinWindow = 1e9f, MaxWindow = 0; };
+    FSurvey Survey[4];
+    constexpr float Dt = 0.05f;
+    for (const FKind& Kind : Kinds)
+    {
+        FSurvey& Sv = Survey[(int32)Kind.Species];
+        for (int32 Trial = 0; Trial < 12; ++Trial)
+        {
+            Fisher->Bait = Kind.Bait;
+            Fisher->FloatDepth = ALakeCharacter::MaxDepth;
+            FLakeFishingFixture::ImmersedRig(Fisher);
+            if (!Kind.bBottom)
+            {
+                const FVector At = Fisher->BaitLocation();
+                Fisher->FloatDepth = FMath::Max(30.0f, LakeFish::SurfaceZ - ALakeFish::BottomZ(At.X, At.Y) - 25);
+                FLakeFishingFixture::ImmersedRig(Fisher);
+            }
+            ALakeFish* Fish = SpawnFish(World, Kind.Species, Kind.Weight, Fisher->BaitLocation() + FVector(150, 0, 0));
+            Fish->Hunger = 1;
+            ++Sv.Trials;
+            float Touch = -1, TakeAt = -1;
+            int32 TakesHere = 0;
+            for (int32 Step = 0; Step < 1800; ++Step)
+            {
+                const float T = Step * Dt;
+                const EFishingState Before = Fisher->FishingState;
+                Fish->Simulate(Dt);
+                ++GFrameCounter;
+                World->GetTimerManager().Tick(Dt);
+                if (Touch < 0 && Fish->State == ALakeFish::EState::Nibble) Touch = T;
+                if (Before != EFishingState::Bite && Fisher->FishingState == EFishingState::Bite)
+                {
+                    TakeAt = T;
+                    if (TakesHere == 0 && Touch >= 0) Sv.Testing += T - Touch;
+                    ++TakesHere;
+                }
+                if (Before == EFishingState::Bite && Fisher->FishingState != EFishingState::Bite && TakeAt >= 0)
+                {
+                    const float W = T - TakeAt;
+                    if (TakesHere == 1) { Sv.Window += W; Sv.MinWindow = FMath::Min(Sv.MinWindow, W); Sv.MaxWindow = FMath::Max(Sv.MaxWindow, W); }
+                    TakeAt = -1;
+                }
+            }
+            Sv.Takes += TakesHere > 0;
+            Sv.Returns += TakesHere > 1;
+            Sv.LeftUntaken += Touch >= 0 && TakesHere == 0;
+            Fish->Destroy();
+        }
+        const int32 Takes = FMath::Max(1, Sv.Takes);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BITE_SURVEY %s on %s: took it %d of %d, tested %.1f s first, held it %.1f s (%.1f-%.1f) when not struck, came back and took again %d, left without taking %d"),
+            *LakeFish::Info(Kind.Species).Name, LakeFish::BaitName(Kind.Bait), Sv.Takes, Sv.Trials, Sv.Testing / Takes, Sv.Window / Takes,
+            Sv.Takes ? Sv.MinWindow : 0.0f, Sv.MaxWindow, Sv.Returns, Sv.LeftUntaken);
+    }
+    const FSurvey& SRoach = Survey[(int32)EFishSpecies::Roach], &SPerch = Survey[(int32)EFishSpecies::Perch];
+    const FSurvey& SCrucian = Survey[(int32)EFishSpecies::Crucian], &SPike = Survey[(int32)EFishSpecies::Pike];
+    TestTrue(TEXT("Real fish take their favourite baits"), SRoach.Takes >= 6 && SPerch.Takes >= 9 && SCrucian.Takes >= 6 && SPike.Takes >= 1);
+    TestTrue(TEXT("Real fish hold the bait long enough to strike"),
+        SRoach.Window / FMath::Max(1, SRoach.Takes) >= 2.5f && SPerch.Window / FMath::Max(1, SPerch.Takes) >= 4.0f
+        && SCrucian.Window / FMath::Max(1, SCrucian.Takes) >= 4.0f && SPike.Window / FMath::Max(1, SPike.Takes) >= 7.0f);
+    TestTrue(TEXT("A missed fish comes back for another try"), SRoach.Returns >= 1 && SPerch.Returns >= 1 && SCrucian.Returns >= 1);
+    TestTrue(TEXT("A crucian does not test the bait for ever"), SCrucian.Testing / FMath::Max(1, SCrucian.Takes) < 14.0f);
+
+    // The rod jerked while a roach tries the bait: the bait jumps, the roach backs off at once.
+    Fisher->Bait = EBait::Maggot;
+    Fisher->FloatDepth = 80;
+    FLakeFishingFixture::ImmersedRig(Fisher);
+    ALakeFish* Shy = SpawnFish(World, EFishSpecies::Roach, 0.15f, Fisher->BaitLocation() + FVector(100, 0, 0));
+    Shy->Hunger = 1;
+    for (int32 Step = 0; Step < 600 && Shy->State != ALakeFish::EState::Nibble; ++Step) Shy->Simulate(Dt);
+    const bool bTrying = Shy->State == ALakeFish::EState::Nibble;
+    Fisher->RodElevationSpeed = 120;
+    Shy->Simulate(Dt);
+    Fisher->RodElevationSpeed = 0;
+    TestTrue(TEXT("A roach trying the bait backs off when the rod is jerked"), bTrying && Shy->State != ALakeFish::EState::Nibble && Fisher->FishingState == EFishingState::Waiting);
     World->DestroyWorld(false);
     return true;
 }
@@ -989,11 +1097,11 @@ bool FLakeFishMotionTest::RunTest(const FString& Parameters)
         TurnAbout(Species, S.MinWeight, SmallTime, SmallMin, SmallRate, SmallStep);
         TurnAbout(Species, S.MaxWeight, BigTime, BigMin, BigRate, BigStep);
         AddInfo(FString::Printf(TEXT("%s turns about: small %.1f s (slowest %.0f cm/s, %.0f deg/s, %.0f deg/s2), big %.1f s (%.0f cm/s, %.0f deg/s)"),
-            S.Name, SmallTime, SmallMin, SmallRate, SmallStep, BigTime, BigMin, BigRate));
-        TestTrue(FString::Printf(TEXT("%s comes round"), S.Name), SmallTime > 0 && BigTime > 0);
-        TestTrue(FString::Printf(TEXT("%s turns in an arc, not on the spot"), S.Name), SmallMin > 0.2f * S.CruiseSpeed && BigMin > 0.2f * S.CruiseSpeed);
-        TestTrue(FString::Printf(TEXT("%s turn rate builds up gradually"), S.Name), SmallStep <= G.TurnAccel * 1.25f * 1.01f && SmallRate <= S.TurnRate * 1.25f * 1.01f);
-        TestTrue(FString::Printf(TEXT("A big %s turns more slowly"), S.Name), BigTime > SmallTime * 1.15f);
+            *S.Name, SmallTime, SmallMin, SmallRate, SmallStep, BigTime, BigMin, BigRate));
+        TestTrue(FString::Printf(TEXT("%s comes round"), *S.Name), SmallTime > 0 && BigTime > 0);
+        TestTrue(FString::Printf(TEXT("%s turns in an arc, not on the spot"), *S.Name), SmallMin > 0.2f * S.CruiseSpeed && BigMin > 0.2f * S.CruiseSpeed);
+        TestTrue(FString::Printf(TEXT("%s turn rate builds up gradually"), *S.Name), SmallStep <= G.TurnAccel * 1.25f * 1.01f && SmallRate <= S.TurnRate * 1.25f * 1.01f);
+        TestTrue(FString::Printf(TEXT("A big %s turns more slowly"), *S.Name), BigTime > SmallTime * 1.15f);
     }
 
     // A school of roach: they keep their spacing, line up and move as one.
@@ -1182,7 +1290,9 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
     ALakeLife* Life = World->SpawnActor<ALakeLife>();
     Life->StockPond();
     Life->Step(0);
-    int32 Count[(int32)EFishSpecies::Count] = {};
+    // By species (a species file added for a try counts too).
+    TArray<int32> Count;
+    Count.Init(0, LakeFish::NumSpecies());
     TMap<int32, int32> Members;
     TArray<ALakeFish*> All;
     bool bInWater = true;
@@ -1251,6 +1361,402 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         AddInfo(FString::Printf(TEXT("School %d: %d fish before the catch, %d after the restock, farthest %.0f cm from its leader"), School, Before, After, Farthest));
         TestEqual(TEXT("The school is whole again"), After, Before);
         TestTrue(TEXT("The new fish turned up with its school"), Farthest < 400);
+    }
+    World->DestroyWorld(false);
+    return true;
+}
+
+// The species passports (Content/LiveFish/Species): the files read without problems and in order,
+// each fish has its model; the example species in the README there is read from its file alone, a
+// misspelt field and a missing diet are reported.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeSpeciesFilesTest, "QuietLake.Fishing.SpeciesFiles", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeSpeciesFilesTest::RunTest(const FString& Parameters)
+{
+    for (const FString& Problem : LakeFish::SpeciesProblems()) AddError(TEXT("Species file ") + Problem);
+    TestTrue(TEXT("At least the four species"), LakeFish::NumSpecies() >= 4);
+    TestTrue(TEXT("Perch, roach, crucian and pike in their places"), LakeFish::Info(EFishSpecies::Perch).Id == TEXT("perch") && LakeFish::Info(EFishSpecies::Roach).Id == TEXT("roach")
+        && LakeFish::Info(EFishSpecies::Crucian).Id == TEXT("crucian") && LakeFish::Info(EFishSpecies::Pike).Id == TEXT("pike"));
+    for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp)
+    {
+        const FFishSpeciesInfo& S = LakeFish::Info((EFishSpecies)Sp);
+        TestNotNull(FString::Printf(TEXT("%s: its model loads"), *S.Id), LoadObject<UStaticMesh>(nullptr, *S.Mesh));
+        bool bBaits = S.Baits.Num() > 0;
+        for (const TPair<FString, float>& Bait : S.Baits) bBaits &= Bait.Value >= 0 && Bait.Value <= 1;
+        TestTrue(FString::Printf(TEXT("%s: likes for its baits, 0..1"), *S.Id), bBaits);
+        TestTrue(FString::Printf(TEXT("%s: a whole bite"), *S.Id), !S.Bite.Take.IsEmpty() && S.Bite.Take.ContainsByPredicate([](const FFishBiteMove& M) { return M.bTake; }));
+        TestTrue(FString::Printf(TEXT("%s: the pond holds some"), *S.Id), S.Stock.Count > 0 && S.Stock.SchoolSize >= 1);
+    }
+    // A bream, as one would add it: the example in the species README, read as its file alone (so the
+    // example always works).
+    FString Readme;
+    FFileHelper::LoadFileToString(Readme, *(FPaths::ProjectContentDir() / TEXT("LiveFish/Species/README.md")));
+    const int32 From = Readme.Find(TEXT("```json"));
+    const int32 To = From >= 0 ? Readme.Find(TEXT("```"), ESearchCase::CaseSensitive, ESearchDir::FromStart, From + 7) : -1;
+    TestTrue(TEXT("The species README has its example"), From >= 0 && To > From);
+    FFishSpeciesInfo Bream;
+    TArray<FString> Problems;
+    const bool bRead = From >= 0 && To > From && LakeFish::ReadSpecies(Readme.Mid(From + 7, To - From - 7), TEXT("README example (bream.json)"), Bream, Problems);
+    for (const FString& Problem : Problems) AddInfo(Problem);
+    TestTrue(TEXT("A new species is read from its file"), bRead && Problems.IsEmpty() && Bream.Name == TEXT("Лещ") && Bream.Order == 4 && Bream.Stock.SchoolSize == 10
+        && Bream.Bite.Take.Num() == 2 && Bream.Bite.Take[0].Motion == EBiteMotion::Lift && FMath::IsNearlyEqual(Bream.BaitLike(EBait::Maggot), 0.9f) && Bream.Feeding.bRootsInSilt
+        && FMath::IsNearlyEqual(Bream.Feeding.Wariness, 0.7f) && FMath::IsNearlyEqual(LakeFish::Info(EFishSpecies::Perch).Diet.Benthos, 0.7f)
+        && FMath::IsNearlyEqual(Bream.Diet.Plankton, 0.6f) && FMath::IsNearlyEqual(Bream.DietBig.Benthos, 1.0f));
+    // A species without a diet is reported (it would feed the old way, by its habitat table only).
+    Problems.Reset();
+    FFishSpeciesInfo NoDiet;
+    LakeFish::ReadSpecies(TEXT(R"JSON({"order":4,"name":"Лещ","noun":"лещ","mesh":"/Game/Fish/SM_Fish_Crucian.SM_Fish_Crucian","bite":{"take":[{"motion":"Lift"}]}})JSON"), TEXT("nodiet.json"), NoDiet, Problems);
+    TestTrue(TEXT("A species without a diet is reported"), Problems.ContainsByPredicate([](const FString& P) { return P.Contains(TEXT("diet")); }));
+    Problems.Reset();
+    FFishSpeciesInfo Typo;
+    LakeFish::ReadSpecies(TEXT(R"JSON({"order":4,"name":"Лещ","noun":"лещ","mesh":"/Game/Fish/SM_Fish_Crucian.SM_Fish_Crucian","senseRadus":500,"bite":{"take":[{"motion":"Lift","hok":0.8}]}})JSON"), TEXT("typo.json"), Typo, Problems);
+    TestTrue(TEXT("Misspelt fields are reported, also inside a bite move"), Problems.ContainsByPredicate([](const FString& P) { return P.Contains(TEXT("senseRadus")); })
+        && Problems.ContainsByPredicate([](const FString& P) { return P.Contains(TEXT("bite.take[0]")) && P.Contains(TEXT("hok")); }));
+    return true;
+}
+
+// Live Fish between the species: prey keeps away from a predator big enough to eat it and notices a
+// pike lying still only close by, a fish trying the bait backs off when a pike comes up, a pike eats
+// small fish of any kind (a small perch too) but leaves a big one, a big perch dashes at a small
+// roach, and a bigger, bolder fish pushes a small one off the bait (not the other way round).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeInteractionsTest, "QuietLake.Fishing.Interactions", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeInteractionsTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    constexpr float Dt = 0.05f;
+    // Open water in front of the camp, about 1.7 m deep.
+    FVector2D Facing;
+    const FVector2D Start = LakeMap::StartSpot(&Facing);
+    const FVector2D Right(-Facing.Y, Facing.X);
+    const FVector2D Open = Start + Facing * 1400;
+    auto At = [](FVector2D P) { return FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)); };
+    auto Spawn = [&](EFishSpecies Species, float Weight, FVector2D P) { ALakeFish* Fish = SpawnFish(World, Species, Weight, At(P)); Fish->Hunger = 1; return Fish; };
+    auto Step = [&](const TArray<ALakeFish*>& Fish) { Life->Step(Dt); for (ALakeFish* F : Fish) if (IsValid(F)) F->Simulate(Dt); };
+    auto Gone = [](TArray<ALakeFish*>& Fish) { for (ALakeFish* F : Fish) if (IsValid(F)) F->Destroy(); Fish.Reset(); };
+
+    // 1. A pike swimming by 2.5 m off: the roach takes fright and draws away from it.
+    {
+        ALakeFish* Pike = Spawn(EFishSpecies::Pike, 2.0f, Open);
+        ALakeFish* Roach = Spawn(EFishSpecies::Roach, 0.15f, Open + Right * 250);
+        TArray<ALakeFish*> Fish = { Pike, Roach };
+        float Before = FVector::Dist(Pike->GetActorLocation(), Roach->GetActorLocation()), Fear = 0;
+        for (int32 I = 0; I < 60; ++I)
+        {
+            Pike->Vel = FVector(Facing, 0) * 25;   // it keeps swimming
+            Step({ Roach });
+            Fear = FMath::Max(Fear, Roach->FearNow());
+        }
+        const float After = FVector::Dist(Pike->GetActorLocation(), Roach->GetActorLocation());
+        AddInfo(FString::Printf(TEXT("Roach by a swimming pike: fear %.2f, %.0f -> %.0f cm"), Fear, Before, After));
+        TestTrue(TEXT("A roach fears a swimming pike and draws away"), Fear > 0.15f && After > Before + 30);
+        Gone(Fish);
+    }
+    // 2. A pike lying still is noticed only close by (camouflage).
+    {
+        ALakeFish* Pike = Spawn(EFishSpecies::Pike, 2.0f, Open);
+        ALakeFish* Far = Spawn(EFishSpecies::Roach, 0.15f, Open + Right * 250);
+        ALakeFish* Close = Spawn(EFishSpecies::Roach, 0.15f, Open - Right * 90);
+        TArray<ALakeFish*> Fish = { Pike, Far, Close };
+        Pike->Vel = FVector::ZeroVector;
+        Life->Step(0);
+        for (ALakeFish* F : { Far, Close }) { F->NextThreatLook = 0; F->SenseThreats(Dt); }
+        AddInfo(FString::Printf(TEXT("Still pike: roach at 2.5 m fear %.2f, at 0.9 m %.2f"), Far->FearNow(), Close->FearNow()));
+        TestTrue(TEXT("A pike lying still is noticed only close by"), Far->FearNow() == 0 && Close->FearNow() > 0.1f);
+        Gone(Fish);
+    }
+    // 3. A roach trying the bait backs off when a pike swims up.
+    {
+        ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Start + Facing * 90, 100), FRotator(0, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+        APlayerController* Controller = World->SpawnActor<APlayerController>();
+        Controller->Possess(Fisher);
+        Controller->SetControlRotation(Fisher->GetActorRotation());
+        Fisher->Bait = EBait::Maggot;
+        Fisher->FloatDepth = 80;
+        FLakeFishingFixture::ImmersedRig(Fisher);
+        ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, Fisher->BaitLocation() + FVector(100, 0, 0));
+        Roach->Hunger = 1;
+        TArray<ALakeFish*> Fish = { Roach };
+        for (int32 I = 0; I < 600 && !Roach->IsNibbling(); ++I) Step(Fish);
+        const bool bTrying = Roach->IsNibbling();
+        ALakeFish* Pike = SpawnFish(World, EFishSpecies::Pike, 2.5f, Roach->GetActorLocation() + FVector(0, 80, 0));
+        Pike->SetGoal(EFishGoal::Feed, 1000);   // a hunting pike
+        Fish.Add(Pike);
+        for (int32 I = 0; I < 40 && Roach->IsNibbling(); ++I) { Pike->Vel = FVector(0, -30, 0); Step({ Roach }); }
+        TestTrue(TEXT("A roach trying the bait backs off when a pike swims up"), bTrying && !Roach->IsNibbling());
+
+        // 6. At the bait: a big perch pushes a small roach off it, a small roach cannot push a perch.
+        Pike->Destroy();
+        Roach->Destroy();
+        FLakeFishingFixture::ImmersedRig(Fisher);
+        Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, Fisher->BaitLocation() + FVector(100, 0, 0));
+        Roach->Hunger = 1;
+        Fish = { Roach };
+        for (int32 I = 0; I < 1200 && !Roach->IsNibbling(); ++I) Step(Fish);
+        const bool bRoachOn = Roach->IsNibbling();
+        ALakeFish* Big = SpawnFish(World, EFishSpecies::Perch, 0.6f, Fisher->BaitLocation() + FVector(30, 0, 0));
+        const bool bPushed = Fisher->ClaimBait(Big) && !Roach->IsNibbling();
+        AddInfo(FString::Printf(TEXT("At the bait: roach %.2f kg clout %.2f, perch %.2f kg clout %.2f"), Roach->WeightKg, Roach->Clout(), Big->WeightKg, Big->Clout()));
+        TestTrue(TEXT("A big perch pushes a small roach off the bait"), bRoachOn && bPushed);
+        FLakeFishingFixture::ImmersedRig(Fisher);
+        ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.3f, Fisher->BaitLocation() + FVector(150, 0, 0));
+        Perch->Hunger = 1;
+        Big->Destroy();
+        Roach->Destroy();
+        Fish = { Perch };
+        for (int32 I = 0; I < 1200 && !Perch->IsNibbling(); ++I) Step(Fish);
+        ALakeFish* Small = SpawnFish(World, EFishSpecies::Roach, 0.06f, Fisher->BaitLocation() + FVector(30, 0, 0));
+        TestTrue(TEXT("A small roach cannot push a perch off the bait"), Perch->IsNibbling() && !Fisher->ClaimBait(Small) && Perch->IsNibbling());
+        Small->Destroy();
+        Gone(Fish);
+    }
+    // 4. A pike eats small fish of any kind - a small perch too - but leaves a big perch alone.
+    {
+        ALakeFish* Pike = Spawn(EFishSpecies::Pike, 2.5f, Open);
+        Pike->SetGoal(EFishGoal::Feed, 1000);
+        const int32 EatenBefore = Life->Stats().Eaten;
+        int32 Tries = 0;
+        bool bBigStruck = false;
+        ALakeFish* Big = Spawn(EFishSpecies::Perch, 0.78f, Open + Right * 120);
+        for (; Tries < 40 && Life->Stats().Eaten == EatenBefore; ++Tries)
+        {
+            // It lies where it is, facing ahead.
+            Pike->bAtSpot = true;
+            Pike->LieUntil = Pike->SimTime + 100;
+            Pike->RoamTarget = Pike->GetActorLocation();
+            Pike->LieFacing = Pike->GetActorForwardVector();
+            const FVector Front = Pike->MouthLocation() + Pike->GetActorForwardVector() * 80;
+            ALakeFish* Small = SpawnFish(World, EFishSpecies::Perch, 0.1f, FVector(Front.X, Front.Y, FMath::Max(Front.Z, ALakeFish::BottomZ(Front.X, Front.Y) + 10)));
+            for (int32 I = 0; I < 60 && IsValid(Small); ++I)
+            {
+                Step({ Pike, Small, Big });
+                bBigStruck |= Pike->Prey.Get() == Big;
+            }
+            if (IsValid(Small)) Small->Destroy();
+        }
+        AddInfo(FString::Printf(TEXT("Pike 2.5 kg: ate a 0.1 kg perch after %d tries; struck at the 0.78 kg perch: %d"), Tries, bBigStruck));
+        TestTrue(TEXT("A pike eats a small perch"), Life->Stats().Eaten > EatenBefore);
+        TestFalse(TEXT("A pike leaves a perch too big for it alone"), bBigStruck);
+        Big->Destroy();
+        Pike->Destroy();
+    }
+    // 5. A big perch dashes at a small roach right in front of it.
+    {
+        ALakeFish* Perch = Spawn(EFishSpecies::Perch, 0.8f, Open);
+        Perch->SetGoal(EFishGoal::Feed, 1000);
+        const int32 StrikesBefore = Life->Stats().PikeStrikes;
+        int32 Tries = 0;
+        for (; Tries < 40 && Life->Stats().PikeStrikes == StrikesBefore; ++Tries)
+        {
+            const FVector Front = Perch->MouthLocation() + Perch->GetActorForwardVector() * 70;
+            ALakeFish* Small = SpawnFish(World, EFishSpecies::Roach, 0.06f, FVector(Front.X, Front.Y, FMath::Max(Front.Z, ALakeFish::BottomZ(Front.X, Front.Y) + 10)));
+            for (int32 I = 0; I < 30 && IsValid(Small) && Life->Stats().PikeStrikes == StrikesBefore; ++I) Step({ Perch, Small });
+            if (IsValid(Small)) Small->Destroy();
+        }
+        AddInfo(FString::Printf(TEXT("Big perch: dashed at a small roach after %d tries"), Tries));
+        TestTrue(TEXT("A big perch dashes at a small roach"), Life->Stats().PikeStrikes > StrikesBefore);
+        Perch->Destroy();
+    }
+    // 7. Fry dart off from a perch swimming at them before it strikes, away from it.
+    {
+        FVector2D Shallow = Start + Facing * 300;
+        for (float Out = 200; Out < 1500 && !Life->FryCanBe(Shallow); Out += 50) Shallow = Start + Facing * Out;
+        FFryShoal Shoal;
+        Shoal.Location = FVector(Shallow, LakeFish::SurfaceZ - 9);
+        Shoal.Target = Shoal.Location;
+        Shoal.NextWander = 1e6f;
+        Life->Fry.Reset();
+        Life->Fry.Add(Shoal);
+        ALakeFish* Perch = Spawn(EFishSpecies::Perch, 0.3f, Shallow + Right * 230);
+        Perch->SetGoal(EFishGoal::Feed, 1000);   // a hunting perch
+        const int32 FlightsBefore = Life->Stats().FryFlights;
+        for (int32 I = 0; I < 40 && Life->Stats().FryFlights == FlightsBefore; ++I) { Perch->Vel = FVector(-Right, 0) * 40; Life->Step(Dt); }
+        const FFryShoal& Fled = Life->Fry[0];
+        const float From = FVector::Dist2D(Fled.Location, Perch->GetActorLocation()), To = FVector::Dist2D(Fled.Target, Perch->GetActorLocation());
+        AddInfo(FString::Printf(TEXT("Fry by a hunting perch 2.3 m off: darted %d, heading from %.0f to %.0f cm off it"), Life->Stats().FryFlights - FlightsBefore, From, To));
+        TestTrue(TEXT("Fry dart off from a hunting perch swimming at them, away from it"), Life->Stats().FryFlights > FlightsBefore && To > From + 150);
+        Perch->Destroy();
+    }
+    World->DestroyWorld(false);
+    return true;
+}
+
+// Live Fish food: the plankton sinks by day and rises at night, insects hatch on calm warm
+// evenings, each kind of place holds its own food, an eaten patch grows back (plankton fast, silt
+// fauna slowly), a crucian roots for silt fauna, eats its patch down and moves on, roach feed at
+// the top at dusk and deep at noon, a big perch hunts fry while a small one eats plankton and
+// bloodworm, and a bait in the layer a fish feeds in is found far more readily.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeFoodTest, "QuietLake.Fishing.Food", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeFoodTest::RunTest(const FString& Parameters)
+{
+    // 1-2. Time and weather.
+    FFishConditions Noon;
+    Noon.SunElevation = 55; Noon.Cloud = 0.1f; Noon.WaterTempC = 20; Noon.Wind = 0.1f; Noon.bMorning = false;
+    FFishConditions Grey = Noon; Grey.Cloud = 0.95f;
+    FFishConditions Dusk = Noon; Dusk.SunElevation = 2;
+    FFishConditions Night = Noon; Night.SunElevation = -25;
+    FFishConditions Windy = Dusk; Windy.Wind = 0.8f;
+    AddInfo(FString::Printf(TEXT("Plankton at %.1f m at noon, %.1f m under a grey sky, %.1f m at dusk, %.1f m at night"),
+        LakeFood::PlanktonDepthM(Noon), LakeFood::PlanktonDepthM(Grey), LakeFood::PlanktonDepthM(Dusk), LakeFood::PlanktonDepthM(Night)));
+    TestTrue(TEXT("Plankton hangs deep in bright day, near the top at night, higher under a grey sky"),
+        LakeFood::PlanktonDepthM(Noon) > 1.8f && LakeFood::PlanktonDepthM(Night) < 0.5f && LakeFood::PlanktonDepthM(Grey) < LakeFood::PlanktonDepthM(Noon) - 0.4f);
+    const float InsNoon = LakeFood::Season(EFishFood::Insects, Noon), InsDusk = LakeFood::Season(EFishFood::Insects, Dusk);
+    const float InsNight = LakeFood::Season(EFishFood::Insects, Night), InsWind = LakeFood::Season(EFishFood::Insects, Windy);
+    AddInfo(FString::Printf(TEXT("Insects: noon %.2f, calm dusk %.2f, windy dusk %.2f, night %.2f"), InsNoon, InsDusk, InsWind, InsNight));
+    TestTrue(TEXT("Insects hatch on a calm warm evening, few at noon, hardly any at night or in a strong wind"),
+        InsDusk > 2.5f * InsNoon && InsNight < 0.1f && InsWind < 0.5f * InsDusk);
+
+    // 3. Places.
+    auto Find = [](TFunctionRef<bool(float, float)> Want, FVector2D& Out)
+    {
+        const FBox2D B = LakeMap::LakeBounds();
+        for (float Y = B.Min.Y; Y < B.Max.Y; Y += 700)
+            for (float X = B.Min.X; X < B.Max.X; X += 700)
+                if (LakeMap::IsWater(X, Y) && Want(X, Y)) { Out = FVector2D(X, Y); return true; }
+        return false;
+    };
+    FVector2D Lily, Open, Reed, Slope;
+    const bool bPlaces = Find([](float X, float Y) { const float D = LakeMap::Depth(X, Y); return LakeMap::LilyAmount(X, Y) > 0.8f && D > 70 && D < 150 && LakeMap::ShoreDistance(X, Y) > 400; }, Lily)
+        && Find([](float X, float Y) { return LakeMap::Depth(X, Y) > 200 && LakeMap::ZonesAt(X, Y).Open > 0.9f; }, Open)
+        && Find([](float X, float Y) { return LakeMap::Depth(X, Y) > 110 && LakeMap::LilyAmount(X, Y) < 0.1f && LakeMap::ZonesAt(X, Y).ReedEdge > 0.8f; }, Reed)
+        && Find([](float X, float Y) { return LakeMap::ZonesAt(X, Y).DropOff > 0.85f && LakeMap::LilyAmount(X, Y) < 0.1f; }, Slope);
+    TestTrue(TEXT("The lake has lily beds, open water, a reed edge and a drop-off"), bPlaces);
+    if (!bPlaces) return false;
+    auto R = [](EFishFood F, const FVector2D& P) { return LakeFood::Richness(F, P.X, P.Y); };
+    AddInfo(FString::Printf(TEXT("Silt fauna: lilies %.2f, drop-off %.2f; insects: reed edge %.2f, open %.2f; plankton: open %.2f, lilies %.2f; weed: lilies %.2f, open %.2f"),
+        R(EFishFood::Benthos, Lily), R(EFishFood::Benthos, Slope), R(EFishFood::Insects, Reed), R(EFishFood::Insects, Open),
+        R(EFishFood::Plankton, Open), R(EFishFood::Plankton, Lily), R(EFishFood::Plants, Lily), R(EFishFood::Plants, Open)));
+    TestTrue(TEXT("Silt fauna is richest in the weedy shallows, poor on the drop-off"), R(EFishFood::Benthos, Lily) > R(EFishFood::Benthos, Slope) + 0.2f);
+    TestTrue(TEXT("Insects are by the reeds more than over the open water"), R(EFishFood::Insects, Reed) > R(EFishFood::Insects, Open) + 0.3f);
+    TestTrue(TEXT("Plankton is in the open water more than among the lilies"), R(EFishFood::Plankton, Open) > R(EFishFood::Plankton, Lily) + 0.2f);
+    TestTrue(TEXT("Weed grows in the lily beds, not in the open water"), R(EFishFood::Plants, Lily) > R(EFishFood::Plants, Open) + 0.5f);
+
+    // 4. Eaten down and growing back.
+    {
+        FLakeFoodField Field;
+        Field.Init();
+        Field.Eat(EFishFood::Benthos, Lily, 0.6f, 1.0f);
+        Field.Eat(EFishFood::Plankton, Open, 0.6f, 1.0f);
+        const float Silt0 = Field.Left(EFishFood::Benthos, Lily), Plank0 = Field.Left(EFishFood::Plankton, Open);
+        for (int32 I = 0; I < 150; ++I) Field.Step(1);
+        const float Silt1 = Field.Left(EFishFood::Benthos, Lily), Plank1 = Field.Left(EFishFood::Plankton, Open);
+        AddInfo(FString::Printf(TEXT("Eaten down: silt fauna %.2f -> %.2f, plankton %.2f -> %.2f in 150 s"), Silt0, Silt1, Plank0, Plank1));
+        TestTrue(TEXT("Feeding eats a patch down"), Silt0 < 0.75f && Plank0 < 0.75f);
+        TestTrue(TEXT("Plankton grows back in minutes, silt fauna far slower"), Plank1 - Plank0 > 0.4f * (1 - Plank0) && Silt1 - Silt0 < 0.2f * (1 - Silt0));
+    }
+
+    // The pond with its weather: a calm clear day.
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    ALakeWeather* Weather = World->SpawnActor<ALakeWeather>();
+    FLakeWeatherState Calm;
+    Calm.Cloud = 0.1f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.06f;
+    Weather->SetWeatherNow(Calm);
+    Life->Step(0);   // lays out the food
+    constexpr float Dt = 0.05f;
+    auto SetSun = [&](float Lo, float Hi)
+    {
+        for (float H = 12; H < 24; H += 0.05f)
+        {
+            Weather->SetHours(H);
+            const float Sun = Weather->FishConditions().SunElevation;
+            if (Sun >= Lo && Sun <= Hi) return H;
+        }
+        return -1.0f;
+    };
+    auto Spawn = [&](EFishSpecies Species, float Weight, FVector2D P)
+    {
+        ALakeFish* Fish = SpawnFish(World, Species, Weight, FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)));
+        Fish->Hunger = 1;
+        Fish->NextMoodCheck = 0;
+        return Fish;
+    };
+    auto Choose = [](ALakeFish* Fish) { Fish->SetGoal(EFishGoal::Cruise, 1000); Fish->SetGoal(EFishGoal::Feed, 1000); };
+
+    // 5. A crucian in the lilies roots for silt fauna, eats its patch down and moves on.
+    {
+        TestTrue(TEXT("Noon found"), SetSun(45, 70) > 0);
+        ALakeFish* Crucian = Spawn(EFishSpecies::Crucian, 0.4f, Lily);
+        int32 OnSilt = 0;
+        for (int32 I = 0; I < 20; ++I) { Choose(Crucian); OnSilt += Crucian->FeedOn == EFishFood::Benthos; }
+        AddInfo(FString::Printf(TEXT("Crucian in the lilies: on silt fauna %d of 20"), OnSilt));
+        TestTrue(TEXT("A crucian feeds mostly on the silt fauna"), OnSilt >= 12);
+        for (int32 K = 0; K < 50 && Crucian->FeedOn != EFishFood::Benthos; ++K) Choose(Crucian);
+        const FVector2D First(Crucian->RoamTarget);
+        const float Bottom = ALakeFish::BottomZ(First.X, First.Y);
+        TestTrue(TEXT("It feeds at the bottom"), Crucian->RoamTarget.Z < Bottom + 20);
+        float Farthest = 0;
+        int32 Steps = 0;
+        for (; Steps < 8000 && Farthest < 450; ++Steps)
+        {
+            Crucian->Hunger = 1;
+            Life->Step(Dt);
+            Crucian->Simulate(Dt);
+            Farthest = FMath::Max(Farthest, (float)FVector2D::Distance(First, FVector2D(Crucian->RoamTarget)));
+        }
+        const float Left = Life->Food().Left(EFishFood::Benthos, First);
+        AddInfo(FString::Printf(TEXT("Crucian: its first patch eaten down to %.2f, moved on %.0f cm after %.0f s"), Left, Farthest, Steps * Dt));
+        TestTrue(TEXT("A crucian eats its patch down and moves on to another"), Left < 0.8f && Farthest >= 450);
+        Crucian->Destroy();
+    }
+    // 6. Roach feed at the top at dusk (insects, plankton risen) and deep at noon (plankton sunk).
+    {
+        auto Survey = [&](float& Depth, int32& OnInsects)
+        {
+            ALakeFish* Roach = Spawn(EFishSpecies::Roach, 0.1f, Reed);
+            Depth = 0;
+            OnInsects = 0;
+            for (int32 I = 0; I < 30; ++I)
+            {
+                Choose(Roach);
+                Depth += (LakeFish::SurfaceZ - Roach->RoamTarget.Z) / 100 / 30;
+                OnInsects += Roach->FeedOn == EFishFood::Insects;
+            }
+            Roach->Destroy();
+        };
+        float NoonDepth, DuskDepth;
+        int32 NoonInsects, DuskInsects;
+        SetSun(45, 70);
+        Survey(NoonDepth, NoonInsects);
+        const float DuskHour = SetSun(-2, 4);
+        Survey(DuskDepth, DuskInsects);
+        AddInfo(FString::Printf(TEXT("Roach by the reeds: noon feeds at %.2f m (insects %d of 30), dusk (%.1f h) at %.2f m (insects %d of 30)"), NoonDepth, NoonInsects, DuskHour, DuskDepth, DuskInsects));
+        TestTrue(TEXT("Roach feed near the top at dusk, deeper at noon"), DuskHour > 0 && DuskDepth < NoonDepth - 0.5f && DuskInsects >= 10);
+    }
+    // 7. Near fry, a big perch hunts them; a small one mostly eats plankton and bloodworm.
+    {
+        SetSun(45, 70);
+        FVector2D Shallow = Reed;
+        bool bFry = false;
+        for (float A = 0; A < 360 && !bFry; A += 30)
+            for (float Out = 300; Out < 900 && !bFry; Out += 100)
+            {
+                Shallow = Reed + FVector2D(FMath::Cos(FMath::DegreesToRadians(A)), FMath::Sin(FMath::DegreesToRadians(A))) * Out;
+                bFry = Life->FryCanBe(Shallow);
+            }
+        TestTrue(TEXT("A place for fry near the reeds"), bFry);
+        FFryShoal Shoal;
+        Shoal.Location = FVector(Shallow, LakeFish::SurfaceZ - 9);
+        Shoal.Target = Shoal.Location;
+        Shoal.NextWander = 1e6f;
+        Life->Fry.Reset();
+        Life->Fry.Add(Shoal);
+        auto Hunts = [&](float Weight)
+        {
+            ALakeFish* Perch = Spawn(EFishSpecies::Perch, Weight, Reed);
+            int32 N = 0;
+            for (int32 I = 0; I < 30; ++I) { Choose(Perch); N += Perch->FeedOn == EFishFood::Fry; }
+            Perch->Destroy();
+            return N;
+        };
+        const int32 Big = Hunts(0.8f), Small = Hunts(0.08f);
+        AddInfo(FString::Printf(TEXT("Perch near fry: 0.8 kg went for the fry %d of 30 times, 0.08 kg %d of 30"), Big, Small));
+        TestTrue(TEXT("A big perch hunts fry, a small one mostly eats plankton and bloodworm"), Big >= 21 && Small <= Big - 8);
+    }
+    // 8. Bait in the layer a fish feeds in.
+    {
+        const float In = LakeFish::BaitInterest(EFishSpecies::Roach, EBait::Maggot, 0.1f, 0.1f), Off = LakeFish::BaitInterest(EFishSpecies::Roach, EBait::Maggot, 0.9f, 0.1f);
+        AddInfo(FString::Printf(TEXT("Roach feeding at the top: maggot at the top %.2f, on the bottom %.2f"), In, Off));
+        TestTrue(TEXT("A bait in the layer a fish feeds in is found far more readily"), In > 3 * Off);
     }
     World->DestroyWorld(false);
     return true;

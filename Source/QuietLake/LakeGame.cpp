@@ -1056,7 +1056,7 @@ void ALakeCharacter::UpdateLanding()
     if (!Fish) { FinishFishing(TEXT("Рыба сошла. ЛКМ — новый заброс.")); return; }
     ++CatchCount;
     const FFishSpeciesInfo& S = LakeFish::Info(Fish->Species);
-    const FString Message = FString::Printf(TEXT("%s, %.2f кг (%.0f см)! ЛКМ — забросить снова."), S.Name, Fish->WeightKg, LakeFish::LengthCm(Fish->Species, Fish->WeightKg));
+    const FString Message = FString::Printf(TEXT("%s, %.2f кг (%.0f см)! ЛКМ — забросить снова."), *S.Name, Fish->WeightKg, LakeFish::LengthCm(Fish->Species, Fish->WeightKg));
     HookedFish = nullptr;
     LineFish = nullptr;
     // Live Fish puts another of its kind in its place after a while.
@@ -1135,14 +1135,18 @@ void ALakeCharacter::Strike()
         ForceNetUpdate();
     };
     if (!Fish) { FishOn(TEXT("Пусто: рыба уже отпустила наживку.")); return; }
-    // Struck as the float only starts to rise, the fish may hold the bait by its lips alone;
-    // once it lies down, is led off or goes under, the hook goes home.
-    const float HookChance = BiteMotion != EBiteMotion::Lift ? 1.0f
-        : BiteAmount >= 2.5f && ServerNow() - BiteStart > BiteDuration * 0.55f ? 0.95f : 0.7f;
+    // Whether the hook goes home depends on where the bite is: struck as the float only starts to
+    // rise, the fish may hold the bait by its lips alone (once it lies down, is led off or goes under,
+    // the hook goes home); a pike running with the bait across its jaws is often missed - wait for
+    // it to stop and go again.
+    float HookChance = Fish->StrikeHookChance();
+    if (BiteMotion == EBiteMotion::Lift) HookChance = BiteAmount >= 2.5f && ServerNow() - BiteStart > BiteDuration * 0.55f ? 0.95f : 0.7f;
     if (FMath::FRand() > HookChance)
     {
         Fish->Release(10);
-        FishOn(TEXT("Подсекли, но рыба не засеклась: она едва приподняла наживку. Подсекайте, когда поплавок ляжет, поедет или утонет."));
+        const FString& Own = LakeFish::Info(Fish->Species).Bite.EarlyStrikeText;
+        FishOn(BiteMotion != EBiteMotion::Lift && !Own.IsEmpty() ? *Own
+            : TEXT("Подсекли, но рыба не засеклась: она едва приподняла наживку. Подсекайте, когда поплавок ляжет, поедет или утонет."));
         return;
     }
     BiteMotion = EBiteMotion::None;
@@ -1161,7 +1165,12 @@ void ALakeCharacter::Strike()
 bool ALakeCharacter::ClaimBait(ALakeFish* Fish)
 {
     if (FishingState != EFishingState::Waiting || bRetrieving) return false;
-    if (BaitFish.IsValid() && BaitFish.Get() != Fish) return false;
+    if (ALakeFish* Holder = BaitFish.Get(); Holder && Holder != Fish)
+    {
+        // A clearly bigger, bolder fish pushes a smaller one off a bait it is only trying.
+        if (!Fish || !Holder->IsNibbling() || Fish->Clout() < Holder->Clout() * 1.4f) return false;
+        Holder->PushedOff(Fish);
+    }
     BaitFish = Fish;
     return true;
 }
@@ -1200,11 +1209,10 @@ void ALakeCharacter::OnFishTake(ALakeFish* Fish, float Window)
     BaitFish = Fish;
     FishingState = EFishingState::Bite;
     Status = TEXT("ПОКЛЁВКА! Подсекайте — ПКМ!");
-    // Cautious fish hold the bait a little longer before spitting it out.
-    // A hungry fish takes the bait boldly and holds it longer; a wary one drops it quickly.
+    // A fish set on the bait directly holds it about as long as its species does (a hungry one longer).
     if (Window < 0)
-        Window = (Fish && Fish->Species == EFishSpecies::Crucian ? 2.6f : Fish && Fish->Species == EFishSpecies::Pike ? 1.5f : 2.0f)
-            * FMath::Lerp(0.7f, 1.25f, FMath::Clamp((Fish ? Fish->Appetite() : 1.0f) / 1.2f, 0.0f, 1.0f));
+        Window = (Fish ? LakeFish::Info(Fish->Species).Bite.DirectHold : 3.0f)
+            * FMath::Lerp(0.75f, 1.2f, FMath::Clamp((Fish ? Fish->Appetite() : 1.0f) / 1.2f, 0.0f, 1.0f));
     GetWorldTimerManager().SetTimer(FishingTimer, this, &ALakeCharacter::Escape, Window, false);
     ForceNetUpdate();
 }
@@ -1234,8 +1242,13 @@ void ALakeCharacter::Escape()
     BiteMotion = EBiteMotion::None;
     FishingState = EFishingState::Waiting;
     PlaceBait();
-    Status = TEXT("Рыба бросила наживку. Поплавок встал на место — ждите новой поклёвки или вытащите снасть (ЛКМ).");
+    Status = TEXT("Рыба выпустила наживку. Поплавок встал на место — не дёргайте снасть: голодная рыба может вернуться.");
     ForceNetUpdate();
+}
+float ALakeCharacter::RigDisturbance() const
+{
+    if (bRetrieving) return 1.0f;
+    return FMath::SmoothStep(15.0f, 60.0f, FMath::Abs(RodElevationSpeed) + FMath::Abs(RodYawSpeed));
 }
 void ALakeCharacter::SelectBait(EBait NewBait) { ServerSelectBait(NewBait); }
 void ALakeCharacter::ServerSelectBait_Implementation(EBait NewBait)

@@ -192,9 +192,18 @@ void ALakeCharacter::RunPreviews()
             ServerFish_Implementation();   // LMB held: lift the rig out
             FloatDepth = FMath::Clamp(FMath::RoundToFloat(Water + 2), MinDepth, MaxDepth);
         });
-        At(12.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
-        At(12.0f + CastLoad, [this] { ServerRelease_Implementation(); });
-        At(16.0f, [this]
+        // (Lifting the rig out and taking it in the hand takes about 6 s.)
+        At(16.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(16.0f + CastLoad, [this] { ServerRelease_Implementation(); });
+        // The cast from the hand lands a little elsewhere: the depth set for where it lay (as if sounded there).
+        At(19.5f, [this]
+        {
+            const float Water = LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(FloatPosition.X, FloatPosition.Y);
+            FloatDepth = HookDepth = FMath::Clamp(FMath::RoundToFloat(Water + 2), MinDepth, MaxDepth);
+            PlaceBait();
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BITE landed on %.0f cm of water, bait set at %.0f cm"), Water, FloatDepth);
+        });
+        At(20.0f, [this]
         {
             if (!RodVisual) return;
             const FVector Float = RodVisual->BobberLocation();
@@ -203,14 +212,15 @@ void ALakeCharacter::RunPreviews()
             Cam->GetCameraComponent()->SetFieldOfView(35);
             if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
         });
-        At(16.60f, [Shot] { Shot(TEXT("Bite_Still.png")); });
+        At(20.60f, [Shot] { Shot(TEXT("Bite_Still.png")); });
         struct FDemo { float At; EBiteMotion Motion; float Duration, Amount; EFishingState State; };
         const FDemo Demos[] = {
-            { 17.0f, EBiteMotion::Tremble, 1.6f, 0.8f, EFishingState::Waiting },
-            { 19.0f, EBiteMotion::Peck, 0.35f, 1.8f, EFishingState::Waiting },
-            { 21.0f, EBiteMotion::Lift, 2.0f, 3.2f, EFishingState::Bite },
-            { 24.0f, EBiteMotion::Drift, 3.0f, 8.0f, EFishingState::Bite },
-            { 27.5f, EBiteMotion::Sink, 2.5f, 55.0f, EFishingState::Bite },
+            { 21.0f, EBiteMotion::Tremble, 1.6f, 0.8f, EFishingState::Waiting },
+            { 23.0f, EBiteMotion::Peck, 0.35f, 1.8f, EFishingState::Waiting },
+            { 25.0f, EBiteMotion::Lift, 2.0f, 3.2f, EFishingState::Bite },
+            { 28.0f, EBiteMotion::Drift, 3.0f, 8.0f, EFishingState::Bite },
+            { 31.5f, EBiteMotion::Sink, 2.5f, 55.0f, EFishingState::Bite },
+            { 34.5f, EBiteMotion::Hold, 3.0f, 0.0f, EFishingState::Bite },   // a perch swallowing, a pike turning its prey
         };
         for (const FDemo& Demo : Demos)
             At(Demo.At, [this, Demo]
@@ -220,9 +230,9 @@ void ALakeCharacter::RunPreviews()
                 Step.Motion = Demo.Motion; Step.Duration = Demo.Duration; Step.Amount = Demo.Amount; Step.bTake = Demo.State == EFishingState::Bite;
                 OnBiteMotion(nullptr, Step);
             });
-        At(17.50f, [Shot] { Shot(TEXT("Bite_Tremble.png")); });
-        At(19.17f, [Shot] { Shot(TEXT("Bite_Peck.png")); });
-        At(22.00f, [Shot] { Shot(TEXT("Bite_Lift.png")); });
+        At(21.50f, [Shot] { Shot(TEXT("Bite_Tremble.png")); });
+        At(23.17f, [Shot] { Shot(TEXT("Bite_Peck.png")); });
+        At(26.00f, [Shot] { Shot(TEXT("Bite_Lift.png")); });
         auto Aim = [this]
         {
             if (!RodVisual) return;
@@ -232,20 +242,22 @@ void ALakeCharacter::RunPreviews()
             Cam->GetCameraComponent()->SetFieldOfView(35);
             if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
         };
-        At(23.40f, Aim);
-        At(23.60f, [Shot] { Shot(TEXT("Bite_Lie.png")); });
-        At(25.80f, Aim);
-        At(26.00f, [Shot] { Shot(TEXT("Bite_Drift.png")); });
-        At(28.00f, [Shot] { Shot(TEXT("Bite_Sink.png")); });
-        for (int32 I = 0; I <= 140; ++I)
-            At(16.50f + I * 0.1f, [this, I]
+        At(27.40f, Aim);
+        At(27.60f, [Shot] { Shot(TEXT("Bite_Lie.png")); });
+        At(29.80f, Aim);
+        At(30.00f, [Shot] { Shot(TEXT("Bite_Drift.png")); });
+        At(32.00f, [Shot] { Shot(TEXT("Bite_Sink.png")); });
+        At(35.80f, Aim);
+        At(36.00f, [Shot] { Shot(TEXT("Bite_Hold.png")); });
+        for (int32 I = 0; I <= 170; ++I)
+            At(20.50f + I * 0.1f, [this, I]
             {
-                if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BITE t=%.1f motion=%d antenna above water=%.1f cm tilt=%.0f keel %.1f shot %.1f hook %.1f (bottom %.1f)"), 16.5f + I * 0.1f, (int32)BiteMotion,
+                if (RodVisual) UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BITE t=%.1f motion=%d antenna above water=%.1f cm tilt=%.0f keel %.1f shot %.1f hook %.1f (bottom %.1f)"), 20.5f + I * 0.1f, (int32)BiteMotion,
                     RodVisual->FloatTip().Z - LakeFish::SurfaceZ, RodVisual->GetBiteTilt(), RodVisual->FloatKeel().Z - LakeFish::SurfaceZ,
                     RodVisual->ShotLocation().Z - LakeFish::SurfaceZ, RodVisual->HookLocation().Z - LakeFish::SurfaceZ,
                     ALakeEnvironment::GroundHeight(RodVisual->HookLocation().X, RodVisual->HookLocation().Y) - LakeFish::SurfaceZ);
             });
-        At(31.0f, [] { FPlatformMisc::RequestExit(false); });
+        At(38.0f, [] { FPlatformMisc::RequestExit(false); });
     }
     // -LandPreview: a perch struck at the camp on a clear morning and lifted out of the water on
     // the line, filmed from the side and close up, its swing logged.
