@@ -30,7 +30,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning);
+Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
@@ -79,6 +79,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 - `LakeFish.h/.cpp` — рыба: паспорта видов (`FFishSpeciesInfo`, читаются из `Content/LiveFish/Species/*.json`, описание полей — README.md там же; новый вид — новый файл, код видов по именам не различает), походка (`FFishGait`), наживки, поклёвки (`NextBiteStep`: рыба решает каждый шаг, возвращается после промаха), плавание (`Move`: повороты дугой, сглаженное желание), стая, распорядок, вываживание, сглаживание на клиентах (`FFishNetSmoothing`).
   Здесь же общие перечисления, включая `EFishingState`.
 - `LakeFood.h/.cpp` — естественный корм пруда: планктон, насекомые, мотыль, растения (`FLakeFoodField`: что где есть, выедание и отрастание; глубина планктона по времени суток); рыба выбирает корм по рациону паспорта (`diet`).
+- `LakeWater.h/.cpp` — вода по глубине: расслоение и скачок температуры, кислород (застойное дно, трава ночью), где рыба может жить (`oxygenMin` в паспорте).
 - `LakeRipples.h/.cpp` — живые волны у игрока: волновое уравнение на сетке вокруг камеры (`FLakeRippleSim`), источники — рыба у поверхности, поплавок, дождь (`ALakeRipples`), высоты уходят в материал воды текстурой.
 - `LakeLife.h/.cpp` — «Live Fish»: стаи, малёк, хищники, знаки на воде, испуг от заброса и шагов (`Disturb`), замеры плавания, панель F3.
 - `LakeMap.h/.cpp` — форма озера (SDF), глубины, рельеф, места рыбалки, зоны.

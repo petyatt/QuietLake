@@ -1,5 +1,6 @@
 #include "LakeFood.h"
 #include "LakeMap.h"
+#include "LakeWater.h"
 
 namespace
 {
@@ -90,7 +91,12 @@ float LakeFood::FeedingZ(EFishFood Food, float X, float Y, const FFishConditions
     if (Low >= Top) return 0.5f * (Top + Low);
     switch (Food)
     {
-    case EFishFood::Plankton: return FMath::Clamp(LakeFish::SurfaceZ - PlanktonDepthM(C) * 100 + Random.FRandRange(-25.0f, 25.0f), Low + 5, Top);
+    case EFishFood::Plankton:
+    {
+        // It does not go down into the stale water under the thermocline.
+        const float Deep = LakeWater::Stratification(C) > 0.3f ? FMath::Min(PlanktonDepthM(C), LakeWater::ThermoclineM(C)) : PlanktonDepthM(C);
+        return FMath::Clamp(LakeFish::SurfaceZ - Deep * 100 + Random.FRandRange(-25.0f, 25.0f), Low + 5, Top);
+    }
     case EFishFood::Insects: return FMath::Max(Low, LakeFish::SurfaceZ - Random.FRandRange(10.0f, 28.0f));
     case EFishFood::Benthos: return FMath::Min(Top, Bottom + Random.FRandRange(6.0f, 14.0f));
     case EFishFood::Plants: return FMath::Lerp(Top, Low, Random.FRandRange(0.25f, 0.7f));

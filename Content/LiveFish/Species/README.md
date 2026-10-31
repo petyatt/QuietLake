@@ -80,6 +80,7 @@
 | `mood` | клёв по времени суток (`dawn`, `day`, `dusk`, `night`), температура воды (`tempLow`, `tempBest`, `tempHigh`), пасмурность (`overcast`, −1…+1), дождь (`lightRain`, `heavyRain`), ветер (`ripple`, `strongWind`), туман (`fog`), чувствительность к фронтам (`front`) |
 | `strength`, `stamina`, `runBurst` | на крючке: сила на кг (окунь = 1), выносливость (с), длина рывка |
 | `stock` | сколько в пруду (`count`) и по сколько в стае (`schoolSize`, 1 — одиночки) |
+| `oxygenMin` | сколько растворённого кислорода (мг/л) нужно: в воде беднее рыба не держится и уходит, а при 6/10 этого хватает воздух у поверхности. Карась `0.8` (терпит почти всё), окунь `4` |
 | `learning` | как учится: `fright` — насколько настораживается сошедшая с крючка рыба (0…1; уколотая ранней подсечкой — на 6/10 этого; больше всего — к той наживке), `forgetHours` — за сколько игровых часов забывает половину, `schoolShare` — какую долю испуга перенимают соседи по стае, видевшие подсечку. Тем же `fright` вид обходит облавливаемое место |
 | `signs` | что пишет панель F3 о знаках на воде этого вида: `rise`, `bubbles`, `swirl`, `splash`, `scatter`, `jump` |
 
@@ -192,6 +193,7 @@
   "diet":    { "plankton": 0.6, "benthos": 0.8, "plants": 0.2, "groundbait": 1.0 },
   "dietBig": { "plankton": 0.2, "benthos": 1.0, "plants": 0.2, "groundbait": 1.0 },
   "learning": { "fright": 0.8, "forgetHours": 12, "schoolShare": 0.5 },
+  "oxygenMin": 2.5,
   "mood": { "dawn": 1.0, "day": 0.4, "dusk": 1.0, "night": 0.8, "tempLow": 10, "tempBest": 20, "tempHigh": 27, "overcast": 0.3, "front": 0.9 },
   "strength": 1.1, "stamina": 14, "runBurst": 0.6,
   "stock": { "count": 40, "schoolSize": 10 },

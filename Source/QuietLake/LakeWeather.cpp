@@ -199,6 +199,7 @@ FFishConditions ALakeWeather::FishConditions() const
     FFishConditions C;
     SunDirection(&C.SunElevation);
     C.bMorning = Hours() < 13.0f;
+    C.Hour = Hours();
     C.WaterTempC = WaterTemp;
     C.Cloud = W.Cloud;
     C.Rain = W.Rain;

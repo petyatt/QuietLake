@@ -3,6 +3,7 @@
 #include "LakeGame.h"
 #include "LakeHUD.h"
 #include "LakeMap.h"
+#include "LakeWater.h"
 #include "LakeWeather.h"
 #include "Algo/BinarySearch.h"
 #include "Async/ParallelFor.h"
@@ -854,6 +855,7 @@ void ALakeLife::LogStats()
     LogSpots();
     LogPrey();
     LogFood();
+    LogWater();
 }
 
 void ALakeLife::LogFood()
@@ -907,6 +909,53 @@ void ALakeLife::LogFood()
         for (const FGroundbaitSpot& G : FoodField.Groundbait()) Balls += G.Balls;
         Line += FString::Printf(TEXT(" | groundbait: %d patches, %.1f balls left"), FoodField.Groundbait().Num(), Balls);
     }
+    UE_LOG(LogTemp, Display, TEXT("%s"), *Line);
+}
+
+void ALakeLife::LogWater()
+{
+    const ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
+    if (!Weather) return;
+    const FFishConditions C = Weather->FishConditions();
+    // The deepest water and the densest lilies, found once.
+    static FVector2D Deepest = FVector2D::ZeroVector, Weediest = FVector2D::ZeroVector;
+    if (Deepest.IsZero())
+    {
+        const FBox2D B = LakeMap::LakeBounds();
+        float Most = 0, MostWeed = 0;
+        for (float Y = B.Min.Y; Y < B.Max.Y; Y += 500)
+            for (float X = B.Min.X; X < B.Max.X; X += 500)
+            {
+                if (!LakeMap::IsWater(X, Y)) continue;
+                const float D = LakeMap::Depth(X, Y), W = LakeWater::WeedAt(X, Y);
+                if (D > Most) { Most = D; Deepest = FVector2D(X, Y); }
+                if (W > MostWeed && D > 60) { MostWeed = W; Weediest = FVector2D(X, Y); }
+            }
+    }
+    const float DeepM = LakeMap::Depth(Deepest.X, Deepest.Y) / 100, WeedM = LakeMap::Depth(Weediest.X, Weediest.Y) / 100;
+    FString Line = FString::Printf(TEXT("QUIET_LAKE_WATER hour=%.1f layered %.2f, thermocline %.1f m | deepest (%.1f m): %.1f C %.1f mg/l at 1 m, %.1f C %.1f mg/l at 3 m, %.1f C %.1f mg/l at the bottom | lilies (%.1f m): %.1f mg/l at the top, %.1f near the bottom (short %.2f)"),
+        Weather->Hours(), LakeWater::Stratification(C), LakeWater::ThermoclineM(C), DeepM,
+        LakeWater::TempC(C, 1), LakeWater::OxygenMgL(C, Deepest.X, Deepest.Y, 1), LakeWater::TempC(C, 3), LakeWater::OxygenMgL(C, Deepest.X, Deepest.Y, 3),
+        LakeWater::TempC(C, DeepM - 0.2f), LakeWater::OxygenMgL(C, Deepest.X, Deepest.Y, DeepM - 0.2f),
+        WeedM, LakeWater::OxygenMgL(C, Weediest.X, Weediest.Y, 0.2f), LakeWater::OxygenMgL(C, Weediest.X, Weediest.Y, FMath::Max(0.2f, WeedM - 0.15f)), LakeWater::WeedDeficit(C));
+    for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp)
+    {
+        int32 All = 0, Short = 0;
+        double O2 = 0, Depth = 0;
+        for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
+        {
+            const ALakeFish* Fish = Weak.Get();
+            if (!Fish || (int32)Fish->Species != Sp || !Fish->IsFree()) continue;
+            const FVector P = Fish->GetActorLocation();
+            const float Here = LakeWater::OxygenMgL(C, P.X, P.Y, (LakeFish::SurfaceZ - P.Z) / 100);
+            ++All;
+            O2 += Here;
+            Depth += (LakeFish::SurfaceZ - P.Z) / 100;
+            Short += Here < LakeFish::Info((EFishSpecies)Sp).OxygenMin;
+        }
+        if (All) Line += FString::Printf(TEXT(" | %s: %.1f mg/l at %.1f m, %.0f%% short of oxygen"), SpeciesNoun((EFishSpecies)Sp), O2 / All, Depth / All, 100.0 * Short / All);
+    }
+    Line += FString::Printf(TEXT(" | gulping signs so far %d"), Counters.Signs[(int32)ELakeSign::Gulp]);
     UE_LOG(LogTemp, Display, TEXT("%s"), *Line);
 }
 
@@ -1352,6 +1401,10 @@ void ALakeLife::ShowSign(const FLakeSign& Sign)
         AddRing(Sign.Kind, P, S);
         PlaySound(PlopSound, P, FMath::Min(0.25f + 0.35f * S, 0.8f), FMath::Clamp(1.35f - 0.35f * S, 0.8f, 1.4f));
         break;
+    case ELakeSign::Gulp:
+        AddRing(ELakeSign::Rise, P, S);
+        PlaySound(PlopSound, P, 0.2f, 1.5f);
+        break;
     case ELakeSign::Bubbles:
         AddRing(Sign.Kind, P, S);
         PlaySound(BubbleSound, P, 0.45f, FMath::FRandRange(0.9f, 1.15f));
@@ -1426,6 +1479,7 @@ void ALakeLife::ShowSign(const FLakeSign& Sign)
     case ELakeSign::Splash: Text = Note(Says.Splash, TEXT("Всплеск")); break;
     case ELakeSign::Scatter: Text = Note(Says.Scatter, TEXT("Малёк брызнул из воды")); break;
     case ELakeSign::Jump: Text = Note(Says.Jump, TEXT("Из воды выпрыгнула рыба")); break;
+    case ELakeSign::Gulp: Text = TEXT("Рыба хватает воздух у поверхности — в воде мало кислорода"); break;
     default: break;
     }
     RecentNotes.Insert({ (float)GetWorld()->GetRealTimeSeconds(), FString::Printf(TEXT("%s · %.0f м"), *Text, Dist / 100) }, 0);
@@ -1566,7 +1620,9 @@ void ALakeLife::RunPreview()
         {
             FLakeWeatherState Calm;
             Calm.Cloud = 0.35f; Calm.Fog = 0.05f; Calm.Rain = 0; Calm.Wind = 0.06f; Calm.WindYaw = 40;
-            W->SetWeather(Calm, 1);
+            // The second day of a calm spell: the water has had time to layer.
+            W->SetWeatherNow(Calm);
+            W->SetSteadyFor(24);
             W->SetHours(Hours);
         }
     };

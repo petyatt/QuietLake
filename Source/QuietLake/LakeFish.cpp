@@ -1,5 +1,6 @@
 #include "LakeFish.h"
 #include "LakeFood.h"
+#include "LakeWater.h"
 #include "LakeGame.h"
 #include "LakeLife.h"
 #include "LakeMap.h"
@@ -461,7 +462,9 @@ float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y
         const float Shelter = FMath::Max3(LakeMap::LilyAmount(X, Y), Z.Cover, 0.7f * Z.ReedEdge);
         Exposed = FMath::Min(0.9f, Info(Species).Feeding.LightShy * Light * Shallow * (1 - Shelter));
     }
-    return (0.03f + Like) * DepthFit * Downwind * (1 - Exposed);
+    // Water it can live in: enough oxygen, not too hot, somewhere in the column (see LakeWater).
+    const float Livable = Conditions ? 0.05f + 0.95f * LakeWater::Livable(Species, *Conditions, X, Y) : 1.0f;
+    return (0.03f + Like) * DepthFit * Downwind * (1 - Exposed) * Livable;
 }
 }
 FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions, EFishGoal Goal,
@@ -499,7 +502,8 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
     // Heat and bright sun also press the fish towards the bottom of the water column.
     const float Lower = Conditions ? FMath::Clamp(DepthShiftM(Species, *Conditions) * 0.25f, -0.2f, 0.3f) : 0.0f;
     const float Column = FMath::Clamp(Random.FRandRange(S.DepthMin, S.DepthMax) + Lower, 0.0f, 1.0f);
-    return FVector(Best, FMath::Lerp(SurfaceZ - 10, Bottom + 8, Column));
+    const float Z = FMath::Lerp(SurfaceZ - 10, Bottom + 8, Column);
+    return FVector(Best, Conditions ? LakeWater::ToLivable(Species, *Conditions, Best.X, Best.Y, Z) : Z);
 }
 float ALakeFish::BottomZ(float X, float Y) { return ALakeEnvironment::GroundHeight(X, Y); }
 
@@ -602,6 +606,15 @@ const ALakeFish* ALakeFish::Leader() const
 }
 
 void ALakeFish::ChooseRoamTarget(bool bLocal)
+{
+    PickRoamTarget(bLocal);
+    // Wherever it goes, it keeps to a layer it can live in (out of the stale water under the
+    // thermocline, out of the hot top).
+    FFishConditions Conditions;
+    if (Leader() == this && GetConditions(Conditions)) RoamTarget.Z = LakeWater::ToLivable(Species, Conditions, RoamTarget.X, RoamTarget.Y, RoamTarget.Z);
+}
+
+void ALakeFish::PickRoamTarget(bool bLocal)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     FFishConditions Conditions;
@@ -769,6 +782,7 @@ void ALakeFish::ChooseLie()
     RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bMove ? GetActorLocation() : HomePoint), bMove ? 800.0f : FMath::Min(1500.0f, HomeDrift + 300), C, EFishGoal::Feed);
     const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
     RoamTarget.Z = FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, Random.FRandRange(0.45f, 0.8f));
+    if (C) RoamTarget.Z = LakeWater::ToLivable(Species, *C, RoamTarget.X, RoamTarget.Y, RoamTarget.Z);
     // It faces out from its cover into the open water, where prey swims past.
     const FVector2D Out = LakeMap::DeeperDirection(RoamTarget.X, RoamTarget.Y);
     LieFacing = FVector(Out.IsNearlyZero() ? FVector2D(GetActorForwardVector()) : Out, 0).RotateAngleAxis(Random.FRandRange(-35.0f, 35.0f), FVector::UpVector);
@@ -1001,6 +1015,23 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     const float Recovery = Goal != EFishGoal::Rest ? 0.0f : bAtSpot ? 0.014f : 0.006f;   // already easing off on the way
     Energy = FMath::Clamp(Energy - DeltaSeconds * (0.0012f + 0.004f * Effort) + DeltaSeconds * Recovery, 0.0f, 1.0f);
     Hunger = FMath::Min(1.0f, Hunger + DeltaSeconds * 0.0035f * Activity * S.Feeding.HungerRate);
+    // Short of oxygen (dense weed at dawn after a warm calm night, the stale bottom layer): it leaves
+    // for better water, swimming high, and the worst off gulp air at the surface.
+    if (bSeen && SimTime >= NextAirCheck && State == EState::Roam)
+    {
+        NextAirCheck = SimTime + Random.FRandRange(2.0f, 4.0f);
+        const FVector P = GetActorLocation();
+        const float O2 = LakeWater::OxygenMgL(Seen, P.X, P.Y, (LakeFish::SurfaceZ - P.Z) / 100);
+        if (LakeWater::IsGasping(Species, O2))
+        {
+            if (Leader() == this && LakeWater::LivableAt(Species, Seen, RoamTarget.X, RoamTarget.Y, (LakeFish::SurfaceZ - RoamTarget.Z) / 100) < 0.5f) ChooseRoamTarget();
+            if (SimTime >= NextGulp)
+            {
+                NextGulp = SimTime + Random.FRandRange(6.0f, 14.0f);
+                if (ALakeLife* AirLife = ALakeLife::Get(GetWorld())) AirLife->EmitSign(ELakeSign::Gulp, FVector(P.X, P.Y, LakeFish::SurfaceZ), 0.25f + 0.3f * WeightKg, Species, WeightKg);
+            }
+        }
+    }
     // It forgets the hook over game hours.
     if (Caution > 0 || BaitShy[0] + BaitShy[1] + BaitShy[2] > 0)
     {

@@ -107,6 +107,7 @@ struct FFishHabitat
 struct FFishConditions
 {
     float SunElevation = 30;         // degrees
+    float Hour = 12;                 // game clock, 0..24
     bool bMorning = true;            // before solar noon
     float WaterTempC = 19;
     float Cloud = 0.3f, Rain = 0, Wind = 0.1f, Fog = 0;
@@ -371,6 +372,7 @@ struct FFishSpeciesInfo
     UPROPERTY() FFishDiet Diet;           // what it eats (see LakeFood)
     UPROPERTY() FFishDiet DietBig;        // what the biggest fish eat (empty: as Diet)
     UPROPERTY() FFishMood Mood;
+    UPROPERTY() float OxygenMin = 3;      // mg/l of dissolved oxygen below which it leaves the water (see LakeWater)
     UPROPERTY() float Strength = 1;       // thrust per kg relative to a perch, used when hooked
     UPROPERTY() float Stamina = 10;       // seconds of hard pulling at full strength
     UPROPERTY() float RunBurst = 0.5f;    // s of a hooked fish's burst (plus more for a big one)
@@ -595,6 +597,7 @@ public:
 private:
     enum class EState : uint8 { Roam, Investigate, Nibble, Holding, Hooked, Flee };
     void ChooseRoamTarget(bool bLocal = false);
+    void PickRoamTarget(bool bLocal);
     /** Pick what to do next from hunger, tiredness, the daily rhythm and the weather. */
     void Decide();
     void SetGoal(EFishGoal NewGoal, float Seconds);
@@ -673,6 +676,7 @@ private:
     float Caution = 0;                // learnt from the angler (see Frighten)
     float BaitShy[3] = {};            // of worm, maggot, bread
     float NextFoodCheck = 0;          // when it next sees whether the patch is eaten down
+    float NextAirCheck = 0, NextGulp = 0;   // short of oxygen: when it looks again, when it next gulps air
     bool bAtSpot = false;             // reached its feeding or resting spot
     bool bNear = true;                // full detail
     float LastBeat = -1, LastAmp = -1;// what the material was last given
@@ -726,6 +730,7 @@ private:
     friend class FLakeFoodTest;
     friend class FLakeGroundbaitTest;
     friend class FLakeLearningTest;
+    friend class FLakeWaterTest;
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;

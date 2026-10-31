@@ -15,6 +15,7 @@ enum class ELakeSign : uint8
     Splash,     // a breaking splash: a predator striking at the top, a hooked fish thrashing
     Scatter,    // fry spraying out of the water as perch drive them ("котёл")
     Jump,       // a fish leaping clear of the water
+    Gulp,       // a fish gulping air at the surface: the water is short of oxygen
     Count UMETA(Hidden)
 };
 
@@ -154,6 +155,8 @@ private:
     void LogStats();
     /** What the fish eat and where, and what is left of the food (QUIET_LAKE_FOOD). */
     void LogFood();
+    /** The water by depth: layers, oxygen, where the fish are in it (QUIET_LAKE_WATER). */
+    void LogWater();
     /** Every few seconds: which fish would sense a bait cast 2-6 m out at each fishing spot. */
     void SampleSpots();
     void LogSpots();

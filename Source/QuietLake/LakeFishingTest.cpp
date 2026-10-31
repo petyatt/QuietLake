@@ -6,6 +6,7 @@
 #include "LakeMap.h"
 #include "LakeLife.h"
 #include "LakeFood.h"
+#include "LakeWater.h"
 #include "LakeWeather.h"
 #include "LakeRipples.h"
 #include "Misc/AutomationTest.h"
@@ -2033,6 +2034,58 @@ bool FLakeLearningTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Fish keep away from a much-fished place"), Fished < Calm * 0.75f);
     }
     World->DestroyWorld(false);
+    return true;
+}
+
+// The water by depth: steady calm warm weather layers it (a thermocline, cold stale water under
+// it), wind mixes it; dense weed is short of oxygen at dawn after a warm calm night and rich in it
+// in the afternoon; fish keep to water they can live in (a roach rises out of the stale bottom
+// layer, leaves the lilies at such a dawn while a crucian stays), and the worst off gulp air.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeWaterTest, "QuietLake.Fishing.Water", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeWaterTest::RunTest(const FString& Parameters)
+{
+    // The deepest water and dense lilies.
+    FVector2D Deep = FVector2D::ZeroVector, Lily = FVector2D::ZeroVector;
+    {
+        const FBox2D B = LakeMap::LakeBounds();
+        float Most = 0, MostWeed = 0;
+        for (float Y = B.Min.Y; Y < B.Max.Y; Y += 500)
+            for (float X = B.Min.X; X < B.Max.X; X += 500)
+            {
+                if (!LakeMap::IsWater(X, Y)) continue;
+                const float D = LakeMap::Depth(X, Y), W = LakeWater::WeedAt(X, Y);
+                if (D > Most) { Most = D; Deep = FVector2D(X, Y); }
+                if (W > MostWeed && D > 70) { MostWeed = W; Lily = FVector2D(X, Y); }
+            }
+    }
+    const float DeepM = LakeMap::Depth(Deep.X, Deep.Y) / 100, LilyM = LakeMap::Depth(Lily.X, Lily.Y) / 100;
+    FFishConditions Hot;   // a steady calm hot afternoon
+    Hot.Hour = 15; Hot.SunElevation = 40; Hot.Cloud = 0.1f; Hot.Wind = 0.05f; Hot.WaterTempC = 23; Hot.StableHours = 24;
+    FFishConditions Windy = Hot; Windy.Wind = 0.6f;
+    FFishConditions Dawn = Hot; Dawn.Hour = 5; Dawn.SunElevation = -3; Dawn.bMorning = true;
+    FFishConditions WindyDawn = Dawn; WindyDawn.Wind = 0.6f;
+    // 1. Layers.
+    const float Thermo = LakeWater::ThermoclineM(Hot);
+    AddInfo(FString::Printf(TEXT("Calm hot day: layered %.2f, thermocline %.1f m; %.1f C at 1 m, %.1f C at %.1f m; %.1f mg/l at 1 m, %.1f at the bottom. Windy: layered %.2f, %.1f C and %.1f mg/l at the bottom"),
+        LakeWater::Stratification(Hot), Thermo, LakeWater::TempC(Hot, 1), LakeWater::TempC(Hot, DeepM - 0.2f), DeepM - 0.2f,
+        LakeWater::OxygenMgL(Hot, Deep.X, Deep.Y, 1), LakeWater::OxygenMgL(Hot, Deep.X, Deep.Y, DeepM - 0.2f),
+        LakeWater::Stratification(Windy), LakeWater::TempC(Windy, DeepM - 0.2f), LakeWater::OxygenMgL(Windy, Deep.X, Deep.Y, DeepM - 0.2f)));
+    TestTrue(TEXT("Steady calm heat layers the water: cold, stale water under a thermocline at 2-3 m"), LakeWater::Stratification(Hot) > 0.7f && Thermo > 2 && Thermo < 3
+        && LakeWater::TempC(Hot, 1) - LakeWater::TempC(Hot, DeepM - 0.2f) > 4 && LakeWater::OxygenMgL(Hot, Deep.X, Deep.Y, DeepM - 0.2f) < 3 && LakeWater::OxygenMgL(Hot, Deep.X, Deep.Y, 1) > 7);
+    TestTrue(TEXT("Wind mixes it"), LakeWater::Stratification(Windy) < 0.2f && LakeWater::OxygenMgL(Windy, Deep.X, Deep.Y, DeepM - 0.2f) > 6);
+    // 2. Weed.
+    const float LilyDawn = LakeWater::OxygenMgL(Dawn, Lily.X, Lily.Y, LilyM - 0.1f), LilyDay = LakeWater::OxygenMgL(Hot, Lily.X, Lily.Y, LilyM - 0.1f), LilyWind = LakeWater::OxygenMgL(WindyDawn, Lily.X, Lily.Y, LilyM - 0.1f);
+    AddInfo(FString::Printf(TEXT("Lilies (%.1f m deep, weed %.2f) near the bottom: %.1f mg/l at a calm dawn, %.1f in the afternoon, %.1f at a windy dawn"), LilyM, LakeWater::WeedAt(Lily.X, Lily.Y), LilyDawn, LilyDay, LilyWind));
+    TestTrue(TEXT("Dense weed is short of oxygen at dawn after a warm calm night, rich in it in the afternoon"), LilyDawn < 3 && LilyDay > 9 && LilyWind > LilyDawn + 2);
+    // 3. Fish.
+    const float BottomZ = ALakeFish::BottomZ(Deep.X, Deep.Y) + 10;
+    const float RoachZ = LakeWater::ToLivable(EFishSpecies::Roach, Hot, Deep.X, Deep.Y, BottomZ);
+    const float RoachLily = LakeWater::Livable(EFishSpecies::Roach, Dawn, Lily.X, Lily.Y), CrucianLily = LakeWater::Livable(EFishSpecies::Crucian, Dawn, Lily.X, Lily.Y);
+    AddInfo(FString::Printf(TEXT("Roach sent to the bottom of the deep water on a calm hot day keeps at %.1f m; at a calm dawn the lilies suit a roach %.2f, a crucian %.2f; gasping there: perch %d, crucian %d"),
+        (LakeFish::SurfaceZ - RoachZ) / 100, RoachLily, CrucianLily, LakeWater::IsGasping(EFishSpecies::Perch, LilyDawn), LakeWater::IsGasping(EFishSpecies::Crucian, LilyDawn)));
+    TestTrue(TEXT("A roach keeps above the stale bottom layer"), (LakeFish::SurfaceZ - RoachZ) / 100 < Thermo + 0.8f);
+    TestTrue(TEXT("At such a dawn a roach leaves the lilies, a crucian stays"), RoachLily < 0.5f && CrucianLily > 0.8f);
+    TestTrue(TEXT("A perch there gulps air, a crucian does not"), LakeWater::IsGasping(EFishSpecies::Perch, LilyDawn) && !LakeWater::IsGasping(EFishSpecies::Crucian, LilyDawn));
     return true;
 }
 #endif

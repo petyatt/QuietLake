@@ -66,6 +66,8 @@ public:
     float Shock() const;
     /** Game hours since the weather last settled. */
     float StableHours() const;
+    /** Previews: the weather now has been steady for GameHours already (the water has had time to layer). */
+    void SetSteadyFor(float GameHours) { BlendStart = ServerNow() - BlendSeconds - GameHours / GameHoursPerSecond(); ForceNetUpdate(); }
     /** Everything the fish react to, for LakeFish::Activity. */
     FFishConditions FishConditions() const;
 
