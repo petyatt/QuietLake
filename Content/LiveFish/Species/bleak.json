@@ -44,7 +44,7 @@
     "lightShy": 0.2,
     "wariness": 1.0, "dominance": 0.4,
     "sipAtDusk": 0.8, "restColumn": 0.2, "feedColumnMin": 0.0, "feedColumnMax": 0.25,
-    "browseStep": 600, "browseSpeed": 0.7, "fillRate": 0.015,
+    "browseStep": 600, "browseSpeed": 0.7, "fillRate": 0.008, "hungerRate": 2.5,
     "bask": 0.3, "bJumps": true
   },
   "diet":    { "plankton": 0.9, "insects": 1.0, "benthos": 0.1, "plants": 0.1, "groundbait": 0.6 },
