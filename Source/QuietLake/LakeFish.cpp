@@ -616,19 +616,34 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
         return;
     }
     const bool bHomeBound = S.IsSchooling() || S.Habitat.bAmbush;
+    // A much-fished place (catches, fish lost, casts) is avoided until it settles (ALakeLife::PressureAt).
+    const ALakeLife* PressureLife = ALakeLife::Get(GetWorld());
+    const TFunction<float(const FVector2D&)> ShyOfPressure = [this, PressureLife, &S](const FVector2D& P)
+    {
+        return PressureLife ? 1 - FMath::Min(0.8f, 0.3f * S.Learning.Fright * PressureLife->PressureAt(FVector(P, 0))) : 1.0f;
+    };
+    // A school or an ambusher whose home is much fished moves it further off (up to 20 m beyond its
+    // usual range) and comes back once the place has settled.
+    if (bHomeBound && PressureLife)
+    {
+        const float Felt = S.Learning.Fright * PressureLife->PressureAt(HomePoint);
+        // (Roach after two or three catches or fish lost, crucian and pike sooner, perch keep biting longer.)
+        if (Felt > 1.2f && Random.FRand() < 0.5f)
+            HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift + 2000 * FMath::Min(1.0f, Felt / 2.4f), C, EFishGoal::Cruise, ShyOfPressure);
+    }
     if (Goal == EFishGoal::Cruise)
     {
         // Schools and ambushers keep to their home area; loners wander through good water nearby.
         // Now and then a home moves to better water for the conditions (deeper in the heat, to the
         // bank the wind blows onto), so schools drift with the weather - around the place they were
         // stocked in, not step by step away from it.
-        if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift, C);
+        if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift, C, EFishGoal::Cruise, ShyOfPressure);
         const float Range = S.Habitat.bAmbush ? 350.0f : S.IsSchooling() ? 900.0f : 2500.0f;
         // A cruising fish carries on more or less the way it is going rather than doubling back.
         const FVector Ahead = GetActorForwardVector().GetSafeNormal2D();
         for (int32 Try = 0; Try < 4; ++Try)
         {
-            RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bHomeBound ? HomePoint : GetActorLocation()), Range, C);
+            RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bHomeBound ? HomePoint : GetActorLocation()), Range, C, EFishGoal::Cruise, ShyOfPressure);
             if (FVector::DotProduct((RoamTarget - GetActorLocation()).GetSafeNormal2D(), Ahead) > -0.2f) break;
         }
         // Warm still sunny water: roach and crucian bask just under the surface, a pike lies up there
@@ -705,7 +720,7 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
             return Value;
         };
         EFishFood Which;
-        auto Weigh = [&](const FVector2D& P) { return (0.5f + Best(P, Which)) * (1 - 0.4f * FMath::Min(1.0f, (float)FVector2D::Distance(P, Near) / FMath::Max(1.0f, Range))); };
+        auto Weigh = [&](const FVector2D& P) { return ShyOfPressure(P) * (0.5f + Best(P, Which)) * (1 - 0.4f * FMath::Min(1.0f, (float)FVector2D::Distance(P, Near) / FMath::Max(1.0f, Range))); };
         const FVector Spot = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal, Weigh);
         const float Value = Best(FVector2D(Spot), Which);
         // Fry close by are a richer meal than most for a fish that eats them.
@@ -728,7 +743,7 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
     else
     {
         FeedOn = EFishFood::None;
-        RoamTarget = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal);
+        RoamTarget = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal, ShyOfPressure);
     }
     const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
     auto Column = [&](float Fraction) { return FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, Fraction); };
@@ -986,6 +1001,14 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     const float Recovery = Goal != EFishGoal::Rest ? 0.0f : bAtSpot ? 0.014f : 0.006f;   // already easing off on the way
     Energy = FMath::Clamp(Energy - DeltaSeconds * (0.0012f + 0.004f * Effort) + DeltaSeconds * Recovery, 0.0f, 1.0f);
     Hunger = FMath::Min(1.0f, Hunger + DeltaSeconds * 0.0035f * Activity * S.Feeding.HungerRate);
+    // It forgets the hook over game hours.
+    if (Caution > 0 || BaitShy[0] + BaitShy[1] + BaitShy[2] > 0)
+    {
+        const float GameHour = ALakeWeather::DayMinutes * 60.0f / 24.0f;
+        const float Keep = FMath::Exp(-DeltaSeconds * UE_LN2 / (FMath::Max(0.1f, S.Learning.ForgetHours) * GameHour));
+        Caution = Caution < 0.002f ? 0.0f : Caution * Keep;
+        for (float& Shy : BaitShy) Shy = Shy < 0.002f ? 0.0f : Shy * Keep;
+    }
     {
         const ALakeFish* Lead = Leader();
         if (Lead != this)
@@ -1310,6 +1333,17 @@ void ALakeFish::SenseThreats(float DeltaSeconds)
     Fear = FMath::Clamp(FMath::Max(Fear, Level), 0.0f, 1.0f);
 }
 
+void ALakeFish::Frighten(float Amount, int32 Bait)
+{
+    Caution = FMath::Min(1.0f, Caution + Amount * (1 - 0.5f * Caution));
+    if (Bait >= 0 && Bait < 3) BaitShy[Bait] = FMath::Min(1.0f, BaitShy[Bait] + Amount * 1.2f * (1 - 0.5f * BaitShy[Bait]));
+}
+
+float ALakeFish::Willingness(EBait Bait) const
+{
+    return (1 - 0.6f * Caution) * (1 - 0.85f * BaitShy[FMath::Clamp((int32)Bait, 0, 2)]);
+}
+
 float ALakeFish::Clout() const
 {
     return LakeFish::Info(Species).Feeding.Dominance * FMath::Pow(FMath::Max(WeightKg, 0.01f), 1.0f / 3.0f);
@@ -1424,6 +1458,10 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
             float Interest = LakeFish::BaitInterest(Species, Candidate->Bait, Depth01(Bait.Z, Bait.X, Bait.Y), FeedColumn) * Match
                 * Hunger * Activity * Mind * FMath::Sqrt(FMath::Max(0.0f, 1 - Dist / S.SenseRadius)) * (1 - Fear);
             if (bOnFood) Interest *= 1.15f - 0.35f * Plenty;
+            // What it has learnt: the hook, the bait that pricked it, a much-fished spot.
+            Interest *= Willingness(Candidate->Bait);
+            if (const ALakeLife* PressureLife = ALakeLife::Get(GetWorld()))
+                Interest *= 1 - FMath::Min(0.6f, 0.15f * S.Learning.Fright * PressureLife->PressureAt(Bait));
             if (bBack || Random.FRand() < Interest * 0.7f)
             {
                 State = EState::Investigate;
@@ -1492,7 +1530,10 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
     const bool bBright = GetConditions(Conditions) && LakeFish::IsBrightCalm(Conditions);
     const FVector BaitAt = Angler->BaitLocation();
     const bool bOnBottom = BaitAt.Z <= BottomZ(BaitAt.X, BaitAt.Y) + 8;
-    const FBiteStep Step = LakeFish::NextBiteStep(Species, BiteState, Size01, Activity, bOnBottom, bBright, BaitLike(Angler), Angler->RigDisturbance(), Random);
+    // A fish that has learnt the hook tests longer, takes less readily and feels more.
+    const float Shy = BaitShy[FMath::Clamp((int32)Angler->Bait, 0, 2)];
+    const FBiteStep Step = LakeFish::NextBiteStep(Species, BiteState, Size01, Activity, bOnBottom, bBright || Caution > 0.4f, BaitLike(Angler) * (1 - 0.7f * Shy),
+        Angler->RigDisturbance() + 0.3f * Caution, Random);
     BiteNow = Step;
     BiteStepEnd = SimTime + Step.Duration;
     if (Step.bTake && State == EState::Nibble)
@@ -1571,8 +1612,17 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     TargetAngler = Angler;
     BurstTime = 2.0f;   // the first run after the strike
     StrikeEnd = -1;
-    // The thrashing scares the school mates nearby.
-    if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->Alarm(this, 600);
+    // The thrashing scares the school mates nearby, and they remember it (of that bait, half as much).
+    if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
+    {
+        Life->Alarm(this, 600);
+        const FFishLearning& L = LakeFish::Info(Species).Learning;
+        const int32 With = (int32)Angler->Bait;
+        Life->ForEachFishNear(GetActorLocation(), 600, [&](ALakeFish* Mate)
+        {
+            if (Mate != this && School >= 0 && Mate->School == School) { Mate->Frighten(L.SchoolShare * L.Fright, -1); Mate->BaitShy[With] = FMath::Min(1.0f, Mate->BaitShy[With] + 0.5f * L.SchoolShare * L.Fright); }
+        });
+    }
 }
 
 void ALakeFish::ApplyLineForce(FVector Force) { PendingLineForce = Force; }
@@ -1592,7 +1642,8 @@ void ALakeFish::DropBait()
         ++BaitVisits;
         const FFishBiteStyle& Style = LakeFish::Info(Species).Bite;
         const float Again = Hunger * (0.35f + 0.65f * BaitLike(Angler)) * FMath::Clamp(Activity, 0.2f, 1.0f) * Style.Comeback
-            * (1 - FMath::Clamp(BiteState.Felt * 0.6f, 0.0f, 0.9f));
+            * (1 - FMath::Clamp(BiteState.Felt * 0.6f, 0.0f, 0.9f)) * (1 - Caution);
+        if (BiteState.Felt > 0.5f) Frighten(0.15f * Style.Comeback * LakeFish::Info(Species).Learning.Fright, (int32)Angler->Bait);
         bBack = BaitVisits < Style.MaxVisits && Random.FRand() < Again;
         const float Delay = bBack ? Random.FRandRange(Style.ReturnMin, FMath::Max(Style.ReturnMin, Style.ReturnMax)) : 60.0f;
         IgnoreBaitUntil.Add(Angler, SimTime + Delay);
@@ -1679,6 +1730,15 @@ void ALakeFish::Release(float SpookSeconds)
     WishSpeedNow = Vel.Size();
     const FVector From = TargetAngler.IsValid() ? TargetAngler->GetActorLocation() : GetActorLocation();
     if (TargetAngler.IsValid()) IgnoreBaitUntil.Add(TargetAngler, SimTime + 60);
+    // It learns: off the hook - fully, pricked by a strike as it held or tried the bait - six tenths;
+    // the place grows warier.
+    if (State == EState::Hooked || State == EState::Holding || State == EState::Nibble)
+    {
+        const bool bHooked = State == EState::Hooked;
+        const float Fright = LakeFish::Info(Species).Learning.Fright;
+        Frighten(Fright * (bHooked ? 1.0f : 0.6f), TargetAngler.IsValid() ? (int32)TargetAngler->Bait : -1);
+        if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->AddPressure(GetActorLocation(), bHooked ? 0.6f : 0.2f);
+    }
     State = EState::Roam;
     PendingLineForce = FVector::ZeroVector;
     Hunger *= 0.5f;

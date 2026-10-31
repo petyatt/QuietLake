@@ -101,6 +101,17 @@ public:
     /** Show a sign on the water to the players near it. */
     void EmitSign(ELakeSign Kind, const FVector& Location, float Size, EFishSpecies Species, float WeightKg = 0.2f, float Yaw = 0, bool bQuiet = false);
     void CountPikeStrike() { ++Counters.PikeStrikes; }
+    /**
+     * Fishing pressure: catches (1), fish lost off the hook (0.6), pricked (0.2) and casts (0.03-0.1)
+     * add up at a place and die away over PressureHours game hours. Fish avoid a much-fished place and
+     * are warier there (by their Learning.Fright); a fish caught there is replaced later.
+     */
+    void AddPressure(const FVector& At, float Amount);
+    /** The pressure felt at At (from places within about 15 m). */
+    float PressureAt(const FVector& At) const;
+    static constexpr float PressureHours = 4;
+    /** Game hours before a caught fish is replaced by one from elsewhere in the lake (longer at a much-fished place). */
+    static constexpr float RestockHours = 3;
     /** A player's pawn within Radius of P (2D). */
     bool IsNearPlayer(const FVector& P, float Radius) const;
 
@@ -191,6 +202,9 @@ private:
     bool bStockLogged = false;
     FStats Counters;
     FLakeFoodField FoodField;
+    struct FPressurePlace { FVector2D Location = FVector2D::ZeroVector; float Amount = 0; };
+    TArray<FPressurePlace> Pressure;
+    float PressurePending = 0;
     /** Fish in reach of each fishing spot, summed over the samples since the last log. */
     struct FSpotWatch { int32 Samples = 0, Occupied = 0, Feeding = 0; TArray<float, TInlineAllocator<8>> Fish; float Nearest = 0; };
     TArray<FSpotWatch> SpotWatch;
@@ -262,4 +276,5 @@ private:
     friend class FLakePondLifeTest;
     friend class FLakeInteractionsTest;
     friend class FLakeFoodTest;
+    friend class FLakeLearningTest;
 };

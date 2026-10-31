@@ -1334,7 +1334,7 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
     }
     TestTrue(FString::Printf(TEXT("A school in reach of every fishing spot (none at:%s)"), *Empty), Empty.IsEmpty());
 
-    // A fish caught out of a school: 45 s later another of its kind swims with the same school.
+    // A fish caught out of a school: a few game hours later another of its kind swims with the same school.
     ALakeFish* Caught = nullptr;
     for (ALakeFish* Fish : All) if (Fish->GetSchool() >= 0) { Caught = Fish; break; }
     if (Caught)
@@ -1345,11 +1345,12 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         Caught->Destroy();
         Life->Step(0);
         // The timer manager ticks once an engine frame, and a new timer starts counting at its next
-        // tick: two frames of 46 s.
+        // tick: two frames of the restock time and a second.
+        const float RestockSeconds = ALakeLife::RestockHours * ALakeWeather::DayMinutes * 60.0f / 24.0f;
         for (int32 Frame = 0; Frame < 2; ++Frame)
         {
             ++GFrameCounter;
-            World->GetTimerManager().Tick(46.0f);
+            World->GetTimerManager().Tick(RestockSeconds + 1);
         }
         Life->Step(0);
         int32 After = 0;
@@ -1929,6 +1930,109 @@ bool FLakeGroundbaitTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("A crucian goes for groundbait, roots in it and eats it down"), OnIt >= 6 && bRooted && After < Dissolved - 0.1f);
         World->DestroyWorld(false);
     }
+    return true;
+}
+
+// Live Fish learns from the angler: a fish that came off the hook is wary of that bait above all
+// (a pricked one less so), and forgets over game hours (a perch soon, a crucian slowly); a school
+// that saw one of its own hooked grows wary too; catches build up pressure at a place, which dies
+// away over hours, and fish avoid a much-fished place.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeLearningTest, "QuietLake.Fishing.Learning", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeLearningTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    Life->Step(0);
+    const float GameHour = ALakeWeather::DayMinutes * 60.0f / 24.0f;
+    FVector2D Facing;
+    const FVector2D Start = LakeMap::StartSpot(&Facing);
+    const FVector2D Open = Start + Facing * 900;
+    auto At = [](FVector2D P) { return FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)); };
+    ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Start + Facing * 90, 100), FRotator(0, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+    APlayerController* Controller = World->SpawnActor<APlayerController>();
+    Controller->Possess(Fisher);
+    Fisher->Bait = EBait::Maggot;
+    auto Forget = [&](TArray<ALakeFish*> Fish, float Hours)
+    {
+        for (int32 I = 0, N = FMath::CeilToInt(Hours * GameHour / 0.5f); I < N; ++I) for (ALakeFish* F : Fish) F->Simulate(0.5f);
+    };
+
+    // 1. Off the hook on a maggot: wary of maggots above all; pricked, less so; forgotten in hours.
+    {
+        ALakeFish* Lost = SpawnFish(World, EFishSpecies::Roach, 0.15f, At(Open));
+        Lost->Hook(Fisher);
+        Lost->Release(10);
+        ALakeFish* Pricked = SpawnFish(World, EFishSpecies::Roach, 0.15f, At(Open + Facing * 200));
+        Pricked->State = ALakeFish::EState::Holding;
+        Pricked->TargetAngler = Fisher;
+        Pricked->Release(10);
+        const float Maggot = Lost->Willingness(EBait::Maggot), Worm = Lost->Willingness(EBait::Worm), PrickedMaggot = Pricked->Willingness(EBait::Maggot);
+        Forget({ Lost }, LakeFish::Info(EFishSpecies::Roach).Learning.ForgetHours);
+        const float Later = Lost->Willingness(EBait::Maggot);
+        AddInfo(FString::Printf(TEXT("Roach off the hook on a maggot: maggot %.2f, worm %.2f; pricked: maggot %.2f; %.0f game hours later maggot %.2f"),
+            Maggot, Worm, PrickedMaggot, LakeFish::Info(EFishSpecies::Roach).Learning.ForgetHours, Later));
+        TestTrue(TEXT("A fish off the hook is wary of that bait above all"), Maggot < 0.35f && Worm > Maggot + 0.2f && Worm < 0.9f);
+        TestTrue(TEXT("A pricked fish is less wary than one that was hooked"), PrickedMaggot > Maggot + 0.1f && PrickedMaggot < 0.8f);
+        TestTrue(TEXT("It forgets over game hours"), Later > Maggot + 0.2f);
+        Lost->Destroy();
+        Pricked->Destroy();
+    }
+    // 2. A perch forgets soon, a crucian slowly.
+    {
+        ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.2f, At(Open));
+        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.4f, At(Open + Facing * 300));
+        Perch->Frighten(0.8f, (int32)EBait::Worm);
+        Crucian->Frighten(0.8f, (int32)EBait::Worm);
+        Forget({ Perch, Crucian }, 4);
+        AddInfo(FString::Printf(TEXT("Four game hours after the same fright: perch caution %.2f, crucian %.2f"), Perch->CautionNow(), Crucian->CautionNow()));
+        TestTrue(TEXT("A perch forgets sooner than a crucian"), Perch->CautionNow() < 0.6f * Crucian->CautionNow());
+        Perch->Destroy();
+        Crucian->Destroy();
+    }
+    // 3. A school that saw one of its own hooked grows wary too.
+    {
+        TArray<ALakeFish*> School;
+        for (int32 I = 0; I < 5; ++I) School.Add(SpawnFish(World, EFishSpecies::Roach, 0.15f, At(Open + FVector2D(I * 40.0f, 0)), 77));
+        Life->Step(0);
+        School[0]->Hook(Fisher);
+        float Least = 1;
+        for (int32 I = 1; I < 5; ++I) Least = FMath::Min(Least, School[I]->Willingness(EBait::Maggot));
+        AddInfo(FString::Printf(TEXT("School mates of a hooked roach: least willing to take a maggot %.2f"), Least));
+        TestTrue(TEXT("School mates that saw one hooked grow wary"), Least < 0.85f);
+        for (ALakeFish* F : School) F->Destroy();
+    }
+    // 4. Pressure: three catches at a place, gone halfway in four game hours; fish keep away from it.
+    {
+        const FVector2D Far20 = Start + Facing * 2000;   // open water 20 m out
+        const FVector Place(Far20, 0);
+        Life->Pressure.Reset();   // (the fish lost above left some)
+        auto Choices = [&]()
+        {
+            ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, At(Far20), 78);
+            Life->Step(0);
+            int32 Near = 0;
+            for (int32 I = 0; I < 60; ++I)
+            {
+                Roach->SetGoal(EFishGoal::Feed, 1000);
+                Roach->SetGoal(EFishGoal::Cruise, 1000);
+                Near += FVector2D::Distance(FVector2D(Roach->RoamTarget), Far20) < 600;
+            }
+            Roach->Destroy();
+            return Near;
+        };
+        const int32 Calm = Choices();
+        for (int32 I = 0; I < 3; ++I) Life->AddPressure(Place, 1);
+        const float Now = Life->PressureAt(Place), Far = Life->PressureAt(Place + FVector(2000, 0, 0));
+        const int32 Fished = Choices();
+        for (int32 I = 0, N = FMath::CeilToInt(ALakeLife::PressureHours * GameHour); I < N; ++I) Life->Step(1);
+        const float Later = Life->PressureAt(Place);
+        AddInfo(FString::Printf(TEXT("Pressure after three catches %.2f (20 m off %.2f), %.0f game hours later %.2f; a roach went within 6 m of the place %d of 60 times, %d when it was fished"),
+            Now, Far, ALakeLife::PressureHours, Later, Calm, Fished));
+        TestTrue(TEXT("Catches build up pressure at a place, not 20 m off"), Now > 2.5f && Far < 0.1f);
+        TestTrue(TEXT("Pressure dies away over game hours"), Later > 0.4f * Now && Later < 0.6f * Now);
+        TestTrue(TEXT("Fish keep away from a much-fished place"), Fished < Calm * 0.75f);
+    }
+    World->DestroyWorld(false);
     return true;
 }
 #endif

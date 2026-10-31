@@ -355,6 +355,7 @@ void ALakeCharacter::OnRigLanded(FVector Where)
     {
         // Further off the fish only turn away from the plop, the more so the clumsier the cast.
         Life->Disturb(Target, Radius * 3, bClean ? 0.4f : 0.55f + 0.35f * Bad);
+        Life->AddPressure(Target, bClean ? 0.03f : 0.1f);
         Life->EmitSign(ELakeSign::Rise, Target, bClean ? 0.35f : 0.6f + 0.6f * Bad, EFishSpecies::Roach, 0.1f, 0, true);
         const FVector Hook = RodVisual ? RodVisual->HookLocation() : FVector(CastHookLanding);
         if (ALakeEnvironment::IsWater(Hook) && FVector::Dist2D(Hook, Target) > 30) Life->EmitSign(ELakeSign::Rise, FVector(Hook.X, Hook.Y, LakeFish::SurfaceZ), 0.25f, EFishSpecies::Roach, 0.05f, 0, true);
@@ -1101,8 +1102,8 @@ void ALakeCharacter::UpdateLanding()
     const FString Message = FString::Printf(TEXT("%s, %.2f кг (%.0f см)! ЛКМ — забросить снова."), *S.Name, Fish->WeightKg, LakeFish::LengthCm(Fish->Species, Fish->WeightKg));
     HookedFish = nullptr;
     LineFish = nullptr;
-    // Live Fish puts another of its kind in its place after a while.
-    if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->Restock(Fish);
+    // Live Fish puts another of its kind in its place after a while; the place feels fished.
+    if (ALakeLife* Life = ALakeLife::Get(GetWorld())) { Life->AddPressure(FloatPosition, 1); Life->Restock(Fish); }
     Fish->Destroy();
     // The fish is collected at contact; the free rig still has to reach the fingers.
     bRigInHand = false;

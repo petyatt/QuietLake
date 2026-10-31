@@ -295,6 +295,22 @@ struct FFishFeeding
     UPROPERTY() float LightShy = 0;      // keeps out of bright open shallows by day
 };
 
+/**
+ * How a species learns from the angler. Fright: how much a fish that came off the hook grows
+ * cautious (0..1; pricked by an early strike - six tenths of it), most of all of that bait; a fish
+ * that felt the rig, a little. ForgetHours: game hours to forget half of it. SchoolShare: how much of
+ * the fright school mates take who saw one of them hooked. The same Fright makes a much-fished spot
+ * (ALakeLife::PressureAt) the warier and the more avoided.
+ */
+USTRUCT()
+struct FFishLearning
+{
+    GENERATED_BODY()
+    UPROPERTY() float Fright = 0.6f;
+    UPROPERTY() float ForgetHours = 8;
+    UPROPERTY() float SchoolShare = 0.4f;
+};
+
 /** How many of the species the pond holds at the start (see ALakeLife::StockPond), in schools of SchoolSize (1: alone). */
 USTRUCT()
 struct FFishStock
@@ -359,6 +375,7 @@ struct FFishSpeciesInfo
     UPROPERTY() float Stamina = 10;       // seconds of hard pulling at full strength
     UPROPERTY() float RunBurst = 0.5f;    // s of a hooked fish's burst (plus more for a big one)
     UPROPERTY() FFishStock Stock;
+    UPROPERTY() FFishLearning Learning;   // how it learns from the angler
     UPROPERTY() FFishSigns Signs;
     bool IsSchooling() const { return Stock.SchoolSize > 1; }
     float BaitLike(EBait Bait) const;
@@ -501,6 +518,14 @@ public:
     bool IsNibbling() const { return State == EState::Nibble; }
     /** How it pushes others off a bait: its species' dominance and its size. */
     float Clout() const;
+    /**
+     * It learns: it grows cautious (Amount 0..1), most of all of Bait (or of none, -1); it forgets
+     * over the species' ForgetHours. Came off the hook - the full Fright; pricked - six tenths; felt the rig - a little.
+     */
+    void Frighten(float Amount, int32 Bait = -1);
+    /** How readily it goes for this bait now, 0..1: lower the more cautious it is, far lower for a bait that pricked it. */
+    float Willingness(EBait Bait) const;
+    float CautionNow() const { return Caution; }
     /** A bigger fish took over the bait it was trying: it gives way (and may come back). */
     void PushedOff(ALakeFish* By);
     /** 0..1 how afraid it is now of a predator close by (see SenseThreats). */
@@ -645,6 +670,8 @@ private:
     int32 PreyFry = -1;               // pike/perch: the fry shoal it strikes at
     EFishFood FeedOn = EFishFood::None; // what it went to feed on
     float FeedFound = 0;              // how much of it there was where it chose to feed
+    float Caution = 0;                // learnt from the angler (see Frighten)
+    float BaitShy[3] = {};            // of worm, maggot, bread
     float NextFoodCheck = 0;          // when it next sees whether the patch is eaten down
     bool bAtSpot = false;             // reached its feeding or resting spot
     bool bNear = true;                // full detail
@@ -698,6 +725,7 @@ private:
     friend class FLakeInteractionsTest;
     friend class FLakeFoodTest;
     friend class FLakeGroundbaitTest;
+    friend class FLakeLearningTest;
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;

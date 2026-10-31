@@ -139,6 +139,16 @@ void ALakeLife::Step(float DeltaSeconds)
     if (!FoodField.IsReady()) FoodField.Init();   // test worlds
     FoodField.Step(DeltaSeconds);
     UpdateBalls();
+    // Fishing pressure dies away.
+    PressurePending += DeltaSeconds;
+    if (PressurePending >= 1)
+    {
+        const float GameHour = ALakeWeather::DayMinutes * 60.0f / 24.0f;
+        const float Keep = FMath::Exp(-PressurePending * UE_LN2 / (PressureHours * GameHour));
+        for (FPressurePlace& P : Pressure) P.Amount *= Keep;
+        Pressure.RemoveAll([](const FPressurePlace& P) { return P.Amount < 0.02f; });
+        PressurePending = 0;
+    }
     Grid.Reset();
     Schools.Reset();
     AllFish.Reset();
@@ -515,7 +525,26 @@ void ALakeLife::StockPond()
 void ALakeLife::Restock(const ALakeFish* Gone)
 {
     if (!Gone || !HasAuthority()) return;
-    RestockLater(Gone->Species, Gone->GetSchool(), Gone->GetHomeAnchor(), Gone->GetHomeDrift(), 45, 0);
+    // Fish from elsewhere in the lake fill the gap over a few game hours, the longer at a much-fished place.
+    const float GameHour = ALakeWeather::DayMinutes * 60.0f / 24.0f;
+    const float Delay = RestockHours * GameHour * (1 + 0.5f * FMath::Min(4.0f, PressureAt(Gone->GetActorLocation())));
+    RestockLater(Gone->Species, Gone->GetSchool(), Gone->GetHomeAnchor(), Gone->GetHomeDrift(), Delay, 0);
+}
+
+void ALakeLife::AddPressure(const FVector& At, float Amount)
+{
+    if (Amount <= 0) return;
+    for (FPressurePlace& P : Pressure)
+        if (FVector2D::Distance(P.Location, FVector2D(At)) < 800) { P.Amount += Amount; return; }
+    Pressure.Add({ FVector2D(At), Amount });
+}
+
+float ALakeLife::PressureAt(const FVector& At) const
+{
+    float Sum = 0;
+    for (const FPressurePlace& P : Pressure)
+        Sum += P.Amount * (1 - FMath::SmoothStep(800.0f, 1500.0f, (float)FVector2D::Distance(P.Location, FVector2D(At))));
+    return Sum;
 }
 
 void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries)
@@ -861,6 +890,15 @@ void ALakeLife::LogFood()
             if (On[F]) Line += FString::Printf(TEXT(" %s %.0f%%"), LakeFood::Name((EFishFood)F), 100.0f * On[F] / Feeding);
         if (Feeding) Line += FString::Printf(TEXT(", at %.1f m (%.2f of the depth)"), Depth / Feeding, Column / Feeding);
         Line += FString::Printf(TEXT("; all %d: %.1f m from the bank over %.1f m of water"), All, Bank / All, Water / All);
+    }
+    // Fishing pressure and the fish that have learnt the hook.
+    if (!Pressure.IsEmpty())
+    {
+        float Most = 0;
+        for (const FPressurePlace& P : Pressure) Most = FMath::Max(Most, P.Amount);
+        int32 Wary = 0;
+        for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish) if (const ALakeFish* Fish = Weak.Get(); Fish && Fish->CautionNow() > 0.2f) ++Wary;
+        Line += FString::Printf(TEXT(" | pressure: %d places, most %.1f; %d fish wary of the hook"), Pressure.Num(), Most, Wary);
     }
     // Groundbait on the bottom.
     if (!FoodField.Groundbait().IsEmpty())

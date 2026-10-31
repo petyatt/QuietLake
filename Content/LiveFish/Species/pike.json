@@ -48,6 +48,7 @@
   },
   "diet":    { "insects": 0.05, "fry": 1.0, "fish": 0.7 },
   "dietBig": { "fry": 0.2, "fish": 1.0 },
+  "learning": { "fright": 0.9, "forgetHours": 24, "schoolShare": 0.0 },
   "mood": { "dawn": 0.95, "day": 0.6, "dusk": 0.9, "night": 0.12, "tempLow": 5, "tempBest": 17, "tempHigh": 27, "overcast": 0.6,
             "lightRain": 1.3, "heavyRain": 0.7, "ripple": 1.3, "strongWind": 0.75, "fog": 0.8, "front": 0.8 },
 

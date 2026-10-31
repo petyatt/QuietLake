@@ -30,7 +30,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait);
+Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
