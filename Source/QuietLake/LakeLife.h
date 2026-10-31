@@ -44,7 +44,7 @@ struct FFryShoal
 };
 
 /**
- * "Живой пруд" — the life of the pond. One actor watches over every fish:
+ * "Live Fish" — the life of the pond. One actor watches over every fish:
  *  - a spatial grid for neighbours (schools, predators and prey);
  *  - school leaders, whose decisions the whole school follows;
  *  - fry shoals in the shallows that perch drive and pike strike at;
@@ -67,6 +67,14 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     // --- server ---
+    /**
+     * Stock the pond at the start of a game (BeginPlay with ALakeGameMode): first the fish living
+     * at each fishing spot (a school of perch or roach, a pike by cover, crucian at the weedy
+     * spots), then the rest of each species spread over the lake as well as its water suits it.
+     */
+    void StockPond();
+    /** A fish was caught or eaten: after a while another of its species takes its place, in its school and its water. */
+    void Restock(const ALakeFish* Gone);
     /** Advance the pond: rebuild the grid, move the fry, update detail levels (Tick calls it; tests call it directly). */
     void Step(float DeltaSeconds);
     void ForEachFishNear(const FVector& P, float Radius, TFunctionRef<void(ALakeFish*)> Visit) const;
@@ -117,6 +125,21 @@ private:
     bool FryCanBe(const FVector2D& P) const;
     FVector FrySpotNear(const FVector2D& P, float Range);
     void LogStats();
+    /** Every few seconds: which fish would sense a bait cast 2-6 m out at each fishing spot. */
+    void SampleSpots();
+    void LogSpots();
+    /** Once, after the start: where each species lives (QUIET_LAKE_STOCK). */
+    void LogStock();
+    /** Water fish can be stocked in, on a 3 m grid, and how well it suits each species (LakeFish::HabitatScore). */
+    struct FStockPlace { FVector2D P; float Score[(int32)EFishSpecies::Count]; };
+    void BuildStockPlaces();
+    /** A stocking place for Species, drawn by how well the water suits it, among Candidates (all if empty), at least Spacing from Taken and Away from every player. */
+    bool DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candidates, const TArray<FVector2D>& Taken, float Spacing, float Away, FVector2D& Out);
+    ALakeFish* SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift);
+    void RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries);
+    TArray<FStockPlace> StockPlaces;
+    float StockRef[(int32)EFishSpecies::Count] = {};   // a good score for each species (80th percentile), to compare species
+    FRandomStream StockRandom;
     void RunPreview();
     void RunFishPreview();
     void RunWaterPreview();
@@ -142,8 +165,14 @@ private:
     TMap<int32, TArray<TWeakObjectPtr<ALakeFish>>> Schools;
     TArray<TWeakObjectPtr<ALakeFish>> AllFish;
     TArray<FVector> Players;
-    float Time = 0, NextDetail = 0, NextEvent = 0, NextLog = 0, NextSample = 0;
+    float Time = 0, NextDetail = 0, NextEvent = 0, NextLog = 0, NextSample = 0, NextSpotSample = 0;
+    bool bStockLogged = false;
     FStats Counters;
+    /** Fish in reach of each fishing spot, summed over the samples since the last log. */
+    struct FSpotWatch { int32 Samples = 0, Occupied = 0, Feeding = 0; float Fish[(int32)EFishSpecies::Count] = {}; float Nearest = 0; };
+    TArray<FSpotWatch> SpotWatch;
+    /** The schools stocked at each fishing spot (for the log). */
+    TArray<TArray<int32>> SpotSchools;
 public:
     /** How the fish swim, sampled on the server a few times a second (see LogMotion). */
     struct FMotionStats

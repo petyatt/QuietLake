@@ -5,7 +5,7 @@
 
 /**
  * The angler's screen: a small status card (message, catch, bait, depth, fishing spot), the line
- * tension and casting bars, the time and weather, fading key hints, and the F3 "Живой пруд" panel.
+ * tension and casting bars, the time and weather, fading key hints, and the F3 "Live Fish" panel.
  */
 UCLASS()
 class QUIETLAKE_API ALakeHUD : public AHUD
@@ -13,7 +13,7 @@ class QUIETLAKE_API ALakeHUD : public AHUD
     GENERATED_BODY()
 public:
     virtual void DrawHUD() override;
-    /** F3: the "Живой пруд" panel: what the fish are doing, recent signs on the water, markers over nearby fish. */
+    /** F3: the "Live Fish" panel: what the fish are doing, recent signs on the water, markers over nearby fish. */
     bool bShowLife = false;
 private:
     void DrawLifePanel(float S);

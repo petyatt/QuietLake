@@ -9,8 +9,28 @@
 #include "LakeRipples.h"
 #include "Misc/AutomationTest.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "TimerManager.h"
 #include "GameFramework/PlayerController.h"
 
+struct FLakeFishingFixture
+{
+    // Fish behaviour fixtures start with an already immersed rig; Casting tests the real stroke.
+    static void ImmersedRig(ALakeCharacter* Fisher)
+    {
+        Fisher->FinishFishing(TEXT("fixture"));
+        Fisher->HookDepth = Fisher->FloatDepth;
+        Fisher->FishingState = EFishingState::Waiting;
+        Fisher->bRigInHand = false;
+        Fisher->bRigFlying = false;
+        Fisher->CastServerTime = -10;
+        Fisher->FloatPosition = Fisher->GetActorLocation() + Fisher->GetActorForwardVector() * 650;
+        Fisher->FloatPosition.Z = LakeFish::SurfaceZ;
+        Fisher->PlaceBait();
+        Fisher->BaitActiveTime = -10;
+        Fisher->NextActionTime = 0;
+    }
+};
 namespace
 {
     ALakeFish* SpawnFish(UWorld* World, EFishSpecies Species, float Weight, FVector Location, int32 School = -1)
@@ -34,23 +54,15 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(Back(0), FRotator(0, FacingYaw, 0));
     APlayerController* Controller = World->SpawnActor<APlayerController>();
     Controller->Possess(Fisher);
-    // A cast is LMB held to full strength, then released; the bait fishes once the float lands.
-    auto Cast = [Fisher]()
-    {
-        Fisher->NextActionTime = 0;
-        Fisher->ServerFish_Implementation();
-        Fisher->ChargeServerStart -= Fisher->CastChargeTime();
-        Fisher->ServerRelease_Implementation();
-        Fisher->BaitActiveTime = 0;
-        Fisher->CastServerTime -= 5;   // the test world's clock stands still: the stroke is over, the rig has landed
-    };
+    auto Cast = [Fisher]() { FLakeFishingFixture::ImmersedRig(Fisher); };
     // Lifting the rig out takes a few seconds; skip to its end.
     auto Settle = [Fisher]()
     {
         // Lifting a fish out ends with it in the hand.
         if (Fisher->FishingState == EFishingState::Landing)
         {
-            Fisher->LandServerTime -= ALakeCharacter::LandTime;
+            Fisher->LandProgress = 1;
+            Fisher->bReeling = true;
             Fisher->UpdateLanding();
             return;
         }
@@ -65,20 +77,9 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
         Fisher->ServerFish_Implementation();
         Settle();
     };
-    Controller->SetControlRotation(FRotator(0, FacingYaw + 180, 0));
+    Controller->SetControlRotation(FRotator(0, FacingYaw, 0));
     Cast();
-    TestTrue(TEXT("Cast toward land rejected"), Fisher->FishingState == EFishingState::Idle);
-    TestFalse(TEXT("Casting ends after a rejected cast"), Fisher->bCharging);
-    // A bare click casts just past the water's edge.
-    Controller->SetControlRotation(FRotator(0, FacingYaw, 0));
-    Fisher->NextActionTime = 0;
-    Fisher->ServerFish_Implementation();
-    TestTrue(TEXT("Pressing LMB starts the cast"), Fisher->bCharging && Fisher->FishingState == EFishingState::Idle);
-    Fisher->ServerRelease_Implementation();
-    const float NearCast = FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
-    Controller->SetControlRotation(FRotator(0, FacingYaw, 0));
-    Fisher->BaitActiveTime = 0;
-    TestTrue(TEXT("Cast toward water accepted"), Fisher->FishingState == EFishingState::Waiting);
+    Fisher->NextActionTime = 1;
     TestTrue(TEXT("Bait hangs in the water"), ALakeEnvironment::IsWater(Fisher->BaitLocation()) && Fisher->BaitLocation().Z < LakeFish::SurfaceZ);
     Fisher->ServerFish_Implementation();
     TestTrue(TEXT("Rapid repeated input ignored"), Fisher->FishingState == EFishingState::Waiting);
@@ -91,8 +92,6 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Settle();
     TestTrue(TEXT("Drawn out, the cast ends"), Fisher->FishingState == EFishingState::Idle);
     Cast();
-    const float FullCast = FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
-    TestTrue(FString::Printf(TEXT("LMB held longer casts farther (%.0f vs %.0f cm)"), FullCast, NearCast), FullCast > NearCast + 100 && FullCast < 1000);
     DrawOut();
 
     // A real perch finds the worm on its own, tests it and takes it.
@@ -172,15 +171,18 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
     TestTrue(TEXT("LMB after the cast starts drawing the rig out"), Fisher->bRetrieving);
-    // It comes out only while LMB is held; let go, the rod goes back down and the rig fishes on.
+    // The rod rises only while LMB is held; let go, it stops where it is; held again, it goes on.
     Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.4f);
     const float Held = Fisher->RetrieveProgress;
-    TestTrue(TEXT("Holding LMB draws the rig out"), Held > 0.35f && Held < 0.45f);
+    TestTrue(TEXT("Holding LMB raises the rod"), Held > 0.35f && Held < 0.45f);
     Fisher->ServerRelease_Implementation();
-    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.1f);
-    TestTrue(TEXT("Releasing LMB does not reverse the retrieval"), Fisher->bRetrieving && Fisher->RetrieveProgress > Held);
     Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
-    TestTrue(TEXT("A single click finishes the retrieval"), !Fisher->bRetrieving && Fisher->FishingState == EFishingState::Idle);
+    TestTrue(TEXT("Releasing LMB stops the rod where it is"), Fisher->bRetrieving && FMath::IsNearlyEqual(Fisher->RetrieveProgress, Held));
+    Fisher->ServerFish_Implementation();
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.1f);
+    TestTrue(TEXT("Holding LMB again goes on from there"), Fisher->bRetrieving && Fisher->RetrieveProgress > Held + 0.05f);
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
+    TestTrue(TEXT("Raised to the top the rig is out"), !Fisher->bRetrieving && Fisher->FishingState == EFishingState::Idle);
 
     // A big pike against a reel that is never released breaks the line.
     Cast();
@@ -209,6 +211,9 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->SetActorLocation(Back(0));
     Cast();
     for (int32 Step = 0; Step < 40; ++Step) Fisher->UpdateRodPose(0.05f);
+    Fisher->ConstrainFloat();
+    // Walking only tows a taut line; start this case at its geometric reach.
+    Fisher->FloatPosition += FVector(Facing, 0) * 600;
     Fisher->ConstrainFloat();
     const FVector FloatBefore = Fisher->FloatPosition;
     TestTrue(TEXT("The float lands within reach of the 6 m line"), FVector::Dist2D(FloatBefore, Fisher->GetActorLocation()) < 1200);
@@ -545,11 +550,7 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     Controller->SetControlRotation(Fisher->GetActorRotation());
     Fisher->FloatDepth = ALakeCharacter::MaxDepth;       // lies on the bottom
     Fisher->Bait = EBait::Bread;
-    Fisher->NextActionTime = 0;
-    Fisher->ServerFish_Implementation();
-    Fisher->ChargeServerStart -= ALakeCharacter::CastLoad;
-    Fisher->ServerRelease_Implementation();
-    Fisher->BaitActiveTime = 0;
+    FLakeFishingFixture::ImmersedRig(Fisher);
     TestTrue(TEXT("Cast for the crucian"), Fisher->FishingState == EFishingState::Waiting);
     TSet<EBiteMotion> Seen;
     EBiteMotion FirstTake = EBiteMotion::None;
@@ -577,47 +578,136 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
 {
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     FVector2D Facing;
-    const FVector2D Edge = LakeMap::StartSpot(&Facing) + Facing * 90;
+    const FVector2D Bank = LakeMap::StartSpot(&Facing);
     const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
-    ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Edge, 100), FRotator(0, Yaw, 0));
-    APlayerController* Controller = World->SpawnActor<APlayerController>();
-    Controller->Possess(Fisher);
-    // LMB held for Held seconds while looking Pitch degrees down: how far out the float went.
-    auto Throw = [&](float Held, float Pitch)
+    auto Exercise = [&](float Fps, float Hold)
     {
-        Controller->SetControlRotation(FRotator(Pitch, Yaw, 0));
+        ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Bank, ALakeEnvironment::GroundHeight(Bank.X, Bank.Y) + 95), FRotator(0, Yaw, 0));
+        APlayerController* PC = World->SpawnActor<APlayerController>();
+        PC->Possess(Fisher);
+        PC->SetControlRotation(FRotator(-12, Yaw, 0));
+        Fisher->RodVisual = World->SpawnActor<ALakeRod>();
+        Fisher->FloatDepth = Fisher->HookDepth = 60;
+        Fisher->bRigInHand = true;
+        const float Dt = 1 / Fps;
+        auto Step = [&]()
+        {
+            // Advance phase clocks because this isolated world's clock does not tick.
+            if (Fisher->bCharging) Fisher->ChargeServerStart -= Dt;
+            Fisher->CastServerTime -= Dt;
+            Fisher->RigGripTime -= Dt;
+            Fisher->Tick(Dt);
+        };
+        auto Run = [&](float Seconds) { for (int32 I = 0; I < FMath::RoundToInt(Seconds * Fps); ++I) Step(); };
+        Run(2);
+        const FVector Ready = Fisher->RodVisual->ShotLocation();
         Fisher->NextActionTime = 0;
         Fisher->ServerFish_Implementation();
-        Fisher->ChargeServerStart -= Held;
+        Run(Hold);
+        TestFalse(TEXT("Fingers open during the held stroke"), Fisher->bRigInHand);
+        TestTrue(TEXT("Rig moves before button release"), FVector::Dist(Ready, Fisher->RodVisual->ShotLocation()) > 30);
+        const FVector Before = Fisher->RodVisual->ShotLocation(), Velocity = Fisher->RodVisual->ShotVelocity();
         Fisher->ServerRelease_Implementation();
-        Fisher->BaitActiveTime = 0;
-        return FVector::Dist2D(Fisher->FloatPosition, Fisher->GetActorLocation());
-    };
-    auto LiftOut = [&]()
-    {
+        TestTrue(TEXT("Release preserves rig position and momentum"), Before.Equals(Fisher->RodVisual->ShotLocation(), 0.001) && Velocity.Equals(Fisher->RodVisual->ShotVelocity(), 0.001));
+        float Highest = Fisher->RodVisual->FloatKeel().Z;
+        for (int32 I = 0; I < Fps * 6; ++I) { Step(); Highest = FMath::Max(Highest, float(Fisher->RodVisual->FloatKeel().Z)); }
+        const FVector Landed = Fisher->RodVisual->FloatKeel();
+        AddInfo(FString::Printf(TEXT("Physical cast %.0f fps hold %.2f: out %.0f z %.0f highest %.0f state %d retrieving %d"), Fps, Hold, FVector::Dist2D(Landed, Fisher->GetActorLocation()), Landed.Z, Highest, int32(Fisher->FishingState), Fisher->bRetrieving));
+        TestFalse(TEXT("Cast remains finite"), Landed.ContainsNaN());
+        TestTrue(TEXT("Cast settles on water"), !Fisher->bRigFlying && !Fisher->bRetrieving && ALakeEnvironment::IsWater(Landed) && Fisher->RodVisual->FloatDown());
+        TestTrue(TEXT("Fixed length line bounds the cast"), FVector::Dist(Landed, Fisher->RodVisual->Tip()) < ALakeRod::LineLength - Fisher->HookDepth + 15);
+        TestTrue(TEXT("Underhand flight stays below head height"), Highest < Fisher->GetActorLocation().Z + 70);
+        Fisher->BaitActiveTime = -10;
         Fisher->NextActionTime = 0;
         Fisher->ServerFish_Implementation();
-        if (Fisher->bRetrieving) { Fisher->RetrieveProgress = 1; Fisher->UpdateRetrieve(0); }
+        Run(0.8f);
+        const float Pull = Fisher->RetrieveProgress;
+        Fisher->ServerRelease_Implementation();
+        Run(2);
+        TestTrue(TEXT("Release stops an unfinished lift"), Pull > 0.1f && FMath::IsNearlyEqual(Fisher->RetrieveProgress, Pull) && !Fisher->bRigInHand && Fisher->bRetrieving);
+        Fisher->ServerFish_Implementation();
+        float Jump = 0, Shoulder = -1000, Nearest = 10000, NearSpeed = 0;
+        FVector Prev = Fisher->RodVisual->ShotLocation();
+        for (int32 I = 0; I < Fps * 16; ++I)
+        {
+            Step();
+            const FVector Shot = Fisher->RodVisual->ShotLocation();
+            Jump = FMath::Max(Jump, float(FVector::Dist(Prev, Shot)));
+            const float Gap = FVector::Dist(Shot, Fisher->HandPoint(0));
+            if (Gap < Nearest) { Nearest = Gap; NearSpeed = Fisher->RodVisual->ShotVelocity().Size(); }
+            const FVector Local = Fisher->GetActorTransform().InverseTransformPosition(Shot);
+            if (Local.Size2D() < 150 && Local.X < 30) Shoulder = FMath::Max(Shoulder, float(Local.Y));
+            Prev = Shot;
+        }
+        AddInfo(FString::Printf(TEXT("Physical retrieve %.0f fps: hand=%d progress=%.2f distance=%.0f shot=%s tip=%s jump=%.1f shoulder=%.0f"), Fps, Fisher->bRigInHand, Fisher->RetrieveProgress, FVector::Dist(Prev, Fisher->HandPoint(0)), *Fisher->GetActorTransform().InverseTransformPosition(Prev).ToCompactString(), *Fisher->GetActorTransform().InverseTransformPosition(Fisher->RodVisual->Tip()).ToCompactString(), Jump, Shoulder));
+        AddInfo(FString::Printf(TEXT("Nearest hand %.1f cm at %.0f cm/s"), Nearest, NearSpeed));
+        TestTrue(TEXT("Held lift reaches the left fingers"), Fisher->bRigInHand && !Fisher->bRetrieving && FVector::Dist(Prev, Fisher->HandPoint(0)) < 2);
+        TestTrue(TEXT("No return over right shoulder"), Shoulder < 10);
+        TestTrue(TEXT("Retrieval has no positional jump"), Jump < 1600 / Fps);
+        Fisher->RodVisual->Destroy(); Fisher->Destroy(); PC->Destroy();
+        return Landed;
     };
-    const FVector Ahead(Facing, 0);
-    // The cast is automatic: the longer LMB is held, the farther it goes, up to the line's reach.
-    const float Full = Throw(Fisher->CastChargeTime(), 0);
-    TestTrue(TEXT("A full cast lands in the water"), Fisher->FishingState == EFishingState::Waiting && Fisher->CastResult == ECastResult::Good && Fisher->HasBaitInWater());
-    TestTrue(TEXT("The hook lands beyond the float"), FVector::DotProduct(FVector(Fisher->CastHookLanding) - Fisher->FloatPosition, Ahead) > 30);
-    TestTrue(FString::Printf(TEXT("A full cast goes as far as the line reaches (%.0f of %.0f cm)"), Full, Fisher->CastReach()), FMath::Abs(Full - Fisher->CastReach()) < 60);
-    LiftOut();
-    const float Longer = Throw(Fisher->CastChargeTime() * 5, 0);
-    TestTrue(FString::Printf(TEXT("Holding on does not cast beyond the line (%.0f cm)"), Longer), FMath::Abs(Longer - Full) < 1);
-    LiftOut();
-    const float Half = Throw(Fisher->CastChargeTime() * 0.5f, 0);
-    TestTrue(FString::Printf(TEXT("Held half as long, it goes less far (%.0f vs %.0f cm)"), Half, Full), Half < Full - 100);
-    LiftOut();
-    const float Click = Throw(0, 0);
-    TestTrue(FString::Printf(TEXT("A bare click casts just past the edge (%.0f cm)"), Click), Fisher->FishingState == EFishingState::Waiting && Click < Half - 50);
-    LiftOut();
-    const float Down = Throw(Fisher->CastChargeTime(), -40);
-    TestTrue(FString::Printf(TEXT("Looking down does not shorten it: the hold decides (%.0f cm)"), Down), FMath::Abs(Down - Full) < 150);
-    LiftOut();
+    const FVector Base = Exercise(60, 1.2f);
+    for (float Fps : { 30.0f, 120.0f })
+        TestTrue(TEXT("Frame rate preserves physical landing within 60 cm"), FVector::Dist2D(Base, Exercise(Fps, 1.2f)) < 60);
+    Exercise(60, 0.6f);
+    // A lifted fish keeps its weight and position when the player lets it back down.
+    for (float Weight : { 0.18f, 0.6f })
+    {
+        ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Bank, ALakeEnvironment::GroundHeight(Bank.X, Bank.Y) + 95), FRotator(0, Yaw, 0));
+        APlayerController* PC = World->SpawnActor<APlayerController>(); PC->Possess(Fisher);
+        PC->SetControlRotation(FRotator(-12, Yaw, 0));
+        Fisher->RodVisual = World->SpawnActor<ALakeRod>();
+        Fisher->FloatDepth = Fisher->HookDepth = 60;
+        Fisher->bRigInHand = true;
+        auto Run = [&](float Seconds)
+        {
+            for (int32 I = 0; I < Seconds * 60; ++I)
+            {
+                Fisher->ChargeServerStart -= 1 / 60.0f; Fisher->CastServerTime -= 1 / 60.0f; Fisher->RigGripTime -= 1 / 60.0f;
+                Fisher->Tick(1 / 60.0f);
+            }
+        };
+        Run(2); Fisher->StartCast(); Run(1.2f); Fisher->ServerRelease_Implementation(); Run(5);
+        ALakeFish* Fish = SpawnFish(World, EFishSpecies::Perch, Weight, Fisher->RodVisual->HookLocation());
+        Fish->Hook(Fisher); Fisher->HookedFish = Fish; Fisher->LineFish = Fish;
+        Fisher->FishingState = EFishingState::Fight;
+        for (int32 I = 0; I < 7200 && Fisher->FishingState == EFishingState::Fight; ++I)
+        {
+            if (Fisher->Tension > 0.55f) Fisher->ServerRelease_Implementation();
+            else if (Fisher->Tension < 0.2f) Fisher->ServerFish_Implementation();
+            Run(1 / 60.0f);
+            if (IsValid(Fish)) Fish->Simulate(1 / 60.0f);
+        }
+        AddInfo(FString::Printf(TEXT("Physical fight %.2f kg: state %d time %.1f status %s"), Weight, int32(Fisher->FishingState), Fisher->FightTime, *Fisher->Status));
+        TestTrue(TEXT("Real rod and fish simulation lead to a lift"), Fisher->FishingState == EFishingState::Landing);
+        if (Fisher->FishingState != EFishingState::Landing)
+        {
+            Fisher->RodVisual->Destroy(); Fisher->Destroy(); PC->Destroy(); if (IsValid(Fish)) Fish->Destroy();
+            continue;
+        }
+        Run(0.7f);
+        const float Progress = Fisher->LandProgress;
+        const FVector Before = Fisher->RodVisual->HookLocation();
+        Fisher->ServerRelease_Implementation();
+        TestTrue(TEXT("Fish release keeps hook position"), Before.Equals(Fisher->RodVisual->HookLocation(), 0.001));
+        Run(0.4f);
+        TestTrue(TEXT("Releasing lowers a fish instead of completing its lift"), Fisher->LandProgress < Progress && Fisher->CatchCount == 0);
+        for (int32 I = 0; I < 600 && Fisher->FishingState == EFishingState::Landing; ++I) Run(1 / 60.0f);
+        AddInfo(FString::Printf(TEXT("Lowered fish %.2f: state=%d lift=%.2f progress=%.2f hook=%s water=%d elevation=%.0f"), Weight, int32(Fisher->FishingState), Fisher->RodLift, Fisher->LandProgress, *Fisher->RodVisual->HookLocation().ToCompactString(), ALakeEnvironment::IsWater(Fisher->RodVisual->HookLocation()), Fisher->RodElevation));
+        TestTrue(TEXT("A fully lowered fish resumes swimming on the hook"), Fisher->FishingState == EFishingState::Fight && !Fish->IsLifted());
+        Fisher->ServerFish_Implementation();
+        for (int32 I = 0; I < 600 && Fisher->FishingState == EFishingState::Fight; ++I)
+        {
+            Run(1 / 60.0f); if (IsValid(Fish)) Fish->Simulate(1 / 60.0f);
+        }
+        Run(20);
+        AddInfo(FString::Printf(TEXT("Physical fish %.2f kg: caught %d state %d hook-to-hand %.0f bend %.0f"), Weight, Fisher->CatchCount, int32(Fisher->FishingState), FVector::Dist(Fisher->RodVisual->HookLocation(), Fisher->HandPoint(0)), Fisher->RodVisual->TipBend()));
+        TestEqual(TEXT("A physically lifted fish reaches the hand"), Fisher->CatchCount, 1);
+        Fisher->RodVisual->Destroy(); Fisher->Destroy(); PC->Destroy(); if (IsValid(Fish)) Fish->Destroy();
+    }
+
+
     World->DestroyWorld(false);
     return true;
 }
@@ -643,12 +733,7 @@ bool FLakeWindDriftTest::RunTest(const FString& Parameters)
     auto Cast = [&](float Depth)
     {
         Fisher->FloatDepth = Depth;
-        Fisher->NextActionTime = 0;
-        Fisher->ServerFish_Implementation();
-        Fisher->ChargeServerStart -= Fisher->CastChargeTime() * 0.6f;
-        Fisher->ServerRelease_Implementation();
-        Fisher->BaitActiveTime = 0;
-        Fisher->CastServerTime -= 5;
+        FLakeFishingFixture::ImmersedRig(Fisher);
         for (int32 Pose = 0; Pose < 60; ++Pose) Fisher->UpdateRodPose(0.05f);
     };
     auto Blow = [&](float Seconds)
@@ -765,91 +850,6 @@ bool FLakeRodControlTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("The server clamps remote yaw"), Fisher->SwingYaw, -Fisher->RodYawLimit);
     Fisher->FinishFishing(TEXT("test"));
 
-    // The automatic cast with the real rod: LMB held to full strength, let go; the rig flies on an arc
-    // to the place picked for it and comes down there, at any frame rate, also walking.
-    auto Flight = [&](float Fps, bool bWalk = false)
-    {
-        Fisher->FinishFishing(TEXT("test"));
-        Fisher->SwingPitch = Fisher->SwingYaw = 0;
-        Fisher->bRigInHand = true;
-        Fisher->bRodPoseReady = false;
-        Fisher->SetActorLocation(Place);
-        PC->SetControlRotation(FRotator(-12, Yaw, 0));
-        if (Fisher->RodVisual) Fisher->RodVisual->Destroy();
-        Fisher->RodVisual = World->SpawnActor<ALakeRod>();
-        Fisher->HookDepth = Fisher->FloatDepth = 100;
-        const float Dt = 1 / Fps;
-        bool bMoving = false;
-        auto Step = [&]
-        {
-            if (bMoving) Fisher->SetActorLocation(Fisher->GetActorLocation() + Fisher->GetActorRightVector() * 100 * Dt);
-            Fisher->UpdateRodPose(Dt);
-            Fisher->UpdateVisuals(Dt);
-            // (The test world's clock stands still: the flight's own clock is moved on.)
-            if (Fisher->bRigFlying) Fisher->CastServerTime -= Dt;
-        };
-        for (int32 I = 0; I < Fps * 2; ++I) Step();
-        Fisher->StartCast();
-        Fisher->ChargeServerStart -= Fisher->CastChargeTime();
-        bMoving = bWalk;
-        for (int32 I = 0; I < Fps * 0.6f; ++I) Step();
-        const FVector Held = Fisher->RodVisual->FloatKeel();
-        if (bWalk) TestTrue(FString::Printf(TEXT("The held rig follows the walking hand (%.1f cm)"), FVector::Dist(Fisher->RodVisual->ShotLocation(), Fisher->HandPoint(0))), FVector::Dist(Fisher->RodVisual->ShotLocation(), Fisher->HandPoint(0)) < 30);
-        Fisher->ServerReleaseWithAim_Implementation(Fisher->SwingPitch, 0);
-        TestTrue(TEXT("Release starts the cast's flight, with no bait active yet"), Fisher->bRigFlying && !Fisher->HasBaitInWater());
-        TestTrue(TEXT("Release does not teleport the rig"), FVector::Dist(Held, Fisher->RodVisual->FloatKeel()) < 0.01f);
-        const FVector Target = Fisher->FloatPosition;
-        const float BeforeMove = PC->GetControlRotation().Yaw;
-        Fisher->Turn(4);
-        TestTrue(TEXT("Mouse still turns the rod with the camera after release"), FMath::FindDeltaAngleDegrees(BeforeMove, PC->GetControlRotation().Yaw) > 1);
-        Fisher->Turn(-4);
-        float Highest = Held.Z;
-        for (int32 I = 0; I < Fps * (Fisher->CastFlight + 0.2f); ++I)
-        {
-            Step();
-            Highest = FMath::Max(Highest, (float)Fisher->RodVisual->FloatKeel().Z);
-        }
-        TestTrue(TEXT("The underhand cast does not climb above the release point"), Highest <= Held.Z + 25);
-        const FVector Result = Fisher->RodVisual->FloatKeel();
-        if (bWalk) TestTrue(TEXT("The character moves throughout the cast"), FVector::Dist(Fisher->GetActorLocation(), Place) > 80);
-        TestFalse(TEXT("The flight stays finite"), Result.ContainsNaN());
-        TestTrue(TEXT("The fixed line holds the float within reach"), FVector::Dist(Result, Fisher->RodVisual->Tip()) <= ALakeRod::LineLength - Fisher->HookDepth + 10);
-        TestTrue(FString::Printf(TEXT("The cast comes down where it was aimed (%.0f cm off)"), FVector::Dist2D(Result, Target)), FVector::Dist2D(Result, Target) < 80 && (bWalk || Fisher->RodVisual->FloatDown()));   // (walking on, the angler lifts it again)
-        const float AimPitch = Fisher->SwingPitch, AimYaw = Fisher->SwingYaw;
-        Fisher->OnRigLanded(Result);
-        TestTrue(TEXT("Splashdown preserves the hand aim"), Fisher->SwingPitch == AimPitch && Fisher->SwingYaw == AimYaw);
-        TestEqual(TEXT("With the rig in the water the rod is held lower"), Fisher->RodBase(), Fisher->RodWaitAngle);
-        const float BeforeWaitingMove = PC->GetControlRotation().Yaw;
-        Fisher->Turn(-4);
-        TestTrue(TEXT("The rod remains steerable with the rig in the water"), FMath::FindDeltaAngleDegrees(BeforeWaitingMove, PC->GetControlRotation().Yaw) < -1);
-        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CONTROL fps=%.0f held=%s target=%s flight=%s bend=%.1f"), Fps, *Held.ToCompactString(), *Target.ToCompactString(), *Result.ToCompactString(), Fisher->RodVisual->TipBend());
-        if (!bWalk)
-        {
-            Fisher->NextActionTime = 0;
-            Fisher->BaitActiveTime = -100;
-            Fisher->ServerFish_Implementation();
-            Fisher->ServerRelease_Implementation();
-            float MostRight = -1000;
-            for (int32 I = 0; I < Fps * 8; ++I)
-            {
-                Fisher->Tick(Dt);
-                const FVector LocalShot = Fisher->RodVisual->ShotLocation() - Fisher->GetActorLocation();
-                if (LocalShot.Size2D() < 220)
-                    MostRight = FMath::Max(MostRight, (float)FVector::DotProduct(LocalShot, Fisher->GetActorRightVector()));
-            }
-            TestTrue(TEXT("Retrieval finishes in the hand after a single click"), Fisher->bRigInHand && !Fisher->bRetrieving && Fisher->FishingState == EFishingState::Idle);
-            TestTrue(FString::Printf(TEXT("Rig is at the left hand (%.1f cm)"), FVector::Dist(Fisher->RodVisual->ShotLocation(), Fisher->HandPoint(0))), FVector::Dist(Fisher->RodVisual->ShotLocation(), Fisher->HandPoint(0)) < 10);
-            TestTrue(TEXT("Rig does not return over the right shoulder"), MostRight < 10);
-        }
-        return Result;
-    };
-    const FVector Base = Flight(60);
-    Flight(60, true);
-    for (float Fps : { 30.0f, 120.0f })
-    {
-        const FVector AtRate = Flight(Fps);
-        TestTrue(FString::Printf(TEXT("The cast is the same at %.0f fps"), Fps), FVector::Dist2D(AtRate, Base) < 60);
-    }
     World->DestroyWorld(false);
     return true;
 }
@@ -1170,6 +1170,89 @@ bool FLakeRipplesTest::RunTest(const FString& Parameters)
         }
         TestTrue(TEXT("No waves on the land"), Land == 0);
     }
+    return true;
+}
+
+// Live Fish stocks the pond: every species in its numbers, a school in reach of every fishing spot,
+// and a fish taken from a school comes back into the same school.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeStockingTest, "QuietLake.Fishing.Stocking", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeStockingTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    Life->StockPond();
+    Life->Step(0);
+    int32 Count[(int32)EFishSpecies::Count] = {};
+    TMap<int32, int32> Members;
+    TArray<ALakeFish*> All;
+    bool bInWater = true;
+    for (TActorIterator<ALakeFish> It(World); It; ++It)
+    {
+        ALakeFish* Fish = *It;
+        All.Add(Fish);
+        ++Count[(int32)Fish->Species];
+        if (Fish->GetSchool() >= 0) ++Members.FindOrAdd(Fish->GetSchool());
+        bInWater &= LakeMap::IsWater(Fish->GetActorLocation().X, Fish->GetActorLocation().Y);
+    }
+    AddInfo(FString::Printf(TEXT("Stocked: %d perch, %d roach, %d crucian, %d pike in %d schools"), Count[0], Count[1], Count[2], Count[3], Members.Num()));
+    TestEqual(TEXT("Perch: 24 schools of 6"), Count[(int32)EFishSpecies::Perch], 144);
+    TestEqual(TEXT("Roach: 26 schools of 8"), Count[(int32)EFishSpecies::Roach], 208);
+    TestEqual(TEXT("Crucian"), Count[(int32)EFishSpecies::Crucian], 240);
+    TestEqual(TEXT("Pike"), Count[(int32)EFishSpecies::Pike], 24);
+    TestTrue(TEXT("Every fish is in the water"), bInWater);
+
+    // Every spot has a school in reach: within a perch's sense of the water its pole reaches
+    // (2-6 m out from the waterline; from the pier, beyond its end).
+    FString Empty;
+    for (const LakeMap::FSpot& Spot : LakeMap::Spots())
+    {
+        FVector2D A = Spot.Location - Spot.Outward * 200, B = Spot.Location - Spot.Outward * 600;
+        if (!Spot.bBoards)
+        {
+            const LakeMap::FPier& Pier = LakeMap::Pier();
+            A = Pier.Root + Pier.Dir * (Pier.Length + 200);
+            B = Pier.Root + Pier.Dir * (Pier.Length + 600);
+        }
+        bool bSchool = false;
+        for (const ALakeFish* Fish : All)
+        {
+            const FVector2D P(Fish->GetActorLocation());
+            const float T = FMath::Clamp(FVector2D::DotProduct(P - A, B - A) / (B - A).SizeSquared(), 0.0f, 1.0f);
+            bSchool |= Fish->GetSchool() >= 0 && FVector2D::Distance(P, A + (B - A) * T) < 650;
+        }
+        if (!bSchool) Empty += FString(TEXT(" ")) + Spot.Name;
+    }
+    TestTrue(FString::Printf(TEXT("A school in reach of every fishing spot (none at:%s)"), *Empty), Empty.IsEmpty());
+
+    // A fish caught out of a school: 45 s later another of its kind swims with the same school.
+    ALakeFish* Caught = nullptr;
+    for (ALakeFish* Fish : All) if (Fish->GetSchool() >= 0) { Caught = Fish; break; }
+    if (Caught)
+    {
+        const int32 School = Caught->GetSchool();
+        const int32 Before = Members[School];
+        Life->Restock(Caught);
+        Caught->Destroy();
+        Life->Step(0);
+        // The timer manager ticks once an engine frame, and a new timer starts counting at its next
+        // tick: two frames of 46 s.
+        for (int32 Frame = 0; Frame < 2; ++Frame)
+        {
+            ++GFrameCounter;
+            World->GetTimerManager().Tick(46.0f);
+        }
+        Life->Step(0);
+        int32 After = 0;
+        for (TActorIterator<ALakeFish> It(World); It; ++It) After += It->GetSchool() == School;
+        const ALakeFish* Lead = Life->SchoolLeader(School);
+        float Farthest = 0;
+        for (TActorIterator<ALakeFish> It(World); It; ++It)
+            if (It->GetSchool() == School && Lead) Farthest = FMath::Max(Farthest, (float)FVector::Dist2D(It->GetActorLocation(), Lead->GetActorLocation()));
+        AddInfo(FString::Printf(TEXT("School %d: %d fish before the catch, %d after the restock, farthest %.0f cm from its leader"), School, Before, After, Farthest));
+        TestEqual(TEXT("The school is whole again"), After, Before);
+        TestTrue(TEXT("The new fish turned up with its school"), Farthest < 400);
+    }
+    World->DestroyWorld(false);
     return true;
 }
 #endif

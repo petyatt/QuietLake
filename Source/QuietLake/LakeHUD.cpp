@@ -60,16 +60,9 @@ void ALakeHUD::DrawHUD()
 
     // Line tension while fighting a fish.
     const float BarW = 360 * S, BarH = 8 * S, BarX = (Canvas->ClipX - BarW) / 2, BarY = Canvas->ClipY - 70 * S;
-    // The cast's strength while LMB is held: how far the rig will go.
     if (Fisher->bCharging)
     {
-        const float Charge = Fisher->CastCharge();
-        FVector Target;
-        const bool bWater = Fisher->CastTargetFor(Charge, Target);
-        DrawRect(FLinearColor(0, 0, 0, 0.4f), BarX, BarY, BarW, BarH);
-        DrawRect(bWater ? FLinearColor(0.45f, 0.7f, 0.95f) : FLinearColor(0.95f, 0.45f, 0.3f), BarX, BarY, BarW * Charge, BarH);
-        const FString Label = bWater ? FString::Printf(TEXT("Заброс: %.1f м"), FVector::Dist2D(Target, Fisher->GetActorLocation()) / 100)
-                                     : FString(TEXT("Заброс: там берег"));
+        const FString Label(TEXT("Маятниковый мах — отпустите ЛКМ, чтобы опустить снасть"));
         Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
     }
     if (Fisher->FishingState == EFishingState::Fight)
@@ -107,14 +100,14 @@ void ALakeHUD::DrawHUD()
     const float HintAlpha = FMath::Clamp((15.0f - (Now - PlayStart)) / 2.0f, 0.0f, 1.0f);
     if (HintAlpha > 0)
     {
-        const FString Hint = TEXT("Мышь — взгляд и удилище   ·   ЛКМ держать — дальше заброс, отпустить — забросить   ·   ЛКМ после заброса — плавно вытащить в левую руку   ·   ЛКМ с рыбой — держать и отпускать на рывках   ·   ПКМ — подсечка   ·   Q — удилище   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   Esc — меню");
+        const FString Hint = TEXT("Мышь — взгляд и удилище   ·   ЛКМ держать — мах / подъём   ·   отпустить — опустить снасть   ·   ЛКМ с рыбой — держать и отпускать на рывках   ·   ПКМ — подсечка   ·   Q — удилище   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   Esc — меню");
         Text(Hint, FLinearColor(0.85f, 0.87f, 0.85f, 0.75f * HintAlpha), Canvas->ClipX - Width(Hint, 0.75f) - 28 * S, WeatherTop - 30 * S, 0.75f);
     }
     if (bShowLife) DrawLifePanel(S);
 }
 void ALakeHUD::DrawLifePanel(float S)
 {
-    // "Живой пруд": what every species is doing now, the latest signs seen on the water, and
+    // "Live Fish": what every species is doing now, the latest signs seen on the water, and
     // markers over the fish within 30 m (green: feeding or hunting, blue: resting, grey: cruising).
     UFont* Font = GEngine->GetMediumFont();
     const ALakeLife* Life = ALakeLife::Get(GetWorld());
@@ -138,7 +131,7 @@ void ALakeHUD::DrawLifePanel(float S)
         DrawRect(GoalColour[(int32)Fish->GetGoal()].CopyWithNewOpacity(0.85f), Screen.X - Dot / 2, Screen.Y - Dot / 2, Dot, Dot);
     }
     TArray<TPair<FString, FLinearColor>> Lines;
-    Lines.Add({ TEXT("Живой пруд  (F3)"), FLinearColor(0.95f, 0.94f, 0.9f) });
+    Lines.Add({ TEXT("Live Fish  (F3)"), FLinearColor(0.95f, 0.94f, 0.9f) });
     for (int32 Sp = 0; Sp < (int32)EFishSpecies::Count; ++Sp)
     {
         const EFishSpecies Species = (EFishSpecies)Sp;

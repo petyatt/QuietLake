@@ -12,7 +12,7 @@ UENUM()
 enum class EBait : uint8 { Worm, Maggot, Bread, Count UMETA(Hidden) };
 
 /**
- * What a free fish is doing with its day (see ALakeLife, "Живой пруд"): feeding (predators hunt),
+ * What a free fish is doing with its day (see ALakeLife, "Live Fish"): feeding (predators hunt),
  * resting in cover, or cruising its patch of water. Chosen from hunger, tiredness, the species'
  * daily rhythm and the weather; school members follow their leader.
  */
@@ -258,6 +258,7 @@ public:
     void DropBait();
     /** Drawn out of the water on the line (server): from now on the angler's rod carries it. */
     void LiftOut();
+    void LowerIntoWater(FVector LineVelocity);
     bool IsLifted() const { return bLifted; }
     /**
      * Out of the water on the line: placed on every machine from the rod's simulated hook. It hangs
@@ -278,6 +279,13 @@ public:
     // --- daily life (see ALakeLife) ---
     EFishGoal GetGoal() const { return Goal; }
     int32 GetSchool() const { return School; }
+    /**
+     * Where the pond stocked this fish (its school's or its own place) and how far its home may move
+     * from there with the weather. Homes move around the anchor, so a school stays in its water.
+     */
+    FVector GetHomeAnchor() const { return HomeAnchor; }
+    float GetHomeDrift() const { return HomeDrift; }
+    void SetHomeDrift(float Drift) { HomeDrift = Drift; }
     float GetHunger() const { return Hunger; }
     float GetEnergy() const { return Energy; }
     /** Free to live its life: not testing, holding or hooked on anyone's bait, not fleeing. */
@@ -350,6 +358,8 @@ private:
     EState State = EState::Roam;
     int32 School = -1;
     FVector HomePoint, RoamTarget, Vel = FVector::ZeroVector;
+    FVector HomeAnchor = FVector::ZeroVector;
+    float HomeDrift = 2500;
     FVector FleeFrom;
     float StateTime = 0, FleeTime = 0, NextThink = 0, Hunger = 1, Effort = 0;
     float Stamina = 1, MaxStamina = 1, BurstTime = 0, Phase = 0;

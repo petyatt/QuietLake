@@ -316,6 +316,39 @@ namespace
         return Table[UE_ARRAY_COUNT(Table) - 1][1];
     }
 
+    /** Along the bank and across it (positive inland) relative to a spot. */
+    FVector2D SpotFrame(const FSpot& Spot, const FVector2D& P)
+    {
+        const FVector2D Local = P - Spot.Location;
+        return FVector2D(FVector2D::DotProduct(Local, FVector2D(-Spot.Outward.Y, Spot.Outward.X)), FVector2D::DotProduct(Local, Spot.Outward));
+    }
+    /** 1 in the water in front of a fishing spot with boards (its casting lane), fading out 8-12 m off the bank. */
+    float SpotLane(const FVector2D& P)
+    {
+        float Lane = 0;
+        for (const FSpot& Spot : SpotList())
+        {
+            if (!Spot.bBoards) continue;
+            const FVector2D F = SpotFrame(Spot, P);
+            if (FMath::Abs(F.X) > Spot.HalfWidth * 1.3f || F.Y < -1200 || F.Y > 300) continue;
+            Lane = FMath::Max(Lane, (1 - S(Spot.HalfWidth * 0.6f, Spot.HalfWidth * 1.3f, FMath::Abs(F.X))) * S(-1200, -800, F.Y));
+        }
+        return Lane;
+    }
+
+    /** The old gentle bed (m): a shallow shelf about 8 m wide, then the edge of the old river channel 8-18 m out. */
+    float ShelfBed(float SD) { return 0.1f * S(0, 0.6f, SD) + 0.065f * FMath::Min(SD, 8.0f) + 1.5f * S(8, 18, SD) + 0.045f * FMath::Max(SD - 18, 0.0f); }
+    /**
+     * The bed along the banks (m): a narrow shallow lip at the waterline, the drop-off down to Foot
+     * (about 1.5 m) within 2-4 m of the bank, steepest at 0.7 Width out, then a nearly flat foot
+     * until the edge of the old channel takes over.
+     */
+    float BankBed(float SD, float Width, float Foot)
+    {
+        const float Near = 0.06f * S(0, 0.3f, SD) + Foot * (1 - FMath::Exp(-FMath::Square(SD / Width))) + 0.035f * FMath::Clamp(SD - Width * 1.3f, 0.0f, 8.0f);
+        return SmoothMax(Near, ShelfBed(SD), 0.4f);
+    }
+
     float GroundExact(float X, float Y)
     {
         const FVector2D P(X, Y);
@@ -323,12 +356,21 @@ namespace
         const float Bluff = BluffHeight(P);
         if (SD > 0)
         {
-            // Lake bed: a shallow shelf with reeds and lilies, a drop-off 8-18 m out, then the old
-            // river channel, deepest towards the west end. Shallow in the backwater, the bay and the upper end.
+            // Lake bed: along most banks the bed drops off within a few metres of the waterline to
+            // about 1.5 m (in reach of a 6 m pole), steeper in front of the fishing spots, more gently
+            // here and there; a nearly flat foot, then the old river channel, deepest towards the
+            // west end. The backwater, the bay and the upper end keep a wide shallow shelf (reeds,
+            // lilies) and are no deeper than about 1.3 m, with a pocket in front of their spots.
             const FSpine::FHit Hit = MainSpine().Query(P);
             const float Channel = ChannelDepth(Hit.Along / MainSpine().Length);
-            float D = FMath::Min(0.1f * S(0, 0.6f, SD) + 0.065f * FMath::Min(SD, 8.0f) + 1.5f * S(8, 18, SD) + 0.045f * FMath::Max(SD - 18, 0.0f), Channel);
-            D = FMath::Lerp(D, FMath::Min(D, 1.25f), BackwaterAmount(X, Y));
+            const float Lane = SD < 15 ? SpotLane(P) : 0.0f;
+            const float Wander = Noise(P + FVector2D(-2300, 1700), 3200);
+            const float Width = FMath::Lerp(FMath::Clamp(2.1f + 0.8f * Wander, 1.5f, 2.9f), 1.6f, Lane);
+            const float Foot = FMath::Lerp(1.5f + 0.15f * Noise(P + FVector2D(800, -3100), 4500), 1.45f, Lane);
+            const float Back = BackwaterAmount(X, Y);
+            float D = FMath::Lerp(BankBed(SD, Width, Foot), FMath::Min(ShelfBed(SD), 1.25f), Back * (1 - Lane));
+            D = FMath::Lerp(D, FMath::Min(D, 1.35f), Back);
+            D = FMath::Min(D, Channel);
             D += Bluff * 0.45f * S(0, 5, SD);                                   // steep under the bluffs
             D += 1.6f * Gauss(P, { Lay(-29500), Lay(1800) }, Lay(2600));          // the deep pool at the west end
             D += 1.8f * Gauss(P, { Lay(16500), Lay(-7000) }, Lay(1600));          // the hole beyond the island
@@ -408,13 +450,6 @@ namespace
         }
     };
     const FGroundGrid& GroundGrid() { static const FGroundGrid Instance; return Instance; }
-
-    /** Along the bank and across it (positive inland) relative to a spot. */
-    FVector2D SpotFrame(const FSpot& Spot, const FVector2D& P)
-    {
-        const FVector2D Local = P - Spot.Location;
-        return FVector2D(FVector2D::DotProduct(Local, FVector2D(-Spot.Outward.Y, Spot.Outward.X)), FVector2D::DotProduct(Local, Spot.Outward));
-    }
 }
 
 // --- the water --------------------------------------------------------------------------------
@@ -464,7 +499,7 @@ float LakeMap::SpotAmount(const FVector2D& P)
     {
         const FVector2D F = SpotFrame(Spot, P);
         if (FMath::Abs(F.X) > Spot.HalfWidth * 1.4f || F.Y > 1500 || F.Y < -900) continue;
-        Amount = FMath::Max(Amount, (1 - S(Spot.HalfWidth * 0.7f, Spot.HalfWidth * 1.3f, FMath::Abs(F.X))) * (1 - S(900, 1400, F.Y)) * (1 - S(-600, -850, F.Y)));
+        Amount = FMath::Max(Amount, (1 - S(Spot.HalfWidth * 0.7f, Spot.HalfWidth * 1.3f, FMath::Abs(F.X))) * (1 - S(900, 1400, F.Y)) * S(-850, -600, F.Y));
     }
     return Amount;
 }
@@ -511,9 +546,11 @@ float LakeMap::ForestAmount(const FVector2D& P)
 
 FVector2D LakeMap::StartSpot(FVector2D* OutFacing)
 {
+    // Just behind the boards at the water's edge (they lie 0.5-1.1 m up the bank): a step forward
+    // stands on them, and a pendulum swing of 2-4 m then lays the float on the drop-off.
     const FSpot& Camp = SpotList()[0];
     if (OutFacing) *OutFacing = -Camp.Outward;
-    return Camp.Location + Camp.Outward * 250;
+    return Camp.Location + Camp.Outward * 140;
 }
 const FPier& LakeMap::Pier()
 {
@@ -574,6 +611,21 @@ const TArray<FSnag>& LakeMap::Snags()
             if (Random.FRand() > Chance) continue;
             TryAdd(S, bCove ? 900.0f : 3500.0f);
         }
+        // The fishing spot in the snag cove has a fallen tree of its own, 4-5 m along the bank and
+        // leaning away from its casting lane: the perch and pike holding by it are in reach of a pole.
+        for (const FSpot& Spot : SpotList())
+        {
+            if (!Spot.bBoards || GSnagCove.K(Spot.Location) > 1.3f) continue;
+            const FVector2D Along(-Spot.Outward.Y, Spot.Outward.X);
+            const FVector2D Root2 = Spot.Location + Along * 450 + Spot.Outward * 120;
+            const FVector2D Tip2 = Root2 + (-Spot.Outward).GetRotated(-18) * 1150;
+            if (!IsWater(Tip2.X, Tip2.Y)) continue;
+            FSnag Snag;
+            Snag.Root = FVector(Root2, Ground(Root2.X, Root2.Y) + 20);
+            Snag.Tip = FVector(Tip2, FMath::Min(Ground(Tip2.X, Tip2.Y) + 25, SurfaceZ - 30));
+            Snag.Radius = 24;
+            Out.Add(Snag);
+        }
         return Out;
     }();
     return Instance;
@@ -628,11 +680,16 @@ LakeMap::FZones LakeMap::ZonesAt(float X, float Y)
     const float D = Depth(X, Y) / 100;
     // Warm weedy shallows: the backwater, the bay, the upper end and the lily beds.
     Z.Shallows = FMath::Max(BackwaterAmount(X, Y), LilyAmount(X, Y)) * S(0.25f, 0.45f, D) * (1 - S(1.8f, 2.4f, D));
-    // Just outside the reed belt (none at the spots or under the bluffs).
-    Z.ReedEdge = (1 - SpotAmount(P)) * (1 - S(0.5f, 1.2f, BluffHeight(P))) * S(1.0f, 2.5f, SD) * (1 - S(7, 11, SD));
-    // Where the bed falls away steeply.
+    // Just outside the reed belt (none under the bluffs; at a spot the clearing is only a gap that
+    // fish swimming along the weed edge pass through).
+    Z.ReedEdge = (1 - 0.5f * SpotAmount(P)) * (1 - S(0.5f, 1.2f, BluffHeight(P))) * S(1.0f, 2.5f, SD) * (1 - S(7, 11, SD));
+    // Where the bed falls away steeply, and at its foot: the water just beyond a slope that rose
+    // steeply within the last 3 m towards the bank (the drop-off along the banks is only 2-3 m
+    // wide, hard by the shore, and the fish hold under it).
     const float Slope = FVector2D(Depth(X + 150, Y) - Depth(X - 150, Y), Depth(X, Y + 150) - Depth(X, Y - 150)).Size() / 300;
-    Z.DropOff = S(0.08f, 0.2f, Slope) * S(0.8f, 1.5f, D);
+    const FVector2D Bankward = P + NearestShore(P).Outward * 300;
+    const float Rise = (D - Depth(Bankward.X, Bankward.Y) / 100) / 3;
+    Z.DropOff = FMath::Max(S(0.08f, 0.2f, Slope), 0.8f * S(0.12f, 0.25f, Rise)) * S(0.8f, 1.5f, D);
     // Snags, the pier piles and the island's fringe.
     float Cover = 0;
     for (const FSnag& Snag : Snags())

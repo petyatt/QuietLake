@@ -815,6 +815,55 @@ void ALakeEnvironment::BeginPlay()
         LakeBox.GetSize().X / 100, LakeBox.GetSize().Y / 100, LilyCount, LakeMap::LilyBeds().Num(), LakeMap::Snags().Num(), LakeMap::Spots().Num(), TreeCount,
         FPlatformTime::Seconds() - BuildStart);
 
+    // Depth survey: what a 6 m pole reaches. At every spot straight out from the waterline, then
+    // along all banks: the share of the bank with 0.8-2 m of water at 2, 4 and 6 m out.
+    {
+        auto Out = [](const FVector2D& Location, const FVector2D& Outward, float Metres)
+        {
+            const FVector2D P = Location - Outward * Metres * 100;
+            return LakeMap::Depth(P.X, P.Y);
+        };
+        for (const LakeMap::FSpot& Spot : LakeMap::Spots())
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEPTH spot %s: 1 m %.0f, 2 m %.0f, 3 m %.0f, 4 m %.0f, 6 m %.0f cm"), Spot.Name,
+                Out(Spot.Location, Spot.Outward, 1), Out(Spot.Location, Spot.Outward, 2), Out(Spot.Location, Spot.Outward, 3),
+                Out(Spot.Location, Spot.Outward, 4), Out(Spot.Location, Spot.Outward, 6));
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEPTH pier end: under it %.0f, 2 m beyond %.0f, 4 m %.0f, 6 m %.0f cm"),
+            Out(PierEnd, -Pier.Dir, 0), Out(PierEnd, -Pier.Dir, 2), Out(PierEnd, -Pier.Dir, 4), Out(PierEnd, -Pier.Dir, 6));
+        const float Marks[] = { 1, 2, 4, 6 };
+        for (int32 Kind = 0; Kind < 3; ++Kind)
+        {
+            // 0: the main banks, 1: the weedy shallows (backwater, bay, upper end), 2: the island.
+            int32 Count = 0, Good[4] = {}, AllGood = 0;
+            TArray<float> At[4];
+            for (const LakeMap::FShorePoint& S : LakeMap::Shoreline())
+            {
+                const float Back = LakeMap::BackwaterAmount(S.Location.X, S.Location.Y);
+                const int32 Own = S.bIsland ? 2 : Back > 0.5f ? 1 : 0;
+                if (Own != Kind || (Kind == 0 && Back > 0.2f)) continue;
+                ++Count;
+                bool bAll = true;
+                for (int32 M = 0; M < 4; ++M)
+                {
+                    const float D = Out(S.Location, S.Outward, Marks[M]);
+                    At[M].Add(D);
+                    const bool bGood = D >= 80 && D <= 200;
+                    Good[M] += bGood;
+                    if (M > 0) bAll &= bGood;
+                }
+                AllGood += bAll;
+            }
+            if (!Count) continue;
+            FString Line;
+            for (int32 M = 0; M < 4; ++M)
+            {
+                At[M].Sort();
+                Line += FString::Printf(TEXT(", %.0f m: %.0f/%.0f/%.0f cm %d%%"), Marks[M], At[M][Count / 10], At[M][Count / 2], At[M][Count * 9 / 10], Good[M] * 100 / Count);
+            }
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEPTH banks %s: %d points (10th/50th/90th percentile, share 0.8-2 m)%s; 0.8-2 m at all of 2-6 m: %d%%"),
+                Kind == 0 ? TEXT("main") : Kind == 1 ? TEXT("shallows") : TEXT("island"), Count, *Line, AllGood * 100 / Count);
+        }
+    }
+
     if (GetNetMode() != NM_DedicatedServer)
     {
         // Early morning. The sun is low and ahead of the starting view, just above the
@@ -955,7 +1004,7 @@ void ALakeEnvironment::BeginPlay()
             const FVector BayEye(BayBack.Location - BayBack.Outward * 2600, LakeMap::SurfaceZ + 220);
             Shots.Add({ BayEye, (FVector(BayBack.Location - BayBack.Outward * 500, LakeMap::SurfaceZ + 60) - BayEye).Rotation(), TEXT("WorldPreview_WestBay.png"), true });
             SpotView(TEXT("Остров"), 0, TEXT("WorldPreview_Island.png"));
-            SpotView(TEXT("Коряжник"), 30, TEXT("WorldPreview_Snags.png"));
+            SpotView(TEXT("Коряжник"), -30, TEXT("WorldPreview_Snags.png"));   // its own fallen tree on the left
             SpotView(TEXT("Верховье"), 40, TEXT("WorldPreview_Upper.png"));
             // A low wooded bank near the camp: the shrubs and the grown spruce, from the water and
             // from the bank itself looking along the forest edge.
@@ -1050,22 +1099,7 @@ void ALakeEnvironment::BeginPlay()
         GetWorldTimerManager().SetTimer(ExitTimer, [] { FPlatformMisc::RequestExit(false); }, FishShotAt + 32, false);
     }
 #endif
-    // Fish live on the server, each species in its own kind of water.
-    if (HasAuthority())
-    {
-        FishRandom.Initialize(20261027);
-        for (int32 I = 0; I < 20; ++I) SpawnFish(EFishSpecies::Perch, 6, NextSchool++);
-        for (int32 I = 0; I < 22; ++I) SpawnFish(EFishSpecies::Roach, 8, NextSchool++);
-        SpawnFish(EFishSpecies::Crucian, 240, -1);
-        SpawnFish(EFishSpecies::Pike, 24, -1);
-        for (int32 Species = 0; Species < (int32)EFishSpecies::Count; ++Species)
-        {
-            float Depth = 0, Count = 0;
-            for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
-                if ((int32)It->Species == Species) { Depth += LakeMap::Depth(It->GetActorLocation().X, It->GetActorLocation().Y); ++Count; }
-            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH %s count=%.0f mean water depth=%.1f m"), LakeFish::Info((EFishSpecies)Species).Name, Count, Count ? Depth / Count / 100 : 0.0f);
-        }
-    }
+    // The fish are stocked by Live Fish (ALakeLife::StockPond).
     // Diagnostic for the network test: how many fish this machine sees after replication settles.
     FTimerHandle FishCountTimer;
     GetWorldTimerManager().SetTimer(FishCountTimer, [this]
@@ -1075,41 +1109,4 @@ void ALakeEnvironment::BeginPlay()
         UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISH_VISIBLE %d (netmode %d)"), Count, (int32)GetNetMode());
     }, 8.0f, false);
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WORLD_READY: terrain, lake, dam, island, forest and props in %.1f s"), FPlatformTime::Seconds() - BuildStart);
-}
-
-void ALakeEnvironment::SpawnFish(EFishSpecies Species, int32 Count, int32 School)
-{
-    const FFishSpeciesInfo& S = LakeFish::Info(Species);
-    // Half of the homes are picked off the fishing spots, the rest anywhere in the lake; in both
-    // cases the spot must suit the species (see the habitat weights in LakeFish.cpp).
-    // Respawned fish settle where the water suits them now; at the start there is no weather yet.
-    FFishConditions Now;
-    const ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
-    if (Weather) Now = Weather->FishConditions();
-    const FFishConditions* C = Weather ? &Now : nullptr;
-    auto RandomPoint = [this, Species, C]()
-    {
-        if (FishRandom.FRand() < 0.5f)
-        {
-            const TConstArrayView<LakeMap::FSpot> Spots = LakeMap::Spots();
-            const LakeMap::FSpot& Spot = Spots[FishRandom.RandRange(0, Spots.Num() - 1)];
-            return LakeFish::PickSpot(Species, FishRandom, Spot.Location - Spot.Outward * 1600, 1800, C);
-        }
-        return LakeFish::PickSpot(Species, FishRandom, FVector2D::ZeroVector, 0, C);
-    };
-    const FVector Home = RandomPoint();
-    for (int32 I = 0; I < Count; ++I)
-    {
-        const FVector Start = School >= 0 ? Home + FVector(FishRandom.FRandRange(-80, 80), FishRandom.FRandRange(-80, 80), FishRandom.FRandRange(-10, 10)) : RandomPoint();
-        // Most fish are small; big ones are rare.
-        const float Weight = FMath::Lerp(S.MinWeight, S.MaxWeight, FMath::Pow(FishRandom.FRand(), 2.5f));
-        auto* Fish = GetWorld()->SpawnActor<ALakeFish>(Start, FRotator(0, FishRandom.FRandRange(0, 360), 0));
-        if (Fish) Fish->Setup(Species, Weight, School >= 0 ? Home : Start, School);
-    }
-}
-
-void ALakeEnvironment::ScheduleRespawn(EFishSpecies Species)
-{
-    FTimerHandle Timer;
-    GetWorldTimerManager().SetTimer(Timer, [this, Species] { SpawnFish(Species, 1, -1); }, 45.0f, false);
 }

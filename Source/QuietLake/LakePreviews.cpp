@@ -183,7 +183,7 @@ void ALakeCharacter::RunPreviews()
         // Sound the depth first, as anglers do, then set the bait just on the bottom (the shot
         // hanging 8 cm above it) and cast to the same place: the classic setting for a lift bite.
         At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
-        At(6.0f + CastLoad, [this] { ServerRelease_Implementation(); });
+        At(7.2f, [this] { ServerRelease_Implementation(); });
         At(8.5f, [this]
         {
             const float Water = LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(FloatPosition.X, FloatPosition.Y);
@@ -283,7 +283,7 @@ void ALakeCharacter::RunPreviews()
             FloatDepth = 60;
         });
         At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
-        At(6.0f + CastLoad, [this] { ServerRelease_Implementation(); });
+        At(7.2f, [this] { ServerRelease_Implementation(); });
         At(9.0f, [this]
         {
             const FVector Bait = BaitLocation();
@@ -316,7 +316,7 @@ void ALakeCharacter::RunPreviews()
                      GetActorLocation() + GetActorForwardVector() * 30 + FVector(0, 0, 20), 55);
         });
         At(13.75f, [Shot] { Shot(TEXT("Land_Hand.png")); });
-        for (int32 I = 0; I <= 40; ++I)
+        for (int32 I = 0; I <= 160; ++I)
             At(10.5f + I * 0.1f, [this, I]
             {
                 if (!RodVisual) return;
@@ -328,7 +328,8 @@ void ALakeCharacter::RunPreviews()
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LAND    tip ahead %.0f, tip to hook %.0f, float %s shot %s"), FVector::DotProduct(RodVisual->Tip() - GetActorLocation(), GetActorForwardVector()),
                     FVector::Dist(RodVisual->Tip(), RodVisual->HookLocation()), *(RodVisual->FloatKeel() - GetActorLocation()).ToCompactString(), *(RodVisual->ShotLocation() - GetActorLocation()).ToCompactString());
             });
-        At(15.0f, [] { FPlatformMisc::RequestExit(false); });
+        At(21.0f, [Shot] { Shot(TEXT("Land_Final.png")); });
+        At(27.0f, [] { FPlatformMisc::RequestExit(false); });
     }
     // -CastPreview: casts from the hand at the camp on a clear morning, filmed from the side: a
     // clean one (the rig in the hand, the swing, the rig in the air, the landing close up, the float
@@ -378,10 +379,10 @@ void ALakeCharacter::RunPreviews()
         struct FTry { float At; float Held; float Pitch; ERodKind Rod; };
         const FTry Tries[] = {
             { 6.0f, 1.0f, -12, ERodKind::Medium },     // a full swing
-            { 14.0f, 0.25f, -12, ERodKind::Medium },   // a hurried, small one
-            { 22.0f, 1.4f, -12, ERodKind::Medium },    // a slow one
-            { 30.0f, 1.0f, -12, ERodKind::Heavy },     // a heavy fibreglass pole: slower, softer
-            { 38.0f, 1.0f, -12, ERodKind::Light },     // a light carbon pole: quick
+            { 16.0f, 0.25f, -12, ERodKind::Medium },   // a hurried, small one
+            { 26.0f, 1.4f, -12, ERodKind::Medium },    // a slow one
+            { 36.0f, 1.0f, -12, ERodKind::Heavy },     // a heavy fibreglass pole: slower, softer
+            { 46.0f, 1.0f, -12, ERodKind::Light },     // a light carbon pole: quick
         };
         // The cast is scripted as the mouse would make it: ready at 45 degrees, the rod raised
         // (RaiseTo, over 0.35 s from 0.3 s), LMB let go as it rises (ReleaseAt), the rod held up a
@@ -413,23 +414,25 @@ void ALakeCharacter::RunPreviews()
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CASTRESULT result=%d severity=%.2f out=%.0f cm hook beyond float=%.0f cm: %s"), (int32)CastResult, CastSeverity,
                     FVector::Dist2D(FloatPosition, GetActorLocation()), FVector::DotProduct(FVector(CastHookLanding) - FloatPosition, GetActorForwardVector()), *Status);
             });
-            At(Try.At + Try.Held + 4.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+            // LMB held: the rod goes up and the rig comes out to the left hand (~5 s) before the next cast.
+            At(Try.At + Try.Held + 2.2f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
         }
         // -CastQuick: only the first cast (for tuning).
-        if (FParse::Param(FCommandLine::Get(), TEXT("CastQuick"))) At(11.0f, [] { FPlatformMisc::RequestExit(false); });
+        if (FParse::Param(FCommandLine::Get(), TEXT("CastQuick"))) At(15.0f, [] { FPlatformMisc::RequestExit(false); });
         // The clean cast, shot by shot.
         At(6.5f, [Shot] { Shot(TEXT("Cast_Hold.png")); });
         At(6.72f, [Shot] { Shot(TEXT("Cast_Push.png")); });
         At(7.0f, [Shot] { Shot(TEXT("Cast_Air.png")); });
         At(7.55f, [Shot] { Shot(TEXT("Cast_Land.png")); });
         At(9.5f, [Shot] { Shot(TEXT("Cast_Stand.png")); });
-        At(12.6f, [Shot] { Shot(TEXT("Cast_Catch.png")); });
-        At(14.5f, [Shot] { Shot(TEXT("Cast_Early.png")); });
-        At(23.3f, [Shot] { Shot(TEXT("Cast_Near.png")); });
-        At(30.6f, [Shot] { Shot(TEXT("Cast_HeavyHold.png")); });
-        At(31.15f, [Shot] { Shot(TEXT("Cast_HeavySwing.png")); });
-        At(38.75f, [Shot] { Shot(TEXT("Cast_LightSwing.png")); });
-        for (int32 I = 0; I <= 880; ++I)
+        At(11.2f, [Shot] { Shot(TEXT("Cast_Lift.png")); });
+        At(14.8f, [Shot] { Shot(TEXT("Cast_Catch.png")); });
+        At(16.5f, [Shot] { Shot(TEXT("Cast_Early.png")); });
+        At(27.3f, [Shot] { Shot(TEXT("Cast_Near.png")); });
+        At(36.6f, [Shot] { Shot(TEXT("Cast_HeavyHold.png")); });
+        At(37.15f, [Shot] { Shot(TEXT("Cast_HeavySwing.png")); });
+        At(46.75f, [Shot] { Shot(TEXT("Cast_LightSwing.png")); });
+        for (int32 I = 0; I <= 1080; ++I)
             At(6.0f + I * 0.05f, [this, I]
             {
                 if (!RodVisual) return;
@@ -442,14 +445,14 @@ void ALakeCharacter::RunPreviews()
                     *Rel(RodVisual->Tip()), *Rel(RodVisual->BobberLocation()), *Rel(RodVisual->ShotLocation()), *Rel(RodVisual->HookLocation()));
             });
         // Walking along the bank with the rig in hand: the float should stay on the line, not dangle.
-        At(45.5f, Side);
+        At(55.5f, Side);
         for (int32 I = 0; I < 50; ++I)
-            At(46.0f + I * 0.04f, [this] { AddMovementInput(-GetActorRightVector(), 1.0f); });
-        At(47.0f, [Shot] { Shot(TEXT("Cast_Walk.png")); });
+            At(56.0f + I * 0.04f, [this] { AddMovementInput(-GetActorRightVector(), 1.0f); });
+        At(57.0f, [Shot] { Shot(TEXT("Cast_Walk.png")); });
         // A deep setting at the deepest fishing spot (the float standing on a long leader), then the
         // same set deeper than the water (the shot on the bottom, the float lying): it should land
         // and settle, not bounce.
-        At(50.0f, [this]
+        At(60.0f, [this]
         {
             const LakeMap::FSpot* Deepest = nullptr;
             float Most = 0;
@@ -467,16 +470,16 @@ void ALakeCharacter::RunPreviews()
             FloatDepth = FMath::Clamp(FMath::RoundToFloat(Most - 40), 100.0f, 300.0f);
             UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEEP spot %s, %.0f cm of water 7 m out, depth set %.0f cm"), Deepest->Name, Most, FloatDepth);
         });
-        At(52.0f, Side);
-        At(52.5f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
-        At(52.5f + CastLoad + 0.1f, [this] { ServerRelease_Implementation(); });
-        At(53.6f, [this, LookFrom]
+        At(62.0f, Side);
+        At(62.5f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(62.5f + CastLoad + 0.1f, [this] { ServerRelease_Implementation(); });
+        At(63.6f, [this, LookFrom]
         {
             LookFrom(FloatPosition + GetActorRightVector() * 220 - GetActorForwardVector() * 140 + FVector(0, 0, 90), FloatPosition, 45);
         });
-        At(56.0f, [Shot] { Shot(TEXT("Cast_Deep.png")); });
+        At(66.0f, [Shot] { Shot(TEXT("Cast_Deep.png")); });
         for (int32 I = 0; I <= 100; ++I)
-            At(53.1f + I * 0.05f, [this, I]
+            At(63.1f + I * 0.05f, [this, I]
             {
                 if (!RodVisual) return;
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEEP t=%.2f float %.1f antenna %.1f tilt %.0f shot %.0f hook %.0f (water %.0f) tip above water %.0f, tip to float %.0f"), I * 0.05f,
@@ -485,25 +488,25 @@ void ALakeCharacter::RunPreviews()
                     LakeFish::SurfaceZ - ALakeEnvironment::GroundHeight(FloatPosition.X, FloatPosition.Y), RodVisual->Tip().Z - LakeFish::SurfaceZ,
                     FVector::Dist(RodVisual->Tip(), RodVisual->FloatKeel()));
             });
-        At(58.6f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
-        At(59.0f, [this] { FloatDepth = MaxDepth; });
-        At(61.5f, Side);
-        At(62.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
-        At(62.0f + CastLoad + 0.1f, [this] { ServerRelease_Implementation(); });
-        At(63.1f, [this, LookFrom]
+        At(68.6f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(69.5f, [this] { FloatDepth = MaxDepth; });
+        At(74.5f, Side);
+        At(75.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(75.0f + CastLoad + 0.1f, [this] { ServerRelease_Implementation(); });
+        At(76.1f, [this, LookFrom]
         {
             LookFrom(FloatPosition + GetActorRightVector() * 220 - GetActorForwardVector() * 140 + FVector(0, 0, 90), FloatPosition, 45);
         });
-        At(66.0f, [Shot] { Shot(TEXT("Cast_DeepLying.png")); });
+        At(79.0f, [Shot] { Shot(TEXT("Cast_DeepLying.png")); });
         for (int32 I = 0; I <= 100; ++I)
-            At(62.6f + I * 0.05f, [this, I]
+            At(75.6f + I * 0.05f, [this, I]
             {
                 if (!RodVisual) return;
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LYING t=%.2f float %.1f antenna %.1f tilt %.0f tip above water %.0f, tip to keel %.0f (line %.0f), float to its place %.0f, place from angler %.0f"), I * 0.05f,
                     RodVisual->BobberLocation().Z - LakeFish::SurfaceZ, RodVisual->FloatTip().Z - LakeFish::SurfaceZ, RodVisual->GetBiteTilt(), RodVisual->Tip().Z - LakeFish::SurfaceZ,
                     FVector::Dist(RodVisual->Tip(), RodVisual->FloatKeel()), ALakeRod::LineLength - HookDepth, FVector::Dist2D(RodVisual->FloatKeel(), FloatPosition), FVector::Dist2D(FloatPosition, GetActorLocation()));
             });
-        At(68.0f, [] { FPlatformMisc::RequestExit(false); });
+        At(81.0f, [] { FPlatformMisc::RequestExit(false); });
     }
     // -LinePreview: a fresh cross wind at the camp: the line blown out in a belly, the float
     // drifting downwind until the line holds it; then a rig with the bait on the bottom staying put.
@@ -663,9 +666,9 @@ void ALakeCharacter::RunPreviews()
         auto Shot = [](const TCHAR* Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
         auto Close = [this]
         {
-            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(GetActorLocation() + GetActorForwardVector() * 190 - GetActorRightVector() * 120 + FVector(0, 0, 40),
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(GetActorLocation() + GetActorForwardVector() * 110 - GetActorRightVector() * 55 + FVector(0, 0, 35),
                                                              FRotator::ZeroRotator);
-            Cam->SetActorRotation((GetActorLocation() + FVector(0, 0, 30) - Cam->GetActorLocation()).Rotation());
+            Cam->SetActorRotation((GetActorLocation() + GetActorForwardVector() * 32 + FVector(0, 0, 22) - Cam->GetActorLocation()).Rotation());
             Cam->GetCameraComponent()->SetFieldOfView(55);
             if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
         };
@@ -741,8 +744,13 @@ void ALakeCharacter::RunPreviews()
             }
             FloatDepth = Depth;
         });
+        // -FirstPerson: stay in the angler's own camera (as in the game) and film the lift out in a series.
+        const bool bFirstPerson = FParse::Param(FCommandLine::Get(), TEXT("FirstPerson"));
+        if (bFirstPerson)
+            for (int32 I = 0; I < 6; ++I)
+                At(12.05f + I * 0.3f, [Shot, I] { Shot(*FString::Printf(TEXT("Leader_FP_%d.png"), I)); });
         // A camera beside the rig, 1.6 m off to the side of the angler's facing, following it smoothly.
-        At(5.0f, [this]
+        if (!bFirstPerson) At(5.0f, [this]
         {
             auto* Cam = GetWorld()->SpawnActor<ACameraActor>(GetActorLocation(), FRotator::ZeroRotator);
             Cam->GetCameraComponent()->SetFieldOfView(50);
@@ -760,7 +768,7 @@ void ALakeCharacter::RunPreviews()
             }, 0.01f, true);
         });
         At(5.8f, [Shot] { Shot(TEXT("Leader_Hold.png")); });
-        // The automatic cast: LMB held 1.2 s, then let go.
+        // Holding performs the stroke; releasing lowers the rod.
         At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
         At(7.2f, [this] { ServerRelease_Implementation(); });
         At(6.9f, [Shot] { Shot(TEXT("Leader_Swing.png")); });
@@ -770,7 +778,7 @@ void ALakeCharacter::RunPreviews()
         At(8.4f, [Shot] { Shot(TEXT("Leader_Land.png")); });
         At(8.9f, [Shot] { Shot(TEXT("Leader_Sink.png")); });
         At(9.0f, [Shot] { Shot(TEXT("Leader_Lying.png")); });
-        // A pull with LMB: held 1 s, then let go; the rod goes back down and the rig fishes again.
+        // LMB held 1 s, then let go: the rod stops where it is; held again, it goes on up to the hand.
         At(9.5f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
         At(9.9f, [Shot] { Shot(TEXT("Leader_Pull.png")); });
         At(10.5f, [this] { ServerRelease_Implementation(); });
@@ -779,8 +787,8 @@ void ALakeCharacter::RunPreviews()
         At(12.6f, [Shot] { Shot(TEXT("Leader_Lift1.png")); });
         At(13.1f, [Shot] { Shot(TEXT("Leader_Lift2.png")); });
         At(13.6f, [Shot] { Shot(TEXT("Leader_Lift3.png")); });
-        At(15.0f, [Shot] { Shot(TEXT("Leader_Caught.png")); });
-        for (int32 I = 0; I <= 200; ++I)
+        At(18.0f, [Shot] { Shot(TEXT("Leader_Caught.png")); });
+        for (int32 I = 0; I <= 440; ++I)
             At(5.5f + I * 0.05f, [this, I]
             {
                 if (!RodVisual) return;
@@ -791,7 +799,140 @@ void ALakeCharacter::RunPreviews()
                     I * 0.05f, (int32)FishingState, bRigFlying, bRigInHand, bRetrieving, RetrieveProgress, HasBaitInWater(), FVector::Dist2D(FloatPosition, GetActorLocation()),
                     Bow, Chord, Length, K.X, K.Y, K.Z, S.X, S.Y, S.Z, H.X, H.Y, H.Z);
             });
-        At(16.0f, [] { FPlatformMisc::RequestExit(false); });
+        At(24.0f, [Shot] { Shot(TEXT("Leader_Final.png")); });
+        At(28.0f, [] { FPlatformMisc::RequestExit(false); });
+    }
+    // -RetrievePreview: the rig lifted out after a cast, LMB held: the rod rises upright, the rig leaves
+    // the water and swings in, the left hand reaches out and takes it by the shot. Filmed from the
+    // side (a series), close at the hands, and from the angler's eyes with a stop half way (LMB let go,
+    // then held again). Logged as QUIET_LAKE_RETRIEVE (-Depth= sets the float).
+    if (FParse::Param(FCommandLine::Get(), TEXT("RetrievePreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        auto Shot = [](const FString& Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
+        auto LookFrom = [this](FVector From, FVector Target, float Fov)
+        {
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
+        };
+        float Depth = 60;
+        FParse::Value(FCommandLine::Get(), TEXT("Depth="), Depth);
+        At(4.0f, [this, Depth]
+        {
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Calm;
+                Calm.Cloud = 0.3f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.03f; Calm.WindYaw = 40;
+                Weather->SetWeatherNow(Calm);
+                Weather->SetHours(10.0f);
+            }
+            FVector2D Facing;
+            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
+            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetControlRotation(FRotator(-12, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+            RodKind = ERodKind::Medium;
+            FloatDepth = HookDepth = Depth;
+            const FTransform& T = GetActorTransform();
+            const FVector Arm = T.InverseTransformPosition(GetMesh()->GetBoneLocation(TEXT("upperarm_l")));
+            const FVector Hand = T.InverseTransformPosition(GetMesh()->GetBoneLocation(TEXT("hand_l")));
+            const FVector Used = T.InverseTransformPosition(LeftShoulder());
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_RETRIEVE bones: upperarm_l (%.0f, %.0f, %.0f) hand_l (%.0f, %.0f, %.0f), shoulder used (%.0f, %.0f, %.0f)"),
+                Arm.X, Arm.Y, Arm.Z, Hand.X, Hand.Y, Hand.Z, Used.X, Used.Y, Used.Z);
+        });
+        // The cast as the mouse makes it (as in -CastPreview): the rod raised, LMB let go, lowered.
+        auto CastAt = [this, At](float T)
+        {
+            At(T - 0.5f, [this] { if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(-12, GetActorRotation().Yaw, 0)); });
+            for (int32 I = 0; I <= 100; ++I)
+                At(T + I * 0.025f, [this, I]
+                {
+                    const float U = I * 0.025f;
+                    const float Target = U < 0.3f ? 0.0f : U < 0.65f ? 35 * FMath::SmoothStep(0.3f, 0.65f, U)
+                               : U < 1.0f ? 35.0f : FMath::Lerp(35.0f, -30.0f, FMath::SmoothStep(1.0f, 1.6f, U));
+                    MoveRodAxis(Target - SwingPitch - FMath::FindDeltaAngleDegrees(-12.0f, GetControlRotation().Pitch), true);
+                });
+            At(T, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+            At(T + 0.4f, [this] { ServerRelease_Implementation(); });
+            // The rod back to the waiting angle before the lift.
+            At(T + 3.0f, [this] { MoveRodAxis(-SwingPitch, true); });
+            At(T + 3.5f, [this] { if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(-8, GetActorRotation().Yaw, 0)); });
+        };
+        // A longer cast (as in -LeaderPreview): LMB held 1.2 s with the rod still, the rig swung out ~3.5 m.
+        auto LongCastAt = [this, At](float T)
+        {
+            At(T - 0.5f, [this] { if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(-12, GetActorRotation().Yaw, 0)); });
+            At(T, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+            At(T + 1.2f, [this] { ServerRelease_Implementation(); });
+        };
+        const bool bLong = FParse::Param(FCommandLine::Get(), TEXT("LongCast"));
+        auto LiftAt = [this, At](float T) { At(T, [this] { NextActionTime = 0; ServerFish_Implementation(); }); };
+        // 1. From the side, the whole lift in a series.
+        At(5.5f, [this, LookFrom]
+        {
+            LookFrom(GetActorLocation() + GetActorRightVector() * 900 + GetActorForwardVector() * 150 + FVector(0, 0, 210),
+                     GetActorLocation() + GetActorForwardVector() * 150 + FVector(0, 0, 210), 80);
+        });
+        if (bLong) LongCastAt(6.0f); else CastAt(6.0f);
+        At(10.8f, [Shot] { Shot(TEXT("Retrieve_Side_Wait.png")); });
+        LiftAt(11.0f);
+        for (int32 I = 0; I < 12; ++I) At(11.3f + I * 0.4f, [Shot, I] { Shot(FString::Printf(TEXT("Retrieve_Side_%02d.png"), I)); });
+        // 2. Close at the hands: the left hand going out to the shot and taking it.
+        if (bLong) LongCastAt(19.0f); else CastAt(19.0f);
+        At(23.5f, [this, LookFrom]
+        {
+            // Over the left shoulder, from behind (the reeds are in front of the bank).
+            LookFrom(GetActorLocation() - GetActorForwardVector() * 110 - GetActorRightVector() * 120 + FVector(0, 0, 115),
+                     GetActorLocation() + GetActorForwardVector() * 60 - GetActorRightVector() * 20 + FVector(0, 0, 35), 60);
+        });
+        LiftAt(24.0f);
+        At(24.0f, [this, Shot]
+        {
+            // A series once the hand starts out for the rig.
+            TSharedRef<int32> Taken = MakeShared<int32>(-1);
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [this, Shot, Taken]
+            {
+                if (*Taken < 0 && RigReach() > 0.05f) *Taken = 0;
+                if (*Taken >= 0 && *Taken < 40)
+                {
+                    if (*Taken % 5 == 0) Shot(FString::Printf(TEXT("Retrieve_Hands_%d.png"), *Taken / 5));
+                    ++*Taken;
+                }
+            }, 0.05f, true);
+        });
+        // 3. From the angler's eyes, LMB let go half way (the rod stops) and held again.
+        At(30.5f, [this] { if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(this); });
+        if (bLong) LongCastAt(31.0f); else CastAt(31.0f);
+        LiftAt(36.0f);
+        At(37.0f, [this] { ServerRelease_Implementation(); });
+        At(37.9f, [Shot] { Shot(TEXT("Retrieve_FP_Stopped.png")); });
+        LiftAt(38.5f);
+        for (int32 I = 0; I < 8; ++I) At(39.0f + I * 0.4f, [Shot, I] { Shot(FString::Printf(TEXT("Retrieve_FP_%d.png"), I)); });
+        // The mouse during the lift: the camera turns 12 degrees right and looks 8 degrees up with the rod.
+        for (int32 I = 0; I < 20; ++I) At(39.2f + I * 0.05f, [this] { MoveRodAxis(0.6f, false); MoveRodAxis(0.4f, true); });
+        for (int32 I = 0; I <= 760; ++I)
+            At(10.5f + I * 0.05f, [this, I]
+            {
+                if (!RodVisual) return;
+                const FTransform& T = GetActorTransform();
+                const FVector Tip = T.InverseTransformPosition(RodVisual->Tip()), S = T.InverseTransformPosition(RodVisual->ShotLocation());
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_RETRIEVE t=%.2f state=%d retr=%d held=%d prog=%.2f hand=%d elev=%.0f yaw=%+.0f tip=(%.0f,%.0f,%.0f) shot=(%.0f,%.0f,%.0f) speed=%.0f shoulder=%.0f reach=%.2f float=%.0f view=(%.1f,%.1f) steer=%.1f"),
+                    10.5f + I * 0.05f, (int32)FishingState, bRetrieving, bRetrieveHeld, RetrieveProgress, bRigInHand, RodElevation,
+                    FMath::FindDeltaAngleDegrees(GetActorRotation().Yaw, RodYaw), Tip.X, Tip.Y, Tip.Z, S.X, S.Y, S.Z,
+                    (RodVisual->ShotVelocity() - GetVelocity()).Size(), FVector::Dist(RodVisual->ShotLocation(), LeftShoulder()), RigReach(),
+                    FVector::Dist2D(RodVisual->FloatKeel(), GetActorLocation()), FRotator::NormalizeAxis(GetControlRotation().Pitch),
+                    FRotator::NormalizeAxis(GetControlRotation().Yaw), RigSteerPitch);
+            });
+        At(44.0f, [] { FPlatformMisc::RequestExit(false); });
     }
 }
 #endif

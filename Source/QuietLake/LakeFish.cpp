@@ -409,7 +409,7 @@ void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int3
 {
     Species = InSpecies;
     WeightKg = InWeight;
-    HomePoint = Home;
+    HomePoint = HomeAnchor = Home;
     School = InSchool;
     Random.Initialize(GetUniqueID() * 7919 + (int32)(InWeight * 1000));
     Phase = Random.FRandRange(0, 2 * PI);
@@ -487,8 +487,9 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
     {
         // Schools and ambushers keep to their home area; loners wander through good water nearby.
         // Now and then a home moves to better water for the conditions (deeper in the heat, to the
-        // bank the wind blows onto), so schools drift with the weather.
-        if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomePoint), 2500, C);
+        // bank the wind blows onto), so schools drift with the weather - around the place they were
+        // stocked in, not step by step away from it.
+        if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift, C);
         const float Range = S.Habitat.bAmbush ? 350.0f : S.SchoolSize > 1 ? 900.0f : 2500.0f;
         // A cruising fish carries on more or less the way it is going rather than doubling back.
         const FVector Ahead = GetActorForwardVector().GetSafeNormal2D();
@@ -507,12 +508,14 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
         }
         return;
     }
-    // Hungry perch go after the nearest fry.
+    // Hungry perch go after the nearest fry (those living at a fishing spot only after fry close to
+    // their home, so a chase does not lead them off step by step).
     PreyFry = -1;
     if (Goal == EFishGoal::Feed && Species == EFishSpecies::Perch)
         if (const ALakeLife* Life = ALakeLife::Get(GetWorld()))
         {
-            PreyFry = Life->NearestFry(GetActorLocation(), 4500);
+            const bool bResident = HomeDrift < 1000;
+            PreyFry = Life->NearestFry(bResident ? HomePoint : GetActorLocation(), bResident ? 1500.0f : 4500.0f);
             if (PreyFry >= 0) { RoamTarget = Life->FryLocation(PreyFry) - FVector(0, 0, 20); return; }
         }
     // A pike hunts from a lie at the edge of cover.
@@ -521,9 +524,10 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
         ChooseLie();
         return;
     }
-    // Feeding and resting places: near home for schools and ambushers, anywhere near for loners;
-    // once there, a fish browses along a few metres at a time (a crucian a step at a time).
-    const float Range = bLocal ? (Species == EFishSpecies::Crucian ? 160.0f : S.Habitat.bAmbush ? 700.0f : 500.0f) : bHomeBound ? 1500.0f : 1200.0f;
+    // Feeding and resting places: near home for schools and ambushers (closer for those that live
+    // at a fishing spot, see HomeDrift), anywhere near for loners; once there, a fish browses along
+    // a few metres at a time (a crucian a step at a time).
+    const float Range = bLocal ? (Species == EFishSpecies::Crucian ? 160.0f : S.Habitat.bAmbush ? 700.0f : 500.0f) : bHomeBound ? FMath::Min(1500.0f, HomeDrift + 300) : 1200.0f;
     const FVector2D Near = bLocal || !bHomeBound ? FVector2D(GetActorLocation()) : FVector2D(HomePoint);
     RoamTarget = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal);
     const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
@@ -546,7 +550,7 @@ void ALakeFish::ChooseLie()
     const FFishConditions* C = GetConditions(Conditions) ? &Conditions : nullptr;
     // A lie near home (the first one) or a short move along the weed edge (the next ones).
     const bool bMove = bAtSpot && Goal == EFishGoal::Feed;
-    RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bMove ? GetActorLocation() : HomePoint), bMove ? 800.0f : 1500.0f, C, EFishGoal::Feed);
+    RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bMove ? GetActorLocation() : HomePoint), bMove ? 800.0f : FMath::Min(1500.0f, HomeDrift + 300), C, EFishGoal::Feed);
     const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
     RoamTarget.Z = FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, Random.FRandRange(0.45f, 0.8f));
     // It faces out from its cover into the open water, where prey swims past.
@@ -815,7 +819,9 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     // Perch drive the fry: follow the shoal, the leader leads each rush into it.
     if (Goal == EFishGoal::Feed && Species == EFishSpecies::Perch && PreyFry >= 0 && Life)
     {
-        if (!bFollower)
+        // A school living at a fishing spot lets the shoal go once it has led them 20 m from home.
+        if (!bFollower && HomeDrift < 1000 && FVector::Dist2D(Life->FryLocation(PreyFry), HomePoint) > 2000) ChooseRoamTarget();
+        else if (!bFollower)
         {
             RoamTarget = Life->FryLocation(PreyFry) - FVector(0, 0, 20);
             if (FVector::Dist2D(GetActorLocation(), RoamTarget) < 320 && SimTime >= NextFryAttack)
@@ -1199,6 +1205,15 @@ void ALakeFish::LiftOut()
     HangForward = GetActorForwardVector();
     Vel = FVector::ZeroVector;
     PendingLineForce = FVector::ZeroVector;
+}
+
+void ALakeFish::LowerIntoWater(FVector LineVelocity)
+{
+    bLifted = false;
+    State = EState::Hooked;
+    Vel = LineVelocity.GetClampedToMaxSize(200);
+    PendingLineForce = FVector::ZeroVector;
+    ForceNetUpdate();
 }
 
 void ALakeFish::HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds)

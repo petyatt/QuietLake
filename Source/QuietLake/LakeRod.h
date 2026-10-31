@@ -12,13 +12,10 @@ struct FRodInput
     EBait Bait = EBait::Worm;
     FVector FloatTarget = FVector::ZeroVector;   // where the bobber sits / lands (server)
     float HookDepth = 100;        // leader length under the bobber
-    float SinceCast = -1;         // seconds since the line was released, < 0 if not casting
-    float CastFlight = 1;         // seconds the bobber flies down onto the water
-    bool bSwinging = false;       // LMB held for a cast: the rig held in the hand
     bool bRigFlying = false;      // let go and not yet down on the water (the server says when it lands)
+    bool bFreeRig = false;        // no network drift correction during casts, pulls or settling
     float HookHold = 0;           // 0..1: how firmly the angler's left hand has the rig (1: the shot held in the fingers)
     float RodHeft = 1;            // how sluggish the rod is: 1 medium, less for a light rod, more for a heavy one
-    float CastDraw = 0;           // 0..1: how far the hand has drawn the rig back for the cast (it loads the tip)
     FVector Wind = FVector::ZeroVector;   // at the water, cm/s (the weather's, with gusts)
     FVector Facing = FVector::ForwardVector;
     float Tension = 0;
@@ -33,8 +30,9 @@ struct FRodInput
     // The angler's free hand: it holds the hook for the cast, and takes a fish lifted out
     // (Landing), where the fish hangs on the hook with its weight.
     float FishGrams = 0, FishLength = 0;
+    /** Landing with the rod let down: a fish lying on the bank flops back towards the water. */
+    bool bFishLowered = false;
     FVector HandPoint = FVector::ZeroVector;
-    float HandAlpha = 0;
 };
 
 /**
@@ -44,8 +42,7 @@ struct FRodInput
  *  - The blank bends as one elastic cantilever driven by the hand's motion and the line's pull.
  *  - Main line and leader are light, inextensible, slightly stiff verlet chains with strong air
  *    drag, drawn as thin cylinders; slack main line lies on the water.
- *  - The bobber dangles from the tip, flies on a ballistic arc when cast, floats with a buoyancy
- *    spring, twitches on nibbles and goes under on a take. The hook follows a fish once taken.
+ *  - The bobber dangles from the tip, swings freely on the fixed line, floats by submerged volume, twitches on nibbles and goes under on a take. The hook follows a fish once taken.
  */
 UCLASS()
 class QUIETLAKE_API ALakeRod : public AActor
@@ -69,6 +66,8 @@ public:
     /** The tip of the float's antenna (how much of it shows above the water tells the angler everything). */
     FVector FloatTip() const { return FloatT; }
     FVector ShotLocation() const { return ShotPos; }
+    FVector ShotVelocity() const { return ShotVel; }
+    FVector HookVelocity() const { return HookVel; }
     FVector FloatKeel() const { return FloatK; }
     /** The leader's shape (float to shot): how far it bows from straight and how far apart its ends are, cm. */
     void LeaderShape(float& OutBow, float& OutChord, float& OutLength) const
@@ -115,9 +114,7 @@ private:
     /** The live waves near the viewer (rendering machines only): the float rides them. */
     TWeakObjectPtr<class ALakeRipples> Ripples;
     float NextRipplesLookup = 0;
-    /** The guided cast: where the float left the hand, and where it was put on the previous step. */
-    FVector GuideFrom = FVector::ZeroVector, GuideLast = FVector::ZeroVector;
-    bool bGuiding = false;
+    FVector ShotVel = FVector::ZeroVector, HookVel = FVector::ZeroVector;
     /** Once a frame: the blank's weights and stiffness for this rod, and where the hands are. */
     void PrepareBlank(const FTransform& Hold);
     /** One substep of the blank (S: 0..1 through the frame, moving the hands smoothly). */
@@ -166,6 +163,7 @@ private:
     FVector ShotPos = FVector::ZeroVector, ShotPrev = FVector::ZeroVector;
     EBiteMotion LastBiteMotion = EBiteMotion::None;
     float LandLine = -1;
+    float NextFlop = 0;
     bool bCatchLaunched = false;
     FVector CatchStart = FVector::ZeroVector;     // where the shot was when the free hand began to bring it in                          // lifting a fish out: tip-to-hook reach, easing to the line's length
     bool bInitialised = false;

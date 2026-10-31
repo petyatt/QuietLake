@@ -136,8 +136,8 @@ TSharedRef<SWidget> ULakeMenuWidget::RebuildWidget()
         Help->AddChildToVerticalBox(Label(TEXT("ПОДСКАЗКИ"), 40, Ink))->SetPadding(FMargin(0, 0, 0, 28));
         for (const TPair<const TCHAR*, const TCHAR*>& Line : {
                  TPair<const TCHAR*, const TCHAR*>(TEXT("Мышь"), TEXT("взгляд и удилище")),
-                 TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ — держать"), TEXT("чем дольше держите, тем дальше; отпустить — низкий маятниковый заброс")),
-                 TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ после заброса"), TEXT("плавно вытащить оснастку из воды; держать кнопку не нужно")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ — держать"), TEXT("маятниковый мах; отпустить — опустить удилище и снасть")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ после заброса"), TEXT("держать — поднимать удилище, снасть придёт в левую руку; отпустить — удилище остановится")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ПКМ"), TEXT("подсечка, когда поплавок ушёл под воду, лёг или поехал")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ с рыбой"), TEXT("держать — поднимать удилище и тянуть рыбу, отпускать на рывках")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("R"), TEXT("поставить удочку на рогатку / взять")),
@@ -145,7 +145,7 @@ TSharedRef<SWidget> ULakeMenuWidget::RebuildWidget()
                  TPair<const TCHAR*, const TCHAR*>(TEXT("1 / 2 / 3"), TEXT("наживка: червь, опарыш, хлеб")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("+ / −"), TEXT("глубина наживки (или колесо мыши): 10–500 см, шаг 1 см, только до заброса")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("WASD"), TEXT("ходьба, в том числе с заброшенной удочкой")),
-                 TPair<const TCHAR*, const TCHAR*>(TEXT("F3"), TEXT("«Живой пруд»: чем заняты рыбы, последние всплески и круги")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("F3"), TEXT("«Live Fish»: чем заняты рыбы, последние всплески и круги")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("Esc"), TEXT("меню")) })
         {
             UHorizontalBox* HelpRow = WidgetTree->ConstructWidget<UHorizontalBox>();
@@ -289,7 +289,7 @@ void ALakePlayerController::BeginPlay()
     if (!IsLocalController()) return;
     ApplyVolume(LoadVolume());
     // Automated preview runs go straight into the game.
-    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("FishPreview")) || FParse::Param(FCommandLine::Get(), TEXT("WaterPreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CastPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LinePreview")) || FParse::Param(FCommandLine::Get(), TEXT("RodPreview")) || FParse::Param(FCommandLine::Get(), TEXT("HandsPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LeaderPreview"))) { bStarted = true; return; }
+    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("FishPreview")) || FParse::Param(FCommandLine::Get(), TEXT("WaterPreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CastPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LinePreview")) || FParse::Param(FCommandLine::Get(), TEXT("RodPreview")) || FParse::Param(FCommandLine::Get(), TEXT("HandsPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LeaderPreview")) || FParse::Param(FCommandLine::Get(), TEXT("RetrievePreview"))) { bStarted = true; return; }
     // A slow flight around the lake behind the menu.
     MenuCamera = GetWorld()->SpawnActor<ACameraActor>();
     if (MenuCamera) MenuCamera->GetCameraComponent()->SetFieldOfView(60);
