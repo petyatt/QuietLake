@@ -62,6 +62,6 @@
   "strength": 0.7,
   "stamina": 6,
   "runBurst": 0.5,
-  "stock": { "count": 208, "schoolSize": 8 },
+  "stock": { "count": 208, "schoolSize": 8, "schoolsWith": [ "rudd", "bleak", "bream" ] },
   "signs": { "rise": "Плотва берёт с поверхности — круги", "jump": "Из воды выпрыгнула плотва" }
 }

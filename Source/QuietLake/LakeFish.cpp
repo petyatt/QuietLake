@@ -163,6 +163,13 @@ bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpecie
 }
 const FFishGait& LakeFish::Gait(EFishSpecies Species) { return Info(Species).Gait; }
 const TCHAR* LakeFish::BaitName(EBait Bait) { return GBaitNames[FMath::Clamp((int32)Bait, 0, 2)]; }
+bool LakeFish::SchoolsTogether(EFishSpecies A, EFishSpecies B)
+{
+    if (A == B) return true;
+    const FFishSpeciesInfo& SA = Info(A);
+    const FFishSpeciesInfo& SB = Info(B);
+    return SA.Stock.SchoolsWith.Contains(SB.Id) || SB.Stock.SchoolsWith.Contains(SA.Id);
+}
 float LakeFish::Size01(EFishSpecies Species, float WeightKg)
 {
     const FFishSpeciesInfo& S = Info(Species);
@@ -748,6 +755,14 @@ void ALakeFish::PickRoamTarget(bool bLocal)
             FeedOn = Which;
             NextFoodCheck = SimTime + 4;
             RoamTarget = FVector(Spot.X, Spot.Y, LakeFood::FeedingZ(Which, Spot.X, Spot.Y, Conditions, Random));
+            // Within the layer the species feeds in, if its passport sets one (bleak keep to the top).
+            if (S.Feeding.FeedColumnMax >= 0)
+            {
+                const float Bottom = BottomZ(Spot.X, Spot.Y);
+                const float Hi = FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, FMath::Max(0.0f, S.Feeding.FeedColumnMin));
+                const float Lo = FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, S.Feeding.FeedColumnMax);
+                RoamTarget.Z = FMath::Clamp(RoamTarget.Z, FMath::Min(Lo, Hi), FMath::Max(Lo, Hi));
+            }
             return;
         }
         FeedOn = EFishFood::None;

@@ -1,6 +1,8 @@
-"""Generate the four lake fish as FBX files (run with Blender 5.x).
+"""Generate the lake fish as FBX files (run with Blender 5.x).
 
     blender --background --factory-startup --python Tools/GenerateFishModels.py
+
+QUIETLAKE_FISH=Bream,Rudd (environment) builds only those.
 
 Each fish is built procedurally: a lofted body from per-species proportions, flat fins,
 eyes and colouring in vertex colours. Body length runs along +X (snout at X = 0).
@@ -86,7 +88,41 @@ SPECIES = {
         fins=[('dorsal', 0.66, 0.80, 0.06, None), ('anal', 0.68, 0.80, 0.05, None),
               ('pelvic', 0.48, 0.55, 0.04, None), ('pectoral', 0.16, 0.22, 0.045, None)],
         tail_span=0.09, fork=0.3),
+    # Bream: tall, thin, humped behind the head; bronze-grey, dark fins, a long anal fin.
+    'Bream': dict(
+        L=0.30, body=0.80,
+        height=[(0, 0.0), (0.06, 0.07), (0.2, 0.15), (0.38, 0.175), (0.55, 0.15), (0.72, 0.075), (0.80, 0.04)],
+        width=[(0, 0.0), (0.06, 0.03), (0.35, 0.045), (0.6, 0.035), (0.80, 0.012)],
+        center=[(0, -0.025), (0.3, 0.02), (0.6, 0.0), (0.80, 0.0)],
+        back=(0.14, 0.14, 0.11), side=(0.58, 0.50, 0.32), belly=(0.86, 0.84, 0.74),
+        fin=(0.20, 0.20, 0.20), stripes=0,
+        fins=[('dorsal', 0.40, 0.50, 0.11, None), ('anal', 0.48, 0.76, 0.045, None),
+              ('pelvic', 0.34, 0.42, 0.05, None), ('pectoral', 0.18, 0.26, 0.055, None)],
+        tail_span=0.13, fork=0.45),
+    # Rudd: a little deeper than a roach, golden-silver, bright red fins, the dorsal set well back.
+    'Rudd': dict(
+        L=0.22, body=0.82,
+        height=[(0, 0.0), (0.06, 0.06), (0.3, 0.135), (0.45, 0.135), (0.7, 0.075), (0.82, 0.04)],
+        width=[(0, 0.0), (0.06, 0.035), (0.35, 0.05), (0.82, 0.015)],
+        center=[(0, 0.01), (0.4, 0.006), (0.82, 0.0)],
+        back=(0.14, 0.17, 0.10), side=(0.78, 0.70, 0.45), belly=(0.92, 0.90, 0.80),
+        fin=(0.86, 0.16, 0.07), stripes=0,
+        fins=[('dorsal', 0.48, 0.60, 0.07, None), ('anal', 0.60, 0.72, 0.05, None),
+              ('pelvic', 0.38, 0.46, 0.05, None), ('pectoral', 0.20, 0.27, 0.05, None)],
+        tail_span=0.10, fork=0.4),
+    # Bleak: small and slender, bright silver with a blue-green back, pale fins.
+    'Bleak': dict(
+        L=0.14, body=0.82,
+        height=[(0, 0.0), (0.06, 0.04), (0.3, 0.085), (0.45, 0.08), (0.7, 0.05), (0.82, 0.028)],
+        width=[(0, 0.0), (0.06, 0.025), (0.35, 0.035), (0.82, 0.012)],
+        center=[(0, 0.012), (0.4, 0.004), (0.82, 0.0)],
+        back=(0.12, 0.22, 0.24), side=(0.86, 0.88, 0.90), belly=(0.95, 0.95, 0.95),
+        fin=(0.78, 0.78, 0.74), stripes=0,
+        fins=[('dorsal', 0.50, 0.60, 0.06, None), ('anal', 0.58, 0.74, 0.04, None),
+              ('pelvic', 0.40, 0.47, 0.04, None), ('pectoral', 0.18, 0.25, 0.045, None)],
+        tail_span=0.10, fork=0.5),
 }
+ONLY = [n.strip() for n in os.environ.get('QUIETLAKE_FISH', '').split(',') if n.strip()]
 
 
 def body_colour(s, t, theta, z_norm):
@@ -218,6 +254,8 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     for name, spec in SPECIES.items():
+        if ONLY and name not in ONLY:
+            continue
         for o in list(bpy.context.scene.objects):
             bpy.data.objects.remove(o, do_unlink=True)
         obj = build_fish(name, spec)

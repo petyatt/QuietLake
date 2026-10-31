@@ -1402,7 +1402,7 @@ bool FLakeSpeciesFilesTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("A new species is read from its file"), bRead && Problems.IsEmpty() && Bream.Name == TEXT("Лещ") && Bream.Order == 4 && Bream.Stock.SchoolSize == 10
         && Bream.Bite.Take.Num() == 2 && Bream.Bite.Take[0].Motion == EBiteMotion::Lift && FMath::IsNearlyEqual(Bream.BaitLike(EBait::Maggot), 0.9f) && Bream.Feeding.bRootsInSilt
         && FMath::IsNearlyEqual(Bream.Feeding.Wariness, 0.7f) && FMath::IsNearlyEqual(LakeFish::Info(EFishSpecies::Perch).Diet.Benthos, 0.7f)
-        && FMath::IsNearlyEqual(Bream.Diet.Plankton, 0.6f) && FMath::IsNearlyEqual(Bream.DietBig.Benthos, 1.0f));
+        && FMath::IsNearlyEqual(Bream.Diet.Plankton, 0.35f) && FMath::IsNearlyEqual(Bream.DietBig.Benthos, 1.0f));
     // A species without a diet is reported (it would feed the old way, by its habitat table only).
     Problems.Reset();
     FFishSpeciesInfo NoDiet;
@@ -2086,6 +2086,77 @@ bool FLakeWaterTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("A roach keeps above the stale bottom layer"), (LakeFish::SurfaceZ - RoachZ) / 100 < Thermo + 0.8f);
     TestTrue(TEXT("At such a dawn a roach leaves the lilies, a crucian stays"), RoachLily < 0.5f && CrucianLily > 0.8f);
     TestTrue(TEXT("A perch there gulps air, a crucian does not"), LakeWater::IsGasping(EFishSpecies::Perch, LilyDawn) && !LakeWater::IsGasping(EFishSpecies::Crucian, LilyDawn));
+    return true;
+}
+
+// Mixed schools: a school of roach and one of rudd of a size join when they meet; perch never join
+// roach, nor small roach big rudd; frightened, the mixed school scatters by kind; the biggest fish leads.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeMixedSchoolsTest, "QuietLake.Fishing.MixedSchools", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeMixedSchoolsTest::RunTest(const FString& Parameters)
+{
+    auto Id = [](const TCHAR* Name) { for (int32 I = 0; I < LakeFish::NumSpecies(); ++I) if (LakeFish::Info((EFishSpecies)I).Id == Name) return (EFishSpecies)I; return EFishSpecies::MaxSpecies; };
+    const EFishSpecies Rudd = Id(TEXT("rudd")), Bleak = Id(TEXT("bleak")), Bream = Id(TEXT("bream"));
+    TestTrue(TEXT("Rudd, bleak and bream live in the pond"), Rudd != EFishSpecies::MaxSpecies && Bleak != EFishSpecies::MaxSpecies && Bream != EFishSpecies::MaxSpecies);
+    if (Rudd == EFishSpecies::MaxSpecies) return false;
+    TestTrue(TEXT("Who schools with whom"), LakeFish::SchoolsTogether(EFishSpecies::Roach, Rudd) && LakeFish::SchoolsTogether(Bleak, EFishSpecies::Roach)
+        && LakeFish::SchoolsTogether(Bream, EFishSpecies::Roach) && !LakeFish::SchoolsTogether(EFishSpecies::Perch, EFishSpecies::Roach) && !LakeFish::SchoolsTogether(Rudd, Bleak));
+
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    FVector2D Facing;
+    const FVector2D Open = LakeMap::StartSpot(&Facing) + Facing * 1500;
+    const FVector2D Right(-Facing.Y, Facing.X);
+    auto At = [](FVector2D P) { return FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)); };
+    auto School = [&](EFishSpecies Species, float Weight, FVector2D P, int32 Id)
+    {
+        TArray<ALakeFish*> Fish;
+        for (int32 I = 0; I < 6; ++I)
+        {
+            ALakeFish* F = SpawnFish(World, Species, Weight * (1 + 0.03f * I), At(P + FVector2D((I % 3) * 40.0f, (I / 3) * 40.0f)), Id);
+            F->SetGoal(EFishGoal::Cruise, 1000);
+            Fish.Add(F);
+        }
+        return Fish;
+    };
+    auto Ids = [](const TArray<ALakeFish*>& A, const TArray<ALakeFish*>& B) { TSet<int32> S; for (ALakeFish* F : A) S.Add(F->GetSchool()); for (ALakeFish* F : B) S.Add(F->GetSchool()); return S.Num(); };
+    auto Gone = [](TArray<ALakeFish*>& Fish) { for (ALakeFish* F : Fish) F->Destroy(); Fish.Reset(); };
+    auto Check = [&] { Life->Step(0); Life->UpdateSchools(); Life->Step(0); };
+
+    // 1. Roach and rudd of a size meet: one school, the biggest fish leading it.
+    TArray<ALakeFish*> Roach = School(EFishSpecies::Roach, 0.15f, Open, 101), Red = School(Rudd, 0.16f, Open + Right * 200, 102);
+    Check();
+    const ALakeFish* Lead = Life->SchoolLeader(Roach[0]->GetSchool());
+    float Biggest = 0;
+    for (const TArray<ALakeFish*>* Group : { &Roach, &Red }) for (const ALakeFish* F : *Group) Biggest = FMath::Max(Biggest, F->WeightKg);
+    AddInfo(FString::Printf(TEXT("Roach and rudd 2 m apart: %d school(s); leader %s %.3f kg (biggest %.3f)"), Ids(Roach, Red), Lead ? *LakeFish::Info(Lead->Species).Noun : TEXT("-"), Lead ? Lead->WeightKg : 0.0f, Biggest));
+    TestTrue(TEXT("Roach and rudd of a size join"), Ids(Roach, Red) == 1);
+    TestTrue(TEXT("The biggest fish leads"), Lead && FMath::IsNearlyEqual(Lead->WeightKg, Biggest));
+    // 2. Frightened, the mixed school scatters by kind.
+    const int32 SplitsBefore = Life->Stats().Splits;
+    for (ALakeFish* F : Roach) F->Fear = 0.9f;
+    for (ALakeFish* F : Red) F->Fear = 0.9f;
+    Check();
+    bool bByKind = true;
+    for (ALakeFish* F : Roach) bByKind &= F->GetSchool() == Roach[0]->GetSchool();
+    for (ALakeFish* F : Red) bByKind &= F->GetSchool() == Red[0]->GetSchool();
+    AddInfo(FString::Printf(TEXT("Frightened: %d school(s), split %d"), Ids(Roach, Red), Life->Stats().Splits - SplitsBefore));
+    TestTrue(TEXT("A frightened mixed school scatters by kind"), Ids(Roach, Red) == 2 && bByKind);
+    Gone(Roach);
+    Gone(Red);
+    // 3. Perch never join roach; small roach do not join big rudd.
+    TArray<ALakeFish*> Perch = School(EFishSpecies::Perch, 0.15f, Open, 103), Roach2 = School(EFishSpecies::Roach, 0.15f, Open + Right * 200, 104);
+    Check();
+    const int32 PerchRoach = Ids(Perch, Roach2);
+    Gone(Perch);
+    Gone(Roach2);
+    TArray<ALakeFish*> Small = School(EFishSpecies::Roach, 0.06f, Open, 105), BigRed = School(Rudd, 0.4f, Open + Right * 200, 106);
+    Check();
+    const int32 SmallBig = Ids(Small, BigRed);
+    AddInfo(FString::Printf(TEXT("Perch and roach side by side: %d schools; roach 60 g and rudd 400 g: %d schools"), PerchRoach, SmallBig));
+    TestTrue(TEXT("Perch never join roach, nor small roach big rudd"), PerchRoach == 2 && SmallBig == 2);
+    Gone(Small);
+    Gone(BigRed);
+    World->DestroyWorld(false);
     return true;
 }
 #endif

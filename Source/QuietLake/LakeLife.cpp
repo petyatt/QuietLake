@@ -169,6 +169,7 @@ void ALakeLife::Step(float DeltaSeconds)
     if (Time >= NextSample) { SampleMotion(Time - NextSample + 0.2f); NextSample = Time + 0.2f; }
     if (Time >= NextEvent) { NextEvent = Time + Random.FRandRange(6.0f, 14.0f); UpdateRandomEvents(); }
     if (Time >= NextSpotSample) { NextSpotSample = Time + 5; SampleSpots(); SamplePrey(); }
+    if (Time >= NextSchoolCheck) { NextSchoolCheck = Time + 3; UpdateSchools(); }
     if (!bStockLogged && Time > 2 && AllFish.Num() > 50) { bStockLogged = true; LogStock(); }
     if (Time >= NextLog) { NextLog = Time + 30; if (Time > 1) LogStats(); }
 }
@@ -595,11 +596,12 @@ void ALakeLife::ForEachFishNear(const FVector& P, float Radius, TFunctionRef<voi
 
 ALakeFish* ALakeLife::SchoolLeader(int32 School) const
 {
-    // The first free member leads; when it is caught or busy on a bait, the next one takes over.
+    // The biggest free member leads; when it is caught or busy on a bait, the next biggest takes over.
+    ALakeFish* Lead = nullptr;
     if (const TArray<TWeakObjectPtr<ALakeFish>>* Members = Schools.Find(School))
         for (const TWeakObjectPtr<ALakeFish>& Member : *Members)
-            if (ALakeFish* Fish = Member.Get(); Fish && !Fish->IsActorBeingDestroyed() && Fish->IsFree()) return Fish;
-    return nullptr;
+            if (ALakeFish* Fish = Member.Get(); Fish && !Fish->IsActorBeingDestroyed() && Fish->IsFree() && (!Lead || Fish->WeightKg > Lead->WeightKg)) Lead = Fish;
+    return Lead;
 }
 
 bool ALakeLife::IsNearPlayer(const FVector& P, float Radius) const
@@ -856,6 +858,7 @@ void ALakeLife::LogStats()
     LogPrey();
     LogFood();
     LogWater();
+    LogSchools();
 }
 
 void ALakeLife::LogFood()
@@ -910,6 +913,94 @@ void ALakeLife::LogFood()
         Line += FString::Printf(TEXT(" | groundbait: %d patches, %.1f balls left"), FoodField.Groundbait().Num(), Balls);
     }
     UE_LOG(LogTemp, Display, TEXT("%s"), *Line);
+}
+
+void ALakeLife::UpdateSchools()
+{
+    if (NextSchoolId < 0) { NextSchoolId = 0; for (const TPair<int32, TArray<TWeakObjectPtr<ALakeFish>>>& It : Schools) NextSchoolId = FMath::Max(NextSchoolId, It.Key + 1); }
+    struct FSchool { int32 Id; ALakeFish* Lead; TArray<ALakeFish*> Members; TSet<EFishSpecies> Kinds; int32 Size = 0; };
+    TArray<FSchool> All;
+    for (const TPair<int32, TArray<TWeakObjectPtr<ALakeFish>>>& It : Schools)
+    {
+        FSchool S;
+        S.Id = It.Key;
+        S.Lead = SchoolLeader(It.Key);
+        if (!S.Lead) continue;
+        for (const TWeakObjectPtr<ALakeFish>& M : It.Value) if (ALakeFish* F = M.Get(); F && !F->IsActorBeingDestroyed()) { S.Members.Add(F); S.Kinds.Add(F->Species); }
+        S.Size = S.Members.Num();
+        All.Add(MoveTemp(S));
+    }
+    auto Calm = [](const ALakeFish* F) { return F->FearNow() < 0.3f; };
+    auto Usual = [](const FSchool& S) { return LakeFish::Info(S.Lead->Species).Stock.SchoolSize; };
+    // Joining: schools that meet, of a size and doing the same.
+    TSet<int32> Changed;
+    for (int32 I = 0; I < All.Num(); ++I)
+        for (int32 J = I + 1; J < All.Num(); ++J)
+        {
+            FSchool& A = All[I];
+            FSchool& B = All[J];
+            if (Changed.Contains(A.Id) || Changed.Contains(B.Id)) continue;
+            if (FVector::DistSquared(A.Lead->GetActorLocation(), B.Lead->GetActorLocation()) > FMath::Square(400.0f)) continue;
+            if (A.Lead->GetGoal() != B.Lead->GetGoal() || !Calm(A.Lead) || !Calm(B.Lead)) continue;
+            bool bTogether = true;
+            for (EFishSpecies KA : A.Kinds) for (EFishSpecies KB : B.Kinds) bTogether &= LakeFish::SchoolsTogether(KA, KB);
+            const float Ratio = FMath::Max(A.Lead->WeightKg, B.Lead->WeightKg) / FMath::Max(0.001f, FMath::Min(A.Lead->WeightKg, B.Lead->WeightKg));
+            if (!bTogether || Ratio > 1.6f || A.Size + B.Size > FMath::CeilToInt(2.2f * FMath::Max(Usual(A), Usual(B)))) continue;
+            FSchool& Into = A.Size >= B.Size ? A : B;
+            FSchool& From = A.Size >= B.Size ? B : A;
+            for (ALakeFish* F : From.Members) F->SetSchool(Into.Id);
+            Changed.Add(A.Id);
+            Changed.Add(B.Id);
+            ++Counters.Merges;
+        }
+    // Parting: a frightened mixed school scatters by kind; now and then its kinds go their own ways;
+    // one grown far beyond its kind's size splits in two.
+    for (FSchool& S : All)
+    {
+        if (Changed.Contains(S.Id)) continue;
+        const bool bMixed = S.Kinds.Num() > 1;
+        if (bMixed && (S.Lead->FearNow() > 0.5f || Random.FRand() < 3.0f / 120.0f))
+        {
+            for (EFishSpecies Kind : S.Kinds)
+            {
+                if (Kind == S.Lead->Species) continue;
+                const int32 NewId = NextSchoolId++;
+                for (ALakeFish* F : S.Members) if (F->Species == Kind) F->SetSchool(NewId);
+                ++Counters.Splits;
+            }
+        }
+        else if (!bMixed && S.Size > FMath::CeilToInt(1.6f * Usual(S)) && Random.FRand() < 3.0f / 60.0f)
+        {
+            const int32 NewId = NextSchoolId++;
+            for (int32 K = S.Size / 2; K < S.Size; ++K) if (S.Members[K] != S.Lead) S.Members[K]->SetSchool(NewId);
+            ++Counters.Splits;
+        }
+    }
+}
+
+void ALakeLife::LogSchools()
+{
+    TMap<FString, int32> Mixes;
+    int32 Count = 0, Mixed = 0, Members = 0;
+    for (const TPair<int32, TArray<TWeakObjectPtr<ALakeFish>>>& It : Schools)
+    {
+        TSet<EFishSpecies> Kinds;
+        int32 N = 0;
+        for (const TWeakObjectPtr<ALakeFish>& M : It.Value) if (const ALakeFish* F = M.Get()) { Kinds.Add(F->Species); ++N; }
+        if (!N) continue;
+        ++Count;
+        Members += N;
+        if (Kinds.Num() < 2) continue;
+        ++Mixed;
+        TArray<FString> Names;
+        for (EFishSpecies K : Kinds) Names.Add(SpeciesNoun(K));
+        Names.Sort();
+        ++Mixes.FindOrAdd(FString::Join(Names, TEXT("+")));
+    }
+    FString Line;
+    for (const TPair<FString, int32>& M : Mixes) Line += FString::Printf(TEXT(" %s %d"), *M.Key, M.Value);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SCHOOLS %d schools, %.1f fish each, %d mixed:%s | joined %d times, parted %d times"),
+        Count, Count ? float(Members) / Count : 0.0f, Mixed, *Line, Counters.Merges, Counters.Splits);
 }
 
 void ALakeLife::LogWater()

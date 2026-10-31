@@ -122,6 +122,7 @@ public:
         int32 Signs[(int32)ELakeSign::Count] = {};
         int32 FryAttacks = 0, PikeStrikes = 0, Eaten = 0;
         int32 FryFlights = 0;      // fry darting off from a predator before it struck
+        int32 Merges = 0, Splits = 0;   // schools joining and parting (see UpdateSchools)
         float FryEaten = 0;        // fry caught (about a mouthful a rush)
     };
     const FStats& Stats() const { return Counters; }
@@ -180,6 +181,16 @@ private:
     void RunFishPreview();
     void RunWaterPreview();
     void SampleMotion(float DeltaSeconds);
+    /**
+     * Schools join and part (fission-fusion): two schools of species that school together (stock.schoolsWith),
+     * of a size, doing the same and calm, join when their leaders meet within 4 m; a mixed school
+     * frightened scatters by species, and now and then its kinds go their own ways; a school grown
+     * far beyond its species' size splits.
+     */
+    void UpdateSchools();
+    void LogSchools();
+    float NextSchoolCheck = 0;
+    int32 NextSchoolId = -1;
     void UpdateFootsteps();
     void LogShownMotion();
 
@@ -280,4 +291,5 @@ private:
     friend class FLakeInteractionsTest;
     friend class FLakeFoodTest;
     friend class FLakeLearningTest;
+    friend class FLakeMixedSchoolsTest;
 };

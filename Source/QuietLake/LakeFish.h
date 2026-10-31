@@ -319,6 +319,7 @@ struct FFishStock
     GENERATED_BODY()
     UPROPERTY() int32 Count = 0;
     UPROPERTY() int32 SchoolSize = 1;
+    UPROPERTY() TArray<FString> SchoolsWith;   // ids of the species its schools mix with (either side naming the other is enough)
 };
 
 /** What the F3 panel says of the species' signs on the water (empty: a general note). */
@@ -422,6 +423,8 @@ namespace LakeFish
     QUIETLAKE_API const TCHAR* BaitName(EBait Bait);
     /** 0..1: where a weight falls between the species' smallest and biggest fish. */
     QUIETLAKE_API float Size01(EFishSpecies Species, float WeightKg);
+    /** Schools of these two species may swim as one (the same species, or one names the other in stock.schoolsWith). */
+    QUIETLAKE_API bool SchoolsTogether(EFishSpecies A, EFishSpecies B);
     /** Body depth and width relative to the model: big fish of a species are deeper-bodied. */
     QUIETLAKE_API float Girth(EFishSpecies Species, float WeightKg);
     /** Length in cm of a fish of the given species and weight (Fulton's condition factor). */
@@ -559,6 +562,8 @@ public:
     /** What it feeds on now (while feeding). */
     EFishFood GetFeedOn() const { return Goal != EFishGoal::Feed ? EFishFood::None : HasAuthority() ? FeedOn : (EFishFood)NetFeedOn; }
     int32 GetSchool() const { return School; }
+    /** Live Fish: it joins another school, or swims off with a new one. */
+    void SetSchool(int32 NewSchool) { School = NewSchool; }
     /**
      * Where the pond stocked this fish (its school's or its own place) and how far its home may move
      * from there with the weather. Homes move around the anchor, so a school stays in its water.
@@ -731,6 +736,7 @@ private:
     friend class FLakeGroundbaitTest;
     friend class FLakeLearningTest;
     friend class FLakeWaterTest;
+    friend class FLakeMixedSchoolsTest;
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;

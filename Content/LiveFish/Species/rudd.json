@@ -1,0 +1,63 @@
+{
+  "order": 5,
+  "name": "Краснопёрка",
+  "noun": "краснопёрка",
+  "description": "Стаи в тёплых заросших заводях и кувшинках, в верхних слоях воды. Ест мягкие растения и нитчатку, насекомых с поверхности. Любит солнце и тепло. Берёт у поверхности бойко: тычок, и поплавок уходит в сторону. Ходит вместе с плотвой.",
+  "mesh": "/Game/Fish/SM_Fish_Rudd.SM_Fish_Rudd",
+  "meshLength": 22,
+  "condition": 1.3,
+  "minWeight": 0.05,
+  "maxWeight": 0.6,
+  "girthGrowth": 0.14,
+
+  "habitat":     { "shallows": 1.0, "reedEdge": 0.8, "dropOff": 0.1, "cover": 0.3, "deep": 0.0, "open": 0.1, "minDepthM": 0.5, "maxDepthM": 2.0 },
+  "feedHabitat": { "shallows": 1.0, "reedEdge": 0.9, "dropOff": 0.0, "cover": 0.2, "deep": 0.0, "open": 0.1, "minDepthM": 0.4, "maxDepthM": 1.8 },
+  "restHabitat": { "shallows": 0.6, "reedEdge": 0.6, "dropOff": 0.3, "cover": 0.5, "deep": 0.0, "open": 0.3, "minDepthM": 0.8, "maxDepthM": 2.5 },
+  "depthMin": 0.0,
+  "depthMax": 0.4,
+
+  "cruiseSpeed": 24,
+  "burstSpeed": 130,
+  "turnRate": 210,
+  "acceleration": 320,
+  "tailBeat": 10,
+  "gait": { "hoverTurn": 50, "turnRadius": 0.5, "turnAccel": 480, "response": 0.25, "wanderDeg": 20, "wanderHz": 0.11, "kick": 1.0, "kickPeriod": 1.0, "spacing": 1.3 },
+
+  "senseRadius": 420,
+  "baits": { "worm": 0.3, "maggot": 0.9, "bread": 1.0 },
+  "bite": {
+    "minTries": 1, "maxTries": 5, "takeChance": 0.4,
+    "pauseMin": 0.3, "pauseMax": 1.0,
+    "tries": [
+      { "motion": "Peck", "seconds": 0.15, "secondsMax": 0.3, "amount": 0.8, "amountMax": 1.8, "bTake": false, "weight": 0.8 },
+      { "motion": "Tremble", "seconds": 0.3, "secondsMax": 0.6, "amount": 0.4, "amountMax": 0.7, "bTake": false, "weight": 0.2 }
+    ],
+    "take": [
+      { "motion": "Drift", "seconds": 1.0, "secondsMax": 1.8, "amount": 6, "amountMax": 12, "bPaced": true, "felt": 0.2 },
+      { "motion": "Sink", "seconds": 0.8, "secondsMax": 1.5, "amount": 15, "amountMax": 30, "bPaced": true }
+    ],
+    "sensitive": 0.6,
+    "comeback": 0.8, "maxVisits": 3, "returnMin": 3, "returnMax": 10,
+    "directHold": 3.0,
+    "earlyStrikeText": "Подсекли рано: краснопёрка только тронула наживку. Подсекайте, когда поплавок поедет в сторону."
+  },
+  "feeding": {
+    "lightShy": 0.4,
+    "wariness": 0.9, "dominance": 0.7,
+    "sipAtDusk": 0.6, "restColumn": 0.35, "feedColumnMin": 0.0, "feedColumnMax": 0.6,
+    "browseStep": 400, "browseSpeed": 0.55, "fillRate": 0.012,
+    "bask": 0.5, "bJumps": true
+  },
+  "diet":    { "plankton": 0.5, "insects": 0.9, "benthos": 0.3, "plants": 0.9, "groundbait": 0.8 },
+  "dietBig": { "plankton": 0.3, "insects": 0.8, "benthos": 0.3, "plants": 1.0, "groundbait": 0.8 },
+  "learning": { "fright": 0.6, "forgetHours": 8, "schoolShare": 0.5 },
+  "oxygenMin": 2.5,
+  "mood": { "dawn": 0.8, "day": 0.9, "dusk": 1.0, "night": 0.2, "tempLow": 10, "tempBest": 22, "tempHigh": 29, "overcast": -0.2,
+            "lightRain": 1.0, "heavyRain": 0.5, "ripple": 1.0, "strongWind": 0.5, "fog": 0.9, "front": 0.7 },
+
+  "strength": 0.75,
+  "stamina": 6,
+  "runBurst": 0.5,
+  "stock": { "count": 80, "schoolSize": 10, "schoolsWith": [ "roach" ] },
+  "signs": { "rise": "Краснопёрка берёт с поверхности — круги", "jump": "Из воды выпрыгнула краснопёрка" }
+}

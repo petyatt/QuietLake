@@ -11,7 +11,9 @@ import unreal
 lib = unreal.MaterialEditingLibrary
 assets = unreal.AssetToolsHelpers.get_asset_tools()
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPECIES = ['Perch', 'Roach', 'Crucian', 'Pike']
+SPECIES = ['Perch', 'Roach', 'Crucian', 'Pike', 'Bream', 'Rudd', 'Bleak']
+# QUIETLAKE_FISH=Bream,Rudd (environment): import only those, and keep M_Fish if it exists.
+ONLY = [n.strip() for n in os.environ.get('QUIETLAKE_FISH', '').split(',') if n.strip()]
 MAT = '/Game/Fish/M_Fish'
 
 
@@ -48,50 +50,53 @@ def prim_data(mat, name, index, default):
 
 
 # --- material ---
-if unreal.EditorAssetLibrary.does_asset_exist(MAT) and not unreal.EditorAssetLibrary.delete_asset(MAT):
-    raise RuntimeError('Cannot delete ' + MAT)
-mat = assets.create_asset('M_Fish', '/Game/Fish', unreal.Material, unreal.MaterialFactoryNew())
-mat.set_editor_property('two_sided', True)
-vertex = node(mat, unreal.MaterialExpressionVertexColor)
-uv = node(mat, unreal.MaterialExpressionTextureCoordinate)
-time = node(mat, unreal.MaterialExpressionTime)
-rate = prim_data(mat, 'SwimRate', 0, 8.0)
-amp = prim_data(mat, 'SwimAmplitude', 1, 0.05)
-phase = prim_data(mat, 'SwimPhase', 2, 0.0)
-length = prim_data(mat, 'MeshLength', 3, 25.0)
-curl = prim_data(mat, 'SwimCurl', 4, 0.0)
+if not ONLY or not unreal.EditorAssetLibrary.does_asset_exist(MAT):
+    if unreal.EditorAssetLibrary.does_asset_exist(MAT) and not unreal.EditorAssetLibrary.delete_asset(MAT):
+        raise RuntimeError('Cannot delete ' + MAT)
+    mat = assets.create_asset('M_Fish', '/Game/Fish', unreal.Material, unreal.MaterialFactoryNew())
+    mat.set_editor_property('two_sided', True)
+    vertex = node(mat, unreal.MaterialExpressionVertexColor)
+    uv = node(mat, unreal.MaterialExpressionTextureCoordinate)
+    time = node(mat, unreal.MaterialExpressionTime)
+    rate = prim_data(mat, 'SwimRate', 0, 8.0)
+    amp = prim_data(mat, 'SwimAmplitude', 1, 0.05)
+    phase = prim_data(mat, 'SwimPhase', 2, 0.0)
+    length = prim_data(mat, 'MeshLength', 3, 25.0)
+    curl = prim_data(mat, 'SwimCurl', 4, 0.0)
 
-# Lateral body wave in local space: travels head -> tail, grows towards the tail.
-wave = custom(mat, """
-float u = saturate(UV.x);
-float env = 0.12 + pow(u, 1.7);
-float side = A * Len * env * sin(u * 5.5 - T * R + Ph);
-// Turning, the whole body curves: head and tail towards the inside of the turn.
-float d = u - 0.4;
-side += C * Len * d * d;
-return float3(0, side, 0);
-""", [('UV', uv), ('T', time), ('R', rate), ('A', amp), ('Ph', phase), ('Len', length), ('C', curl)])
-to_world = node(mat, unreal.MaterialExpressionTransform,
-                transform_source_type=unreal.MaterialVectorCoordTransformSource.TRANSFORMSOURCE_LOCAL,
-                transform_type=unreal.MaterialVectorCoordTransform.TRANSFORM_WORLD)
-connect(wave, '', to_world, '')   # single unnamed input
-lib.connect_material_property(to_world, '', unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
+    # Lateral body wave in local space: travels head -> tail, grows towards the tail.
+    wave = custom(mat, """
+    float u = saturate(UV.x);
+    float env = 0.12 + pow(u, 1.7);
+    float side = A * Len * env * sin(u * 5.5 - T * R + Ph);
+    // Turning, the whole body curves: head and tail towards the inside of the turn.
+    float d = u - 0.4;
+    side += C * Len * d * d;
+    return float3(0, side, 0);
+    """, [('UV', uv), ('T', time), ('R', rate), ('A', amp), ('Ph', phase), ('Len', length), ('C', curl)])
+    to_world = node(mat, unreal.MaterialExpressionTransform,
+                    transform_source_type=unreal.MaterialVectorCoordTransformSource.TRANSFORMSOURCE_LOCAL,
+                    transform_type=unreal.MaterialVectorCoordTransform.TRANSFORM_WORLD)
+    connect(wave, '', to_world, '')   # single unnamed input
+    lib.connect_material_property(to_world, '', unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
 
-# Scales: fine sparkle so the body does not look like plastic.
-colour = custom(mat, """
-float s = frac(sin(dot(floor(UV.xy * float2(220, 60)), float2(12.9898, 78.233))) * 43758.5453);
-return V.rgb * (0.9 + 0.12 * s);
-""", [('V', vertex), ('UV', uv)])
-lib.connect_material_property(colour, '', unreal.MaterialProperty.MP_BASE_COLOR)
-rough = node(mat, unreal.MaterialExpressionConstant, r=0.32)
-lib.connect_material_property(rough, '', unreal.MaterialProperty.MP_ROUGHNESS)
-spec = node(mat, unreal.MaterialExpressionConstant, r=0.65)
-lib.connect_material_property(spec, '', unreal.MaterialProperty.MP_SPECULAR)
-lib.recompile_material(mat)
-unreal.EditorAssetLibrary.save_asset(MAT)
+    # Scales: fine sparkle so the body does not look like plastic.
+    colour = custom(mat, """
+    float s = frac(sin(dot(floor(UV.xy * float2(220, 60)), float2(12.9898, 78.233))) * 43758.5453);
+    return V.rgb * (0.9 + 0.12 * s);
+    """, [('V', vertex), ('UV', uv)])
+    lib.connect_material_property(colour, '', unreal.MaterialProperty.MP_BASE_COLOR)
+    rough = node(mat, unreal.MaterialExpressionConstant, r=0.32)
+    lib.connect_material_property(rough, '', unreal.MaterialProperty.MP_ROUGHNESS)
+    spec = node(mat, unreal.MaterialExpressionConstant, r=0.65)
+    lib.connect_material_property(spec, '', unreal.MaterialProperty.MP_SPECULAR)
+    lib.recompile_material(mat)
+    unreal.EditorAssetLibrary.save_asset(MAT)
 
 # --- meshes ---
 for name in SPECIES:
+    if ONLY and name not in ONLY:
+        continue
     task = unreal.AssetImportTask()
     task.set_editor_property('filename', os.path.join(ROOT, 'Tools', 'GeneratedFish', 'SM_Fish_%s.fbx' % name))
     task.set_editor_property('destination_path', '/Game/Fish')
