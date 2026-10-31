@@ -52,7 +52,7 @@
     "browseStep": 160, "browseSpeed": 0.55, "fillRate": 0.012,
     "bask": 0.3, "nightShallows": 0.4, "bJumps": true
   },
-  "diet":    { "plankton": 0.25, "insects": 0.1, "benthos": 1.0, "plants": 0.6 },
+  "diet":    { "plankton": 0.25, "insects": 0.1, "benthos": 1.0, "plants": 0.6, "groundbait": 1.0 },
   "mood": { "dawn": 1.0, "day": 0.4, "dusk": 0.9, "night": 0.7, "tempLow": 12, "tempBest": 23, "tempHigh": 29, "overcast": 0.3,
             "lightRain": 1.25, "heavyRain": 0.5, "ripple": 0.85, "strongWind": 0.35, "fog": 1.2, "front": 1.0 },
 

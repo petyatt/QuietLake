@@ -100,6 +100,7 @@ float FFishDiet::Of(EFishFood Food) const
     case EFishFood::Plants: return Plants;
     case EFishFood::Fry: return Fry;
     case EFishFood::Fish: return Fish;
+    case EFishFood::Groundbait: return Groundbait;
     default: return 0;
     }
 }
@@ -115,6 +116,7 @@ FFishDiet LakeFish::DietOf(EFishSpecies Species, float Size01)
     D.Plants = FMath::Lerp(S.Diet.Plants, S.DietBig.Plants, T);
     D.Fry = FMath::Lerp(S.Diet.Fry, S.DietBig.Fry, T);
     D.Fish = FMath::Lerp(S.Diet.Fish, S.DietBig.Fish, T);
+    D.Groundbait = FMath::Lerp(S.Diet.Groundbait, S.DietBig.Groundbait, T);
     return D;
 }
 
@@ -154,7 +156,7 @@ bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpecie
     if (Info.Name.IsEmpty() || Info.Noun.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: name and noun are needed"), *File));
     if (Info.Diet.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: diet is empty - what does it eat? (plankton, insects, benthos, plants, fry, fish)"), *File));
     for (const FFishDiet* Diet : { &Info.Diet, &Info.DietBig })
-        for (float V : { Diet->Plankton, Diet->Insects, Diet->Benthos, Diet->Plants, Diet->Fry, Diet->Fish })
+        for (float V : { Diet->Plankton, Diet->Insects, Diet->Benthos, Diet->Plants, Diet->Fry, Diet->Fish, Diet->Groundbait })
             if (V < 0 || V > 1.5f) { Problems.Add(FString::Printf(TEXT("%s: diet values go from 0 to 1"), *File)); break; }
     return true;
 }
@@ -649,7 +651,7 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
     // Hungry perch go after the nearest fry (those living at a fishing spot only after fry close to
     // their home, so a chase does not lead them off step by step) - if fry are what they eat.
     int32 Fry = -1;
-    if (Goal == EFishGoal::Feed && S.Feeding.bHuntsFry && Life && (!bByFood || Diet.Fry > 0) && !(bLocal && LakeFood::IsNatural(FeedOn)))
+    if (Goal == EFishGoal::Feed && S.Feeding.bHuntsFry && Life && (!bByFood || Diet.Fry > 0) && !(bLocal && (LakeFood::IsNatural(FeedOn) || FeedOn == EFishFood::Groundbait)))
     {
         const bool bResident = HomeDrift < 1000;
         Fry = Life->NearestFry(bResident ? HomePoint : GetActorLocation(), bResident ? 1500.0f : 4500.0f);
@@ -670,6 +672,22 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
     const FVector2D Near = bLocal || !bHomeBound ? FVector2D(GetActorLocation()) : FVector2D(HomePoint);
     if (bByFood)
     {
+        // Groundbait whose smell has reached it: how much it goes for it and how rich it is; browsing
+        // on it, it keeps to it while some is left.
+        float Smell = 0;
+        const int32 GroundIndex = Field->SmellGroundbait(FVector2D(GetActorLocation()), Smell);
+        const FGroundbaitSpot* Ground = GroundIndex >= 0 ? &Field->Groundbait()[GroundIndex] : nullptr;
+        // Even a faint smell tells where rich food lies: it is worth half its value at least.
+        const float GroundValue = Ground && Smell > 0.03f ? LakeFood::GroundbaitAppeal(Diet, *Ground) * LakeFood::GroundbaitRichness(*Ground) * (0.5f + 0.5f * Smell) : 0.0f;
+        auto ToGroundbait = [&]
+        {
+            const FVector2D At = Ground->Location + FVector2D(Random.FRandRange(-90.0f, 90.0f), Random.FRandRange(-90.0f, 90.0f));
+            if (FeedOn != EFishFood::Groundbait || !bLocal) FeedFound = GroundValue;
+            FeedOn = EFishFood::Groundbait;
+            NextFoodCheck = SimTime + 4;
+            RoamTarget = FVector(At, LakeFood::FeedingZ(EFishFood::Groundbait, At.X, At.Y, Conditions, Random));
+        };
+        if (bLocal && FeedOn == EFishFood::Groundbait && Ground && Ground->Balls > 0.1f) { ToGroundbait(); return; }
         // Where its food is: each place weighed by the best food there for this fish (browsing on, it
         // keeps to the food it is on), and by the way there - a fish does not swim far for a little
         // better; it feeds in the layer that food is in.
@@ -691,11 +709,15 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
         const FVector Spot = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal, Weigh);
         const float Value = Best(FVector2D(Spot), Which);
         // Fry close by are a richer meal than most for a fish that eats them.
-        if (Fry >= 0 && Diet.Fry * Random.FRandRange(0.7f, 1.1f) > Value) { ChaseFry(); return; }
+        if (Fry >= 0 && Diet.Fry * Random.FRandRange(0.7f, 1.1f) > FMath::Max(Value, GroundValue)) { ChaseFry(); return; }
+        // Groundbait: concentrated food, if it beats what it would find on its own.
+        if (GroundValue > 0.05f && GroundValue * Random.FRandRange(0.85f, 1.15f) > Value) { ToGroundbait(); return; }
         if (Which != EFishFood::None)
         {
+            // What it found where it chose to feed (browsing on within the patch does not lower the mark,
+            // so a patch eaten down is left).
+            if (!bKeep) FeedFound = Value;
             FeedOn = Which;
-            FeedFound = Value;
             NextFoodCheck = SimTime + 4;
             RoamTarget = FVector(Spot.X, Spot.Y, LakeFood::FeedingZ(Which, Spot.X, Spot.Y, Conditions, Random));
             return;
@@ -769,6 +791,13 @@ void ALakeFish::Decide()
     const float A = FMath::Clamp(Activity, 0.0f, 1.3f);
     float Score[(int32)EFishGoal::Count];
     Score[(int32)EFishGoal::Feed] = FMath::Pow(Hunger, 1.3f) * A * 1.4f;
+    // The smell of groundbait close by stirs its appetite.
+    if (const ALakeLife* Life = ALakeLife::Get(GetWorld()); Life && !Life->Food().Groundbait().IsEmpty())
+    {
+        float Smell = 0;
+        const int32 G = Life->Food().SmellGroundbait(FVector2D(GetActorLocation()), Smell);
+        if (G >= 0) Score[(int32)EFishGoal::Feed] += 0.6f * Smell * LakeFood::GroundbaitAppeal(LakeFish::DietOf(Species, Size01), Life->Food().Groundbait()[G]) * FMath::Max(0.3f, Hunger);
+    }
     Score[(int32)EFishGoal::Rest] = (1 - Energy) * 1.4f + FMath::Max(0.0f, 0.55f - A) * 1.5f;
     Score[(int32)EFishGoal::Cruise] = 0.3f + 0.15f * Energy;
     Score[(int32)Goal] *= 1.15f;
@@ -988,11 +1017,43 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
             if (SimTime >= NextFoodCheck && Leader() == this)
             {
                 NextFoodCheck = SimTime + Random.FRandRange(2.0f, 4.0f);
-                if (There < FMath::Max(0.08f, 0.45f * FeedFound)) { ChooseRoamTarget(); bAtSpot = false; bRooting = false; StateTime = 0; }
+                if (There < FMath::Max(0.08f, 0.45f * FeedFound))
+                {
+                    // Somewhere that really has more of it (not the patch it has just eaten down).
+                    const float Enough = FMath::Max(0.08f, 0.45f * FeedFound);
+                    for (int32 Try = 0; Try < 4; ++Try)
+                    {
+                        ChooseRoamTarget();
+                        if (!LakeFood::IsNatural(FeedOn) || Field->Available(FeedOn, FVector2D(RoamTarget), Seen) >= Enough) break;
+                    }
+                    bAtSpot = false;
+                    bRooting = false;
+                    StateTime = 0;
+                }
             }
         }
         // Grazers find food where they browse; fry hunters without fry pick at the bottom; a fish-eater
         // fills only by eating fish.
+        else if (Field && FeedOn == EFishFood::Groundbait)
+        {
+            // On the groundbait: rich food, eaten down; when it is gone the fish moves on.
+            const FVector2D Here(GetActorLocation());
+            float Smell = 0;
+            const int32 G = Field->SmellGroundbait(Here, Smell);
+            const bool bOnIt = G >= 0 && FVector2D::Distance(Here, Field->Groundbait()[G].Location) < 200;
+            if (bOnIt)
+            {
+                // Crumbs: picked up a little at a time, so it fills about as on a good natural patch and stays a while.
+                const float Meal = DeltaSeconds * S.Feeding.FillRate * 0.8f * LakeFood::GroundbaitRichness(Field->Groundbait()[G]);
+                Hunger -= Meal;
+                Field->EatGroundbait(G, Meal, WeightKg);
+            }
+            if (SimTime >= NextFoodCheck && Leader() == this)
+            {
+                NextFoodCheck = SimTime + Random.FRandRange(2.0f, 4.0f);
+                if (!bOnIt || Field->Groundbait()[G].Balls < 0.1f) { ChooseRoamTarget(); bAtSpot = false; bRooting = false; StateTime = 0; }
+            }
+        }
         else if (!(S.Feeding.bHuntsFry && PreyFry >= 0)) Hunger -= DeltaSeconds * S.Feeding.FillRate;
         Hunger = FMath::Max(0.0f, Hunger);
     }
@@ -1340,13 +1401,29 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
             if (!bBack && Dist > S.SenseRadius) continue;
             // Feeding, it finds a bait in the layer it feeds in, likes one that goes with its food and
             // is choosy amid plenty (a big hatch).
-            const bool bOnFood = Goal == EFishGoal::Feed && LakeFood::IsNatural(FeedOn);
+            // On groundbait: the hook bait it was mixed with goes down best, and the more was thrown,
+            // the fuller and choosier the fish.
+            const bool bOnGroundbait = Goal == EFishGoal::Feed && FeedOn == EFishFood::Groundbait;
+            const bool bOnFood = Goal == EFishGoal::Feed && (LakeFood::IsNatural(FeedOn) || bOnGroundbait);
             const float FeedColumn = bOnFood ? Depth01(RoamTarget.Z, RoamTarget.X, RoamTarget.Y) : -1.0f;
-            float Interest = LakeFish::BaitInterest(Species, Candidate->Bait, Depth01(Bait.Z, Bait.X, Bait.Y), FeedColumn) * LakeFood::BaitMatch(FeedOn, Candidate->Bait)
+            float Match = LakeFood::BaitMatch(FeedOn, Candidate->Bait), Plenty = 0;
+            if (const ALakeLife* FoodLife = ALakeLife::Get(GetWorld()); bOnFood && FoodLife && FoodLife->Food().IsReady())
+            {
+                const FLakeFoodField& Field = FoodLife->Food();
+                if (bOnGroundbait)
+                {
+                    float Smell = 0;
+                    if (const int32 G = Field.SmellGroundbait(FVector2D(GetActorLocation()), Smell); G >= 0)
+                    {
+                        Match = LakeFood::GroundbaitMix(Field.Groundbait()[G]) == Candidate->Bait ? 1.15f : 0.95f;
+                        Plenty = 1 - FMath::Exp(-Field.Groundbait()[G].Balls / 2);
+                    }
+                }
+                else if (bSeen) Plenty = FMath::Clamp(Field.Available(FeedOn, FVector2D(GetActorLocation()), Seen), 0.0f, 1.0f);
+            }
+            float Interest = LakeFish::BaitInterest(Species, Candidate->Bait, Depth01(Bait.Z, Bait.X, Bait.Y), FeedColumn) * Match
                 * Hunger * Activity * Mind * FMath::Sqrt(FMath::Max(0.0f, 1 - Dist / S.SenseRadius)) * (1 - Fear);
-            if (bOnFood && bSeen)
-                if (const ALakeLife* Life = ALakeLife::Get(GetWorld()); Life && Life->Food().IsReady())
-                    Interest *= 1.15f - 0.35f * FMath::Clamp(Life->Food().Available(FeedOn, FVector2D(GetActorLocation()), Seen), 0.0f, 1.0f);
+            if (bOnFood) Interest *= 1.15f - 0.35f * Plenty;
             if (bBack || Random.FRand() < Interest * 0.7f)
             {
                 State = EState::Investigate;

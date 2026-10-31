@@ -140,6 +140,7 @@ TSharedRef<SWidget> ULakeMenuWidget::RebuildWidget()
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ после заброса"), TEXT("держать — поднимать удилище, снасть придёт в левую руку; отпустить — удилище остановится")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ПКМ"), TEXT("подсечка, когда поплавок ушёл под воду, лёг или поехал")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ с рыбой"), TEXT("держать — поднимать удилище и тянуть рыбу, отпускать на рывках")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("G"), TEXT("бросить шар прикормки к поплавку (или куда смотрите, до 12 м); в шар добавляется то, что на крючке; рыба подходит на запах через минуту-другую")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("R"), TEXT("поставить удочку на рогатку / взять")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("V"), TEXT("вид от первого лица / со стороны")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("1 / 2 / 3"), TEXT("наживка: червь, опарыш, хлеб")),
@@ -157,7 +158,7 @@ TSharedRef<SWidget> ULakeMenuWidget::RebuildWidget()
             HelpRow->AddChildToHorizontalBox(Value)->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
             Help->AddChildToVerticalBox(HelpRow)->SetPadding(FMargin(0, 3));
         }
-        UTextBlock* Tips = Label(TEXT("Окунь любит червя, плотва — опарыша и хлеб, карась держится у дна, щука стоит в засаде у тростника. Плотва ходит в верхних слоях — ставьте мельче; окунь и щука — в средней толще; для карася опускайте наживку до самого дна. Рыбу пугает всплеск и ранняя подсечка."), 15, Muted);
+        UTextBlock* Tips = Label(TEXT("Окунь любит червя, плотва — опарыша и хлеб, карась держится у дна, щука стоит в засаде у тростника. Плотва ходит в верхних слоях — ставьте мельче; окунь и щука — в средней толще; для карася опускайте наживку до самого дна. Рыбу пугает всплеск и ранняя подсечка. Прикормка (G) за пару минут собирает плотву и карася; с червём в шаре подходит и окунь; перекормите — рыба наестся и станет разборчивой."), 15, Muted);
         Tips->SetAutoWrapText(true);
         Help->AddChildToVerticalBox(Tips)->SetPadding(FMargin(0, 22, 40, 18));
         MenuButton(TEXT("Назад"), Help)->OnClicked.AddDynamic(this, &ULakeMenuWidget::OnBack);
@@ -289,7 +290,7 @@ void ALakePlayerController::BeginPlay()
     if (!IsLocalController()) return;
     ApplyVolume(LoadVolume());
     // Automated preview runs go straight into the game.
-    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("FishPreview")) || FParse::Param(FCommandLine::Get(), TEXT("WaterPreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CastPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LinePreview")) || FParse::Param(FCommandLine::Get(), TEXT("RodPreview")) || FParse::Param(FCommandLine::Get(), TEXT("HandsPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LeaderPreview")) || FParse::Param(FCommandLine::Get(), TEXT("RetrievePreview"))) { bStarted = true; return; }
+    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("FishPreview")) || FParse::Param(FCommandLine::Get(), TEXT("WaterPreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CastPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LinePreview")) || FParse::Param(FCommandLine::Get(), TEXT("RodPreview")) || FParse::Param(FCommandLine::Get(), TEXT("HandsPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LeaderPreview")) || FParse::Param(FCommandLine::Get(), TEXT("RetrievePreview")) || FParse::Param(FCommandLine::Get(), TEXT("GroundbaitPreview"))) { bStarted = true; return; }
     // A slow flight around the lake behind the menu.
     MenuCamera = GetWorld()->SpawnActor<ACameraActor>();
     if (MenuCamera) MenuCamera->GetCameraComponent()->SetFieldOfView(60);

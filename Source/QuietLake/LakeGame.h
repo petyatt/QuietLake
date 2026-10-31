@@ -23,6 +23,8 @@ public:
     virtual void BeginPlay() override;
     UPROPERTY(Replicated) EFishingState FishingState = EFishingState::Idle;
     UPROPERTY(Replicated) int32 CatchCount = 0;
+    /** Balls of groundbait left in the bag (G throws one). */
+    UPROPERTY(Replicated) int32 GroundbaitLeft = 30;
     UPROPERTY(Replicated) FString Status = TEXT("Подойдите к воде. ЛКМ — забросить.");
     UPROPERTY(Replicated) FVector FloatPosition = FVector::ZeroVector;
     UPROPERTY(Replicated) float Tension = 0;
@@ -186,6 +188,7 @@ private:
     friend class FLakeCastingTest;
     friend class FLakeWindDriftTest;
     friend class FLakeRodControlTest;
+    friend class FLakeGroundbaitTest;
     void SelectBait(EBait NewBait);
     void BaitWorm() { SelectBait(EBait::Worm); }
     void BaitMaggot() { SelectBait(EBait::Maggot); }
@@ -209,6 +212,12 @@ private:
     float RodDiagnosticTime = 0, NextRodDiagnosticLog = 0;
     int32 RodDiagnosticStage = 0;
     UFUNCTION(Server, Reliable) void ServerToggleRod();
+    /** G: a ball of groundbait to the float (or where the angler looks), with the hook bait mixed in. */
+    void ThrowGroundbait();
+    /** Where a ball goes: the float when the rig is in the water, otherwise where the angler looks (up to 12 m). */
+    FVector GroundbaitTarget() const;
+    UFUNCTION(Server, Reliable) void ServerThrowGroundbait(FVector_NetQuantize Target);
+    float NextGroundbait = 0;   // server: a moment between throws
     /** LMB pressed with nothing out: the rig taken in the hand. */
     void StartCast();
     /** LMB release: make a low cast, with distance determined by Held seconds. */

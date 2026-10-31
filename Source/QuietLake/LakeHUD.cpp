@@ -41,7 +41,7 @@ void ALakeHUD::DrawHUD()
     const bool bUrgent = Fisher->FishingState >= EFishingState::Bite;
     const float Age = Now - StatusTime;
     const float Alpha = bUrgent ? 1.0f : FMath::Clamp((6.0f - Age) / 1.0f, 0.0f, 1.0f);
-    FString Info = FString::Printf(TEXT("Улов: %d   ·   Наживка: %s   ·   Глубина: %.0f см   ·   Удилище: %s"), Fisher->CatchCount, LakeFish::BaitName(Fisher->Bait), Fisher->FloatDepth, ALakeCharacter::RodName(Fisher->RodKind));
+    FString Info = FString::Printf(TEXT("Улов: %d   ·   Наживка: %s   ·   Глубина: %.0f см   ·   Удилище: %s   ·   Прикормка: %d"), Fisher->CatchCount, LakeFish::BaitName(Fisher->Bait), Fisher->FloatDepth, ALakeCharacter::RodName(Fisher->RodKind), Fisher->GroundbaitLeft);
     // The name of the fishing spot the angler stands at.
     if (const LakeMap::FSpot* Spot = LakeMap::SpotAt(FVector2D(Fisher->GetActorLocation()))) Info = FString::Printf(TEXT("%s   ·   %s"), Spot->Name, *Info);
     const float Pad = 14 * S, X = 28 * S;
@@ -101,7 +101,7 @@ void ALakeHUD::DrawHUD()
     const float HintAlpha = FMath::Clamp((15.0f - (Now - PlayStart)) / 2.0f, 0.0f, 1.0f);
     if (HintAlpha > 0)
     {
-        const FString Hint = TEXT("Мышь — взгляд и удилище   ·   ЛКМ держать — мах / подъём   ·   отпустить — опустить снасть   ·   ЛКМ с рыбой — держать и отпускать на рывках   ·   ПКМ — подсечка   ·   Q — удилище   ·   +/− — глубина   ·   R — рогатка   ·   V — вид   ·   Esc — меню");
+        const FString Hint = TEXT("Мышь — взгляд и удилище   ·   ЛКМ держать — мах / подъём   ·   отпустить — опустить снасть   ·   ЛКМ с рыбой — держать и отпускать на рывках   ·   ПКМ — подсечка   ·   Q — удилище   ·   +/− — глубина   ·   G — прикормка   ·   R — рогатка   ·   V — вид   ·   Esc — меню");
         Text(Hint, FLinearColor(0.85f, 0.87f, 0.85f, 0.75f * HintAlpha), Canvas->ClipX - Width(Hint, 0.75f) - 28 * S, WeatherTop - 30 * S, 0.75f);
     }
     if (bShowLife) DrawLifePanel(S);
@@ -116,7 +116,7 @@ void ALakeHUD::DrawLifePanel(float S)
     TArray<int32> Count, Total, Food;
     Count.Init(0, Kinds * (int32)EFishGoal::Count);
     Total.Init(0, Kinds);
-    Food.Init(0, Kinds * 7);   // what the feeding fish are on
+    Food.Init(0, Kinds * 8);   // what the feeding fish are on
     const FLinearColor GoalColour[] = { FLinearColor(0.7f, 0.72f, 0.72f), FLinearColor(0.45f, 0.95f, 0.45f), FLinearColor(0.45f, 0.7f, 1.0f) };
     const APlayerController* PC = GetOwningPlayerController();
     FVector ViewPos = FVector::ZeroVector;
@@ -128,7 +128,7 @@ void ALakeHUD::DrawLifePanel(float S)
         if ((int32)Fish->Species >= Kinds) continue;
         ++Count[(int32)Fish->Species * (int32)EFishGoal::Count + (int32)Fish->GetGoal()];
         ++Total[(int32)Fish->Species];
-        if (Fish->GetGoal() == EFishGoal::Feed) ++Food[(int32)Fish->Species * 7 + FMath::Clamp((int32)Fish->GetFeedOn(), 0, 6)];
+        if (Fish->GetGoal() == EFishGoal::Feed) ++Food[(int32)Fish->Species * 8 + FMath::Clamp((int32)Fish->GetFeedOn(), 0, 7)];
         const FVector P = Fish->GetActorLocation();
         if (FVector::Dist(P, ViewPos) > 3000 || FVector::DotProduct(P - ViewPos, ViewRot.Vector()) < 50) continue;
         const FVector Screen = Canvas->Project(P);
@@ -144,7 +144,7 @@ void ALakeHUD::DrawLifePanel(float S)
         const EFishSpecies Species = (EFishSpecies)Sp;
         // The food most of the feeding ones are on.
         int32 Main = 0;
-        for (int32 F = 1; F < 7; ++F) if (Food[Sp * 7 + F] > Food[Sp * 7 + Main]) Main = F;
+        for (int32 F = 1; F < 8; ++F) if (Food[Sp * 8 + F] > Food[Sp * 8 + Main]) Main = F;
         const FString On = Main > 0 ? FString::Printf(TEXT(" (%s)"), LakeFood::Name((EFishFood)Main)) : FString();
         Lines.Add({ FString::Printf(TEXT("%s %d:  %s %d%s  ·  %s %d  ·  %s %d"), *LakeFish::Info(Species).Name, Total[Sp],
             LakeFish::GoalName(Species, EFishGoal::Feed), Of(Sp, EFishGoal::Feed), *On,

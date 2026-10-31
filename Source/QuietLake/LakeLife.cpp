@@ -14,6 +14,7 @@
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/GameStateBase.h"
@@ -120,6 +121,7 @@ void ALakeLife::Tick(float DeltaSeconds)
         LogShownMotion();
     }
     UpdateJumps(GetWorld()->GetTimeSeconds());
+    UpdateBallVisuals(GetWorld()->GetTimeSeconds());
     UpdateFryVisuals(DeltaSeconds);
 }
 
@@ -136,6 +138,7 @@ void ALakeLife::Step(float DeltaSeconds)
     Time += DeltaSeconds;
     if (!FoodField.IsReady()) FoodField.Init();   // test worlds
     FoodField.Step(DeltaSeconds);
+    UpdateBalls();
     Grid.Reset();
     Schools.Reset();
     AllFish.Reset();
@@ -835,7 +838,7 @@ void ALakeLife::LogFood()
     // By species: what the feeding fish are on and how deep they feed; how far from the bank all of them are.
     for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp)
     {
-        int32 On[7] = {};
+        int32 On[8] = {};
         int32 Feeding = 0, All = 0;
         double Depth = 0, Column = 0, Bank = 0, Water = 0;
         for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
@@ -848,18 +851,102 @@ void ALakeLife::LogFood()
             Water += LakeMap::Depth(P.X, P.Y) / 100;
             if (Fish->GetGoal() != EFishGoal::Feed) continue;
             ++Feeding;
-            ++On[FMath::Clamp((int32)Fish->GetFeedOn(), 0, 6)];
+            ++On[FMath::Clamp((int32)Fish->GetFeedOn(), 0, 7)];
             Depth += (LakeFish::SurfaceZ - P.Z) / 100;
             Column += FMath::Clamp((LakeFish::SurfaceZ - P.Z) / FMath::Max(1.0f, LakeFish::SurfaceZ - ALakeFish::BottomZ(P.X, P.Y)), 0.0f, 1.0f);
         }
         if (!All) continue;
         Line += FString::Printf(TEXT(" | %s: feeding %d"), SpeciesNoun((EFishSpecies)Sp), Feeding);
-        for (int32 F = 0; F < 7; ++F)
+        for (int32 F = 0; F < 8; ++F)
             if (On[F]) Line += FString::Printf(TEXT(" %s %.0f%%"), LakeFood::Name((EFishFood)F), 100.0f * On[F] / Feeding);
         if (Feeding) Line += FString::Printf(TEXT(", at %.1f m (%.2f of the depth)"), Depth / Feeding, Column / Feeding);
         Line += FString::Printf(TEXT("; all %d: %.1f m from the bank over %.1f m of water"), All, Bank / All, Water / All);
     }
+    // Groundbait on the bottom.
+    if (!FoodField.Groundbait().IsEmpty())
+    {
+        float Balls = 0;
+        for (const FGroundbaitSpot& G : FoodField.Groundbait()) Balls += G.Balls;
+        Line += FString::Printf(TEXT(" | groundbait: %d patches, %.1f balls left"), FoodField.Groundbait().Num(), Balls);
+    }
     UE_LOG(LogTemp, Display, TEXT("%s"), *Line);
+}
+
+void ALakeLife::ThrowGroundbait(const FVector& From, const FVector& Target, EBait With)
+{
+    const float Flight = 0.5f + FVector::Dist2D(From, Target) / 1500;
+    FBallInFlight Ball;
+    Ball.Target = FVector(Target.X, Target.Y, LakeFish::SurfaceZ);
+    Ball.With = With;
+    Ball.LandAt = Time + Flight;
+    Ball.BottomAt = Ball.LandAt + FMath::Max(1.0f, (LakeFish::SurfaceZ - ALakeFish::BottomZ(Target.X, Target.Y)) / 35);
+    BallsInFlight.Add(Ball);
+    MulticastBall(From, Ball.Target, Flight);
+}
+
+void ALakeLife::UpdateBalls()
+{
+    for (int32 I = BallsInFlight.Num() - 1; I >= 0; --I)
+    {
+        FBallInFlight& B = BallsInFlight[I];
+        if (!B.bLanded && Time >= B.LandAt)
+        {
+            // A plop and rings; fish right by it shy away, they come back to the smell.
+            B.bLanded = true;
+            EmitSign(ELakeSign::Rise, B.Target, 0.75f, EFishSpecies::Roach, 0.1f, 0, true);
+            Disturb(B.Target, 350, 0.45f);
+        }
+        if (Time >= B.BottomAt)
+        {
+            FoodField.AddGroundbait(FVector2D(B.Target), B.With);
+            BallsInFlight.RemoveAt(I);
+        }
+    }
+}
+
+void ALakeLife::MulticastBall_Implementation(FVector_NetQuantize From, FVector_NetQuantize To, float Flight)
+{
+    if (GetNetMode() == NM_DedicatedServer) return;
+    int32 Slot = BallViews.IndexOfByPredicate([Now = GetWorld()->GetTimeSeconds()](const FBallView& V) { return Now > V.Start + V.Flight; });
+    if (Slot == INDEX_NONE) { if (BallViews.Num() >= 6) return; Slot = BallViews.Add(FBallView()); }
+    BallViews[Slot] = { FVector(From), FVector(To), (float)GetWorld()->GetTimeSeconds(), FMath::Max(0.2f, Flight) };
+    if (!BallMeshes.IsValidIndex(Slot))
+    {
+        // A ball of groundbait the size of a small orange, the colour of wet crumbs.
+        auto* Ball = NewObject<UStaticMeshComponent>(this);
+        Ball->SetupAttachment(RootComponent);
+        Ball->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        Ball->SetMobility(EComponentMobility::Movable);
+        Ball->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")));
+        if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial")))
+        {
+            UMaterialInstanceDynamic* Crumbs = UMaterialInstanceDynamic::Create(Base, Ball);
+            Crumbs->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.32f, 0.22f, 0.12f));
+            Ball->SetMaterial(0, Crumbs);
+        }
+        Ball->SetWorldScale3D(FVector(0.07f));
+        Ball->SetCastShadow(true);
+        Ball->RegisterComponent();
+        BallMeshes.SetNum(Slot + 1);
+        BallMeshes[Slot] = Ball;
+    }
+    BallMeshes[Slot]->SetVisibility(true);
+    UpdateBallVisuals(GetWorld()->GetTimeSeconds());
+}
+
+void ALakeLife::UpdateBallVisuals(float Now)
+{
+    for (int32 I = 0; I < BallViews.Num() && I < BallMeshes.Num(); ++I)
+    {
+        const FBallView& V = BallViews[I];
+        UStaticMeshComponent* Ball = BallMeshes[I];
+        if (!Ball) continue;
+        const float T = (Now - V.Start) / V.Flight;
+        if (T >= 1 || T < 0) { if (Ball->IsVisible()) Ball->SetVisibility(false); continue; }
+        // An underarm lob: up and over to where it plops in.
+        const float Height = 90 + 0.06f * FVector::Dist2D(V.From, V.To);
+        Ball->SetWorldLocation(FMath::Lerp(V.From, V.To, T) + FVector(0, 0, Height * 4 * T * (1 - T)));
+    }
 }
 
 void ALakeLife::SamplePrey()

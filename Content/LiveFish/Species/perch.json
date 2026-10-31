@@ -44,8 +44,8 @@
     "feedColumnMin": 0.6, "feedColumnMax": 0.95, "restColumn": 0.8,
     "browseStep": 500, "browseSpeed": 1.0, "fillRate": 0.005
   },
-  "diet":    { "plankton": 0.6, "insects": 0.35, "benthos": 0.7, "fry": 0.4 },
-  "dietBig": { "plankton": 0.05, "insects": 0.1, "benthos": 0.35, "fry": 1.0, "fish": 1.0 },
+  "diet":    { "plankton": 0.6, "insects": 0.35, "benthos": 0.7, "fry": 0.4, "groundbait": 0.15 },
+  "dietBig": { "plankton": 0.05, "insects": 0.1, "benthos": 0.35, "fry": 1.0, "fish": 1.0, "groundbait": 0.05 },
   "mood": { "dawn": 1.0, "day": 0.75, "dusk": 0.9, "night": 0.15, "tempLow": 6, "tempBest": 18, "tempHigh": 27, "overcast": 0.1,
             "lightRain": 1.0, "heavyRain": 0.5, "ripple": 1.15, "strongWind": 0.6, "fog": 0.85, "front": 0.8 },
 

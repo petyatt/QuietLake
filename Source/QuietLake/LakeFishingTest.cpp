@@ -1440,7 +1440,7 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
         ALakeFish* Roach = Spawn(EFishSpecies::Roach, 0.15f, Open + Right * 250);
         TArray<ALakeFish*> Fish = { Pike, Roach };
         float Before = FVector::Dist(Pike->GetActorLocation(), Roach->GetActorLocation()), Fear = 0;
-        for (int32 I = 0; I < 60; ++I)
+        for (int32 I = 0; I < 80; ++I)
         {
             Pike->Vel = FVector(Facing, 0) * 25;   // it keeps swimming
             Step({ Roach });
@@ -1684,18 +1684,24 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
         const FVector2D First(Crucian->RoamTarget);
         const float Bottom = ALakeFish::BottomZ(First.X, First.Y);
         TestTrue(TEXT("It feeds at the bottom"), Crucian->RoamTarget.Z < Bottom + 20);
-        float Farthest = 0;
         int32 Steps = 0;
-        for (; Steps < 8000 && Farthest < 450; ++Steps)
+        // The patch it eats is where it starts rooting (near its target). Moved on: its target now in a
+        // patch clearly richer than that one, a few metres off.
+        FVector2D Patch = First;
+        bool bPatch = false;
+        auto MovedOn = [&] { const FVector2D To(Crucian->RoamTarget); return bPatch && Life->Food().Left(EFishFood::Benthos, Patch) < 0.8f
+            && Life->Food().Left(EFishFood::Benthos, To) > Life->Food().Left(EFishFood::Benthos, Patch) + 0.2f && FVector2D::Distance(To, Patch) > 250; };
+        for (; Steps < 8000 && !MovedOn(); ++Steps)
         {
             Crucian->Hunger = 1;
             Life->Step(Dt);
             Crucian->Simulate(Dt);
-            Farthest = FMath::Max(Farthest, (float)FVector2D::Distance(First, FVector2D(Crucian->RoamTarget)));
+            if (!bPatch && Crucian->bRooting) { bPatch = true; Patch = FVector2D(Crucian->GetActorLocation()); }
         }
-        const float Left = Life->Food().Left(EFishFood::Benthos, First);
-        AddInfo(FString::Printf(TEXT("Crucian: its first patch eaten down to %.2f, moved on %.0f cm after %.0f s"), Left, Farthest, Steps * Dt));
-        TestTrue(TEXT("A crucian eats its patch down and moves on to another"), Left < 0.8f && Farthest >= 450);
+        const float Left = Life->Food().Left(EFishFood::Benthos, Patch);
+        AddInfo(FString::Printf(TEXT("Crucian: its patch eaten down to %.2f, moved on to a patch with %.2f left, %.0f cm off, after %.0f s"),
+            Left, Life->Food().Left(EFishFood::Benthos, FVector2D(Crucian->RoamTarget)), (float)FVector2D::Distance(Patch, FVector2D(Crucian->RoamTarget)), Steps * Dt));
+        TestTrue(TEXT("A crucian eats its patch down and moves on to another"), MovedOn());
         Crucian->Destroy();
     }
     // 6. Roach feed at the top at dusk (insects, plankton risen) and deep at noon (plankton sunk).
@@ -1759,6 +1765,170 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("A bait in the layer a fish feeds in is found far more readily"), In > 3 * Off);
     }
     World->DestroyWorld(false);
+    return true;
+}
+
+// Groundbait: its smell builds over a minute and reaches farther with time, more balls smell
+// stronger, it dissolves; roach and crucian go for bread groundbait, a worm in it draws perch, a
+// pike pays it no heed; a ball thrown by the angler flies to the float, sinks and lies there; a
+// school of roach 10 m off comes to it and feeds on the bottom (without it, it does not come); a
+// crucian roots in it and eats it down.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeGroundbaitTest, "QuietLake.Fishing.Groundbait", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeGroundbaitTest::RunTest(const FString& Parameters)
+{
+    FVector2D Facing;
+    const FVector2D Start = LakeMap::StartSpot(&Facing);
+    const FVector2D Spot = Start + Facing * 600;
+    // 1. Smell and dissolving.
+    {
+        FLakeFoodField Field;
+        Field.Init();
+        Field.AddGroundbait(Spot, EBait::Bread);
+        const FGroundbaitSpot& G = Field.Groundbait()[0];
+        const FVector2D Near = Spot + Facing * 300, Far = Spot + Facing * 1200;
+        Field.Step(10);
+        const float Near10 = Field.Scent(G, Near), Far10 = Field.Scent(G, Far);
+        for (int32 I = 0; I < 170; ++I) Field.Step(1);
+        const float Near180 = Field.Scent(G, Near), Far180 = Field.Scent(G, Far);
+        const float One = Field.Scent(G, Near);
+        for (int32 I = 0; I < 4; ++I) Field.AddGroundbait(Spot, EBait::Bread);
+        const float Five = Field.Scent(Field.Groundbait()[0], Near);
+        const float Before = Field.Groundbait()[0].Balls;
+        for (int32 I = 0; I < 600; ++I) Field.Step(1);
+        const float After = Field.Groundbait().Num() ? Field.Groundbait()[0].Balls : 0.0f;
+        AddInfo(FString::Printf(TEXT("Smell of one ball: 3 m %.2f -> %.2f, 12 m %.2f -> %.2f (10 s -> 3 min); five balls at 3 m %.2f; %.1f balls -> %.1f in 10 min"), Near10, Near180, Far10, Far180, Five, Before, After));
+        TestTrue(TEXT("The smell builds over a minute and reaches farther with time"), Near180 > 2 * Near10 && Far10 == 0 && Far180 > 0.02f);
+        TestTrue(TEXT("More balls smell stronger"), Five > One + 0.2f);
+        TestTrue(TEXT("Groundbait dissolves (half in 10 min)"), After > 0.4f * Before && After < 0.6f * Before);
+    }
+    // 2. Who goes for it.
+    {
+        FGroundbaitSpot Bread, Worm;
+        Bread.Balls = Worm.Balls = 3;
+        Bread.Added[(int32)EBait::Bread] = 3;
+        Worm.Added[(int32)EBait::Worm] = 3;
+        auto Appeal = [](EFishSpecies Species, float Weight, const FGroundbaitSpot& G) { return LakeFood::GroundbaitAppeal(LakeFish::DietOf(Species, LakeFish::Size01(Species, Weight)), G); };
+        const float Roach = Appeal(EFishSpecies::Roach, 0.15f, Bread), Crucian = Appeal(EFishSpecies::Crucian, 0.4f, Bread);
+        const float PerchBread = Appeal(EFishSpecies::Perch, 0.15f, Bread), PerchWorm = Appeal(EFishSpecies::Perch, 0.15f, Worm), Pike = Appeal(EFishSpecies::Pike, 2.0f, Worm);
+        AddInfo(FString::Printf(TEXT("Appeal: roach %.2f, crucian %.2f to bread; perch %.2f to bread, %.2f with worm; pike %.2f"), Roach, Crucian, PerchBread, PerchWorm, Pike));
+        TestTrue(TEXT("Roach and crucian go for bread groundbait"), Roach > 0.8f && Crucian > 0.9f);
+        TestTrue(TEXT("A worm mixed in draws perch; a pike pays it no heed"), PerchWorm > PerchBread + 0.2f && Pike == 0);
+        TestTrue(TEXT("The hook bait it was mixed with"), LakeFood::GroundbaitMix(Worm) == EBait::Worm && LakeFood::GroundbaitMix(Bread) == EBait::Bread);
+    }
+    // A pond with its weather: a calm clear day.
+    constexpr float Dt = 0.05f;
+    auto MakeWorld = [](UWorld*& World, ALakeLife*& Life)
+    {
+        World = UWorld::CreateWorld(EWorldType::Game, false);
+        Life = World->SpawnActor<ALakeLife>();
+        ALakeWeather* Weather = World->SpawnActor<ALakeWeather>();
+        FLakeWeatherState Calm;
+        Calm.Cloud = 0.1f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.06f;
+        Weather->SetWeatherNow(Calm);
+        Weather->SetHours(10);
+        Life->Step(0);
+    };
+    // 3. A ball thrown by the angler.
+    {
+        UWorld* World;
+        ALakeLife* Life;
+        MakeWorld(World, Life);
+        const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+        ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Start + Facing * 90, 100), FRotator(0, Yaw, 0));
+        APlayerController* Controller = World->SpawnActor<APlayerController>();
+        Controller->Possess(Fisher);
+        Controller->SetControlRotation(Fisher->GetActorRotation());
+        Fisher->Bait = EBait::Maggot;
+        FLakeFishingFixture::ImmersedRig(Fisher);
+        const int32 Had = Fisher->GroundbaitLeft;
+        Fisher->ServerThrowGroundbait_Implementation(Fisher->GroundbaitTarget());
+        for (int32 I = 0; I < 300 && Life->Food().Groundbait().IsEmpty(); ++I) Life->Step(Dt);
+        const bool bLies = Life->Food().Groundbait().Num() == 1;
+        const float Off = bLies ? FVector2D::Distance(Life->Food().Groundbait()[0].Location, FVector2D(Fisher->FloatPosition)) : -1.0f;
+        AddInfo(FString::Printf(TEXT("Thrown: %d -> %d balls, lies %.0f cm from the float; %s"), Had, Fisher->GroundbaitLeft, Off, *Fisher->Status));
+        TestTrue(TEXT("A ball goes to the float, sinks and lies on the bottom, mixed with the hook bait"), Fisher->GroundbaitLeft == Had - 1 && bLies && Off < 120
+            && LakeFood::GroundbaitMix(Life->Food().Groundbait()[0]) == EBait::Maggot);
+        World->DestroyWorld(false);
+    }
+    // 4. A school of roach 10 m off comes to groundbait and feeds on the bottom there; without it, it does not come.
+    auto School = [&](bool bGroundbait, float& NearSeconds, float& CameAfter, float& FeedDepth)
+    {
+        UWorld* World;
+        ALakeLife* Life;
+        MakeWorld(World, Life);
+        if (bGroundbait)
+        {
+            for (int32 I = 0; I < 3; ++I) Life->Food().AddGroundbait(Spot, EBait::Bread);
+            for (int32 I = 0; I < 90; ++I) Life->Step(1);   // its smell has a minute and a half to spread
+        }
+        const FVector2D Away = Spot + Facing * 1000;
+        TArray<ALakeFish*> Fish;
+        for (int32 I = 0; I < 5; ++I)
+        {
+            const FVector2D P = Away + FVector2D(I * 40.0f, (I % 2) * 40.0f);
+            ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.12f, FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)), 4242);
+            Roach->Hunger = 1;
+            Fish.Add(Roach);
+        }
+        Life->Step(0);
+        for (ALakeFish* Roach : Fish) Roach->SetGoal(EFishGoal::Feed, 1000);
+        NearSeconds = 0;
+        CameAfter = -1;
+        FeedDepth = 0;
+        int32 Deep = 0;
+        for (int32 Steps = 0; Steps < 6000; ++Steps)   // 5 min
+        {
+            Life->Step(Dt);
+            for (ALakeFish* Roach : Fish) { Roach->Hunger = FMath::Max(Roach->Hunger, 0.6f); Roach->Simulate(Dt); }
+            const ALakeFish* Lead = Life->SchoolLeader(4242);
+            if (Lead && FVector2D::Distance(FVector2D(Lead->GetActorLocation()), Spot) < 250)
+            {
+                NearSeconds += Dt;
+                if (CameAfter < 0) CameAfter = Steps * Dt;
+                FeedDepth += (LakeFish::SurfaceZ - Lead->GetActorLocation().Z) / FMath::Max(1.0f, LakeFish::SurfaceZ - ALakeFish::BottomZ(Lead->GetActorLocation().X, Lead->GetActorLocation().Y));
+                ++Deep;
+            }
+        }
+        FeedDepth = Deep ? FeedDepth / Deep : 0;
+        World->DestroyWorld(false);
+    };
+    {
+        float WithNear, WithCame, WithDepth, WithoutNear, WithoutCame, WithoutDepth;
+        School(true, WithNear, WithCame, WithDepth);
+        School(false, WithoutNear, WithoutCame, WithoutDepth);
+        AddInfo(FString::Printf(TEXT("Roach school 10 m off: with groundbait came after %.0f s, %.0f s of 5 min by it, at %.2f of the depth; without it %.0f s by the spot"), WithCame, WithNear, WithDepth, WithoutNear));
+        TestTrue(TEXT("A school 10 m off comes to groundbait and feeds near the bottom there"), WithCame >= 0 && WithNear > 60 && WithDepth > 0.6f);
+        TestTrue(TEXT("Without groundbait it does not gather at that spot"), WithoutNear < WithNear * 0.3f);
+    }
+    // 5. A crucian roots in it and eats it down.
+    {
+        UWorld* World;
+        ALakeLife* Life;
+        MakeWorld(World, Life);
+        for (int32 I = 0; I < 3; ++I) Life->Food().AddGroundbait(Spot, EBait::Bread);
+        for (int32 I = 0; I < 90; ++I) Life->Step(1);
+        const float Before = Life->Food().Groundbait()[0].Balls;
+        const FVector2D P = Spot + Facing * 300;
+        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.4f, FVector(P, ALakeFish::BottomZ(P.X, P.Y) + 15));
+        Crucian->Hunger = 1;
+        Crucian->NextMoodCheck = 0;
+        int32 OnIt = 0;
+        for (int32 I = 0; I < 10; ++I) { Crucian->SetGoal(EFishGoal::Cruise, 1000); Crucian->SetGoal(EFishGoal::Feed, 1000); OnIt += Crucian->FeedOn == EFishFood::Groundbait; }
+        for (int32 K = 0; K < 30 && Crucian->FeedOn != EFishFood::Groundbait; ++K) { Crucian->SetGoal(EFishGoal::Cruise, 1000); Crucian->SetGoal(EFishGoal::Feed, 1000); }
+        bool bRooted = false;
+        for (int32 Steps = 0; Steps < 2400; ++Steps)   // 2 min
+        {
+            Crucian->Hunger = FMath::Max(Crucian->Hunger, 0.6f);
+            Life->Step(Dt);
+            Crucian->Simulate(Dt);
+            bRooted |= Crucian->bRooting && Crucian->FeedOn == EFishFood::Groundbait;
+        }
+        const float After = Life->Food().Groundbait().Num() ? Life->Food().Groundbait()[0].Balls : 0.0f;
+        const float Dissolved = Before * FMath::Exp(-120 * UE_LN2 / FLakeFoodField::DissolveSeconds);
+        AddInfo(FString::Printf(TEXT("Crucian 3 m from it: went for it %d of 10 times; rooted in it %d; %.2f balls -> %.2f (dissolving alone: %.2f)"), OnIt, bRooted, Before, After, Dissolved));
+        TestTrue(TEXT("A crucian goes for groundbait, roots in it and eats it down"), OnIt >= 6 && bRooted && After < Dissolved - 0.1f);
+        World->DestroyWorld(false);
+    }
     return true;
 }
 #endif

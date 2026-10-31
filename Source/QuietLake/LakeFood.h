@@ -29,6 +29,29 @@ namespace LakeFood
     inline bool IsNatural(EFishFood Food) { return Food >= EFishFood::Plankton && Food <= EFishFood::Plants; }
 }
 
+/** Groundbait on the bottom: balls thrown within a metre and a half of each other lie as one patch. */
+struct FGroundbaitSpot
+{
+    FVector2D Location = FVector2D::ZeroVector;
+    float Balls = 0;            // how much is left, in balls
+    float Added[3] = {};        // balls mixed with worm, maggot, bread (the angler's hook bait)
+    float Since = 0;            // field time the first ball reached the bottom
+};
+
+namespace LakeFood
+{
+    /**
+     * How strongly a fish with this diet goes for this groundbait, 0..~1.3: its taste for groundbait
+     * (crumbs and their smell), more when what is mixed in is its food (chopped worm - bottom fauna,
+     * maggots - insects and bottom fauna, more bread - weed).
+     */
+    QUIETLAKE_API float GroundbaitAppeal(const FFishDiet& Diet, const FGroundbaitSpot& Spot);
+    /** The bait most of it was mixed with. */
+    QUIETLAKE_API EBait GroundbaitMix(const FGroundbaitSpot& Spot);
+    /** How rich it is to feed on, 0.9..1.4: concentrated food, richer than any natural patch (more balls, more food). */
+    QUIETLAKE_API float GroundbaitRichness(const FGroundbaitSpot& Spot);
+}
+
 /** What is left of the natural food over the lake, on a 5 m grid (server). */
 class QUIETLAKE_API FLakeFoodField
 {
@@ -51,6 +74,21 @@ public:
     int32 EatenPatches(EFishFood Food, float Below = 0.7f) const;
     /** Seconds for an eaten patch to grow halfway back. */
     static float RegrowSeconds(EFishFood Food);
+
+    // Groundbait.
+    /** A ball reached the bottom at P, mixed with With. */
+    void AddGroundbait(const FVector2D& P, EBait With);
+    /** How strongly the smell of Spot reaches P, 0..1: it builds over a minute and spreads from a few metres to about 15 in three. */
+    float Scent(const FGroundbaitSpot& Spot, const FVector2D& P) const;
+    /** The groundbait that smells strongest at P (index into Groundbait(), or -1), and how strongly. */
+    int32 SmellGroundbait(const FVector2D& P, float& OutScent) const;
+    /** A fish weighing Kg ate Meal (as much as fills it) of the groundbait at Spot. */
+    void EatGroundbait(int32 Spot, float Meal, float Kg);
+    const TArray<FGroundbaitSpot>& Groundbait() const { return GroundbaitSpots; }
+    /** Seconds for groundbait to dissolve halfway (fish eating it make it go faster). */
+    static constexpr float DissolveSeconds = 600;
+    /** The field's own clock (s), stepped with the pond. */
+    float Now() const { return Clock; }
 private:
     int32 Index(const FVector2D& P) const;
     struct FPlace
@@ -66,4 +104,6 @@ private:
     FVector2D Origin = FVector2D::ZeroVector;
     int32 NX = 0, NY = 0;
     float Pending = 0;
+    float Clock = 0;
+    TArray<FGroundbaitSpot> GroundbaitSpots;
 };

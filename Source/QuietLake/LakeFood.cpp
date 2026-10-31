@@ -39,6 +39,7 @@ const TCHAR* LakeFood::Name(EFishFood Food)
     case EFishFood::Plants: return TEXT("растения");
     case EFishFood::Fry: return TEXT("малёк");
     case EFishFood::Fish: return TEXT("рыба");
+    case EFishFood::Groundbait: return TEXT("прикормка");
     default: return TEXT("что попадётся");
     }
 }
@@ -93,6 +94,7 @@ float LakeFood::FeedingZ(EFishFood Food, float X, float Y, const FFishConditions
     case EFishFood::Insects: return FMath::Max(Low, LakeFish::SurfaceZ - Random.FRandRange(10.0f, 28.0f));
     case EFishFood::Benthos: return FMath::Min(Top, Bottom + Random.FRandRange(6.0f, 14.0f));
     case EFishFood::Plants: return FMath::Lerp(Top, Low, Random.FRandRange(0.25f, 0.7f));
+    case EFishFood::Groundbait: return FMath::Min(Top, Bottom + Random.FRandRange(4.0f, 18.0f));   // it lies on the bottom
     default: return FMath::Lerp(Top, Low, 0.5f);
     }
 }
@@ -100,7 +102,7 @@ float LakeFood::FeedingZ(EFishFood Food, float X, float Y, const FFishConditions
 float LakeFood::BaitMatch(EFishFood Food, EBait Bait)
 {
     //                         worm   maggot bread
-    static const float Table[7][3] = {
+    static const float Table[8][3] = {
         { 1.0f,  1.0f,  1.0f },    // none
         { 0.95f, 1.05f, 1.0f },    // plankton
         { 0.9f,  1.15f, 0.85f },   // insects
@@ -108,8 +110,9 @@ float LakeFood::BaitMatch(EFishFood Food, EBait Bait)
         { 0.85f, 0.95f, 1.15f },   // weed
         { 1.1f,  0.9f,  0.85f },   // fry
         { 1.1f,  0.9f,  0.85f },   // fish
+        { 1.0f,  1.0f,  1.0f },    // groundbait (see ALakeFish::UpdateBait: what was mixed in)
     };
-    return Table[FMath::Clamp((int32)Food, 0, 6)][FMath::Clamp((int32)Bait, 0, 2)];
+    return Table[FMath::Clamp((int32)Food, 0, 7)][FMath::Clamp((int32)Bait, 0, 2)];
 }
 
 // --- the field ---------------------------------------------------------------------------------
@@ -187,8 +190,13 @@ float FLakeFoodField::RegrowSeconds(EFishFood Food)
 
 void FLakeFoodField::Step(float DeltaSeconds)
 {
+    Clock += DeltaSeconds;
     Pending += DeltaSeconds;
     if (Pending < 1 || NX <= 0) return;
+    // Groundbait dissolves and loses its smell.
+    const float Dissolve = FMath::Exp(-Pending * UE_LN2 / DissolveSeconds);
+    for (FGroundbaitSpot& G : GroundbaitSpots) G.Balls *= Dissolve;
+    GroundbaitSpots.RemoveAll([](const FGroundbaitSpot& G) { return G.Balls < 0.05f; });
     for (int32 F = 0; F < 4; ++F)
     {
         const float Keep = FMath::Exp(-Pending * UE_LN2 / RegrowSeconds((EFishFood)(F + 1)));
@@ -213,4 +221,74 @@ int32 FLakeFoodField::EatenPatches(EFishFood Food, float Below) const
     int32 N = 0;
     for (const float E : Eaten[(int32)Food - 1]) N += 1 - E < Below;
     return N;
+}
+
+// --- groundbait --------------------------------------------------------------------------------
+
+float LakeFood::GroundbaitAppeal(const FFishDiet& D, const FGroundbaitSpot& G)
+{
+    const float Total = FMath::Max(0.01f, G.Added[0] + G.Added[1] + G.Added[2]);
+    const float Worm = G.Added[0] / Total, Maggot = G.Added[1] / Total, Bread = G.Added[2] / Total;
+    const float Mixed = Worm * 0.6f * D.Benthos + Maggot * 0.35f * (D.Insects + D.Benthos) + Bread * 0.3f * D.Plants;
+    return FMath::Clamp(FMath::Max(D.Groundbait, Mixed) + 0.3f * FMath::Min(D.Groundbait, Mixed), 0.0f, 1.3f);
+}
+
+EBait LakeFood::GroundbaitMix(const FGroundbaitSpot& G)
+{
+    int32 Most = 2;
+    for (int32 I = 0; I < 3; ++I) if (G.Added[I] > G.Added[Most]) Most = I;
+    return (EBait)Most;
+}
+
+float LakeFood::GroundbaitRichness(const FGroundbaitSpot& G)
+{
+    return 0.9f + 0.5f * (1 - FMath::Exp(-G.Balls / 2));
+}
+
+void FLakeFoodField::AddGroundbait(const FVector2D& P, EBait With)
+{
+    const int32 Mix = FMath::Clamp((int32)With, 0, 2);
+    for (FGroundbaitSpot& G : GroundbaitSpots)
+        if (FVector2D::Distance(G.Location, P) < 150)
+        {
+            // Onto the same patch: it grows and shifts a little towards the new ball.
+            G.Location = (G.Location * G.Balls + P) / (G.Balls + 1);
+            G.Balls += 1;
+            G.Added[Mix] += 1;
+            return;
+        }
+    FGroundbaitSpot G;
+    G.Location = P;
+    G.Balls = 1;
+    G.Added[Mix] = 1;
+    G.Since = Clock;
+    GroundbaitSpots.Add(G);
+}
+
+float FLakeFoodField::Scent(const FGroundbaitSpot& G, const FVector2D& P) const
+{
+    // In still water the cloud and the smell spread slowly: a few metres at first, about 15 m after three minutes.
+    const float Age = Clock - G.Since;
+    const float Strength = 1 - FMath::Exp(-G.Balls / 2);
+    const float Build = S(0.0f, 60.0f, Age);
+    const float Reach = 600 + 900 * S(0.0f, 180.0f, Age);
+    return Strength * Build * (1 - S(0.0f, Reach, (float)FVector2D::Distance(P, G.Location)));
+}
+
+int32 FLakeFoodField::SmellGroundbait(const FVector2D& P, float& OutScent) const
+{
+    int32 Best = -1;
+    OutScent = 0;
+    for (int32 I = 0; I < GroundbaitSpots.Num(); ++I)
+    {
+        const float Here = Scent(GroundbaitSpots[I], P);
+        if (Here > OutScent) { OutScent = Here; Best = I; }
+    }
+    return Best;
+}
+
+void FLakeFoodField::EatGroundbait(int32 Spot, float Meal, float Kg)
+{
+    // A crucian of 0.4 kg filling up eats about a quarter of a ball; a school of roach half a ball.
+    if (GroundbaitSpots.IsValidIndex(Spot)) GroundbaitSpots[Spot].Balls = FMath::Max(0.0f, GroundbaitSpots[Spot].Balls - Meal * Kg * 0.7f);
 }

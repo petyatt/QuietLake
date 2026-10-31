@@ -3,6 +3,9 @@
 // lifted out of the water. Each one sets the scene, takes screenshots into Saved/, logs what it
 // measured (QUIET_LAKE_* lines) and quits.
 #include "LakeGame.h"
+#include "LakeFood.h"
+#include "LakeLife.h"
+#include "LakeHUD.h"
 #include "LakeMap.h"
 #include "LakeRod.h"
 #include "LakeWeather.h"
@@ -585,6 +588,95 @@ void ALakeCharacter::RunPreviews()
                     *Rel(FloatPosition), *Rel(RodVisual->BobberLocation()), Belly, OnWater, ALakeWeather::Get(GetWorld()) ? ALakeWeather::Get(GetWorld())->WindVelocity().Size() / 100 : 0.0f);
             });
         At(50.0f, [] { FPlatformMisc::RequestExit(false); });
+    }
+    // -GroundbaitPreview: at the camp on a calm morning the angler throws three balls of groundbait
+    // 6 m out (the ball in flight, the rings); then for four minutes the log counts the fish within
+    // 3 m of it and of as good a spot 15 m along the bank without any (QUIET_LAKE_GROUNDBAIT), and
+    // the F3 panel is filmed with what the fish feed on.
+    if (FParse::Param(FCommandLine::Get(), TEXT("GroundbaitPreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        auto Shot = [](const TCHAR* Name, bool bUI) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, bUI, false); };
+        struct FState { FVector2D Spot = FVector2D::ZeroVector, Control = FVector2D::ZeroVector; };
+        TSharedRef<FState> St = MakeShared<FState>();
+        At(4.0f, [this, St]
+        {
+            FVector2D Facing;
+            const FVector2D Stand = LakeMap::StartSpot(&Facing) + Facing * 60;
+            const FVector2D Right(-Facing.Y, Facing.X);
+            const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Calm;
+                Calm.Cloud = 0.25f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.05f; Calm.WindYaw = Yaw;
+                Weather->SetWeatherNow(Calm);
+                Weather->SetHours(8.0f);
+            }
+            SetActorLocation(FVector(Stand, ALakeEnvironment::GroundHeight(Stand.X, Stand.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetControlRotation(FRotator(-14, Yaw, 0));
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+            Bait = EBait::Bread;
+            St->Spot = Stand + Facing * 600;
+            // As good a spot without groundbait: as far out, 15 m along the bank.
+            St->Control = St->Spot + Right * 1500;
+            if (!LakeMap::IsWater(St->Control.X, St->Control.Y) || LakeMap::Depth(St->Control.X, St->Control.Y) < 60) St->Control = St->Spot - Right * 1500;
+        });
+        At(5.5f, [this, St]
+        {
+            const FVector Spot(St->Spot, LakeFish::SurfaceZ);
+            const FVector From = GetActorLocation() - GetActorRightVector() * 450 - GetActorForwardVector() * 150 + FVector(0, 0, 180);
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (FMath::Lerp(GetActorLocation(), Spot, 0.55f) - From).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(62);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
+        });
+        for (int32 Ball = 0; Ball < 3; ++Ball)
+            At(6.0f + 1.5f * Ball, [this, St] { NextGroundbait = 0; ServerThrowGroundbait_Implementation(FVector(St->Spot, LakeFish::SurfaceZ)); });
+        At(6.45f, [Shot] { Shot(TEXT("Groundbait_Throw.png"), false); });
+        At(7.1f, [Shot] { Shot(TEXT("Groundbait_Plop.png"), false); });
+        for (int32 I = 0; I <= 48; ++I)
+            At(10.0f + I * 5.0f, [this, St, I]
+            {
+                const ALakeLife* Life = ALakeLife::Get(GetWorld());
+                if (!Life) return;
+                auto Count = [Life](const FVector2D& P, int32& OnIt, FString& Kinds)
+                {
+                    TMap<FString, int32> By;
+                    int32 N = 0;
+                    Life->ForEachFishNear(FVector(P, LakeFish::SurfaceZ), 300, [&](ALakeFish* Fish)
+                    {
+                        if (FVector2D::Distance(FVector2D(Fish->GetActorLocation()), P) > 300 || !Fish->IsFree()) return;
+                        ++N;
+                        ++By.FindOrAdd(LakeFish::Info(Fish->Species).Noun);
+                        OnIt += Fish->GetFeedOn() == EFishFood::Groundbait;
+                    });
+                    for (const TPair<FString, int32>& K : By) Kinds += FString::Printf(TEXT(" %s %d"), *K.Key, K.Value);
+                    return N;
+                };
+                int32 OnIt = 0, ControlOnIt = 0;
+                FString Kinds, ControlKinds;
+                const int32 Near = Count(St->Spot, OnIt, Kinds), Control = Count(St->Control, ControlOnIt, ControlKinds);
+                float Balls = 0;
+                for (const FGroundbaitSpot& G : Life->Food().Groundbait()) Balls += G.Balls;
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_GROUNDBAIT t=%.0f s after the first ball: within 3 m of it %d (%d feeding on it):%s | of the spot without it %d:%s | %.1f balls left"),
+                    10.0f + I * 5.0f - 6.0f, Near, OnIt, *Kinds, Control, *ControlKinds, Balls);
+            });
+        At(130.0f, [this]
+        {
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetViewTarget(this);
+                if (ALakeHUD* HUD = Cast<ALakeHUD>(PC->GetHUD())) { HUD->bShowHUD = true; HUD->bShowLife = true; }
+            }
+        });
+        At(133.0f, [Shot] { Shot(TEXT("Groundbait_Panel.png"), true); });
+        At(252.0f, [] { FPlatformMisc::RequestExit(false); });
     }
     // -RodPreview: the blank at work, filmed from the side: a cast with each rod (light, medium,
     // heavy) with the tip's bend logged through the draw, the release and the swing after it, then

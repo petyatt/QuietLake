@@ -105,6 +105,7 @@ void ALakeCharacter::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("Deeper", IE_Pressed, this, &ALakeCharacter::Deeper);
     Input->BindAction("Deeper", IE_Repeat, this, &ALakeCharacter::Deeper);
     Input->BindAction("ToggleRod", IE_Pressed, this, &ALakeCharacter::ToggleRod);
+    Input->BindAction("Groundbait", IE_Pressed, this, &ALakeCharacter::ThrowGroundbait);
     Input->BindAction("NextRod", IE_Pressed, this, &ALakeCharacter::NextRod);
     Input->BindAction("ToggleView", IE_Pressed, this, &ALakeCharacter::ToggleView);
     Input->BindAction("LifePanel", IE_Pressed, this, &ALakeCharacter::ToggleLifePanel);
@@ -360,6 +361,47 @@ void ALakeCharacter::OnRigLanded(FVector Where)
     }
     ForceNetUpdate();
 }
+void ALakeCharacter::ThrowGroundbait() { ServerThrowGroundbait(GroundbaitTarget()); }
+
+FVector ALakeCharacter::GroundbaitTarget() const
+{
+    // To the float when the rig is in the water; otherwise where the angler looks, as far as a ball goes by hand.
+    FVector Target = FloatPosition;
+    if (FishingState == EFishingState::Idle || bRigFlying || !LakeMap::IsWater(Target.X, Target.Y))
+    {
+        FVector Eye = GetActorLocation();
+        FRotator View = GetControlRotation();
+        if (Controller) Controller->GetPlayerViewPoint(Eye, View);
+        const FVector Dir = View.Vector();
+        float Ahead = 600;
+        if (Dir.Z < -0.02f) Ahead = FMath::Clamp((Eye.Z - LakeFish::SurfaceZ) / -Dir.Z * (float)Dir.Size2D(), 200.0f, 1200.0f);
+        Target = GetActorLocation() + Dir.GetSafeNormal2D() * Ahead;
+    }
+    return Target;
+}
+
+void ALakeCharacter::ServerThrowGroundbait_Implementation(FVector_NetQuantize Target)
+{
+    if (GroundbaitLeft <= 0) { Status = TEXT("Прикормка кончилась."); return; }
+    if (ServerNow() < NextGroundbait) return;
+    ALakeLife* Life = ALakeLife::Get(GetWorld());
+    if (!Life) return;
+    // By hand a ball goes up to about 12 m, a little off the mark (the further, the wider).
+    const FVector2D Here(GetActorLocation());
+    FVector2D To(Target);
+    if (FVector2D::Distance(To, Here) > 1200) To = Here + (To - Here).GetSafeNormal() * 1200;
+    const float Spread = 25 + 0.04f * FVector2D::Distance(To, Here);
+    To += FVector2D(FMath::FRandRange(-Spread, Spread), FMath::FRandRange(-Spread, Spread));
+    if (!LakeMap::IsWater(To.X, To.Y)) { Status = TEXT("Туда прикормку не бросить: там не вода."); return; }
+    NextGroundbait = ServerNow() + 1.2f;
+    --GroundbaitLeft;
+    const FVector Facing = FRotator(0, GetControlRotation().Yaw, 0).Vector();
+    Life->ThrowGroundbait(GetActorLocation() + FVector(0, 0, 55) + Facing * 30, FVector(To, LakeFish::SurfaceZ), Bait);
+    static const TCHAR* With[] = { TEXT("с червём"), TEXT("с опарышем"), TEXT("с хлебом") };
+    Status = FString::Printf(TEXT("Бросили шар прикормки %s. Рыба подойдёт на запах через минуту-другую. Шаров осталось: %d."),
+        With[FMath::Clamp((int32)Bait, 0, 2)], GroundbaitLeft);
+}
+
 void ALakeCharacter::ServerToggleRod_Implementation()
 {
     if (bRodOnStand)
@@ -1295,6 +1337,7 @@ void ALakeCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
     DOREPLIFETIME(ALakeCharacter, CastFlight);
     DOREPLIFETIME(ALakeCharacter, CastResult);
     DOREPLIFETIME(ALakeCharacter, RodKind);
+    DOREPLIFETIME(ALakeCharacter, GroundbaitLeft);
     DOREPLIFETIME(ALakeCharacter, bRigInHand);
     DOREPLIFETIME_CONDITION(ALakeCharacter, SwingPitch, COND_SkipOwner);
     DOREPLIFETIME_CONDITION(ALakeCharacter, SwingYaw, COND_SkipOwner);

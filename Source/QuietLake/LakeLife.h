@@ -124,6 +124,14 @@ public:
     const TArray<FNote>& Notes() const { return RecentNotes; }
 
     UFUNCTION(NetMulticast, Unreliable) void MulticastSign(const FLakeSign& Sign);
+    /**
+     * Server: an angler threw a ball of groundbait from From towards Target, mixed with With. It
+     * flies about a second, plops in (rings; fish right by it shy away), sinks at about 35 cm/s and
+     * lies on the bottom (FLakeFoodField::AddGroundbait), where its smell draws the fish.
+     */
+    void ThrowGroundbait(const FVector& From, const FVector& Target, EBait With);
+    /** Every machine: draw a ball of groundbait flying. */
+    UFUNCTION(NetMulticast, Unreliable) void MulticastBall(FVector_NetQuantize From, FVector_NetQuantize To, float Flight);
 
 private:
     void SpawnFry();
@@ -230,6 +238,14 @@ private:
     UPROPERTY() TObjectPtr<class UInstancedStaticMeshComponent> Sprays;
     UPROPERTY() TArray<TObjectPtr<class UInstancedStaticMeshComponent>> FrySwarms;
     UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> Jumpers;
+    UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> BallMeshes;
+    struct FBallView { FVector From = FVector::ZeroVector, To = FVector::ZeroVector; float Start = -100, Flight = 1; };
+    TArray<FBallView> BallViews;
+    void UpdateBallVisuals(float Now);
+    /** Server: balls of groundbait on their way to the bottom. */
+    struct FBallInFlight { FVector Target = FVector::ZeroVector; EBait With = EBait::Bread; float LandAt = 0, BottomAt = 0; bool bLanded = false; };
+    TArray<FBallInFlight> BallsInFlight;
+    void UpdateBalls();
     UPROPERTY() TObjectPtr<class USoundAttenuation> Attenuation;
     UPROPERTY() TObjectPtr<class USoundBase> SplashSound;
     UPROPERTY() TObjectPtr<class USoundBase> PlopSound;

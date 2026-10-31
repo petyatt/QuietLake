@@ -139,6 +139,7 @@
 | `plants` | мягкие растения и водоросли | кувшинки, край тростника, заросшая заводь; больше в тёплой воде |
 | `fry` | малёк | стайки малька (с `bHuntsFry` — гонит стаей) |
 | `fish` | рыба | до `preyMaxWeight` своего веса |
+| `groundbait` | прикормка рыболова | шар на дне пахнет: за полторы минуты запах набирает силу, за пять минут доходит до 15 м; растворяется наполовину за 10 мин и выедается. Что замешано в шар (то, что на крючке), тянет по остальному рациону: червь — тех, кто ест мотыль, опарыш — тех, кто ест насекомых и мотыль, хлеб — тех, кто ест растения |
 
 Если рациона нет (старый паспорт), рыба кормится по-старому: только по таблице мест и `feedColumnMin`/`feedColumnMax`.
 
@@ -187,8 +188,8 @@
     "bRootsInSilt": true, "restColumn": 0.85, "browseStep": 300, "browseSpeed": 0.5, "fillRate": 0.01,
     "nightShallows": 0.5
   },
-  "diet":    { "plankton": 0.6, "benthos": 0.8, "plants": 0.2 },
-  "dietBig": { "plankton": 0.2, "benthos": 1.0, "plants": 0.2 },
+  "diet":    { "plankton": 0.6, "benthos": 0.8, "plants": 0.2, "groundbait": 1.0 },
+  "dietBig": { "plankton": 0.2, "benthos": 1.0, "plants": 0.2, "groundbait": 1.0 },
   "mood": { "dawn": 1.0, "day": 0.4, "dusk": 1.0, "night": 0.8, "tempLow": 10, "tempBest": 20, "tempHigh": 27, "overcast": 0.3, "front": 0.9 },
   "strength": 1.1, "stamina": 14, "runBurst": 0.6,
   "stock": { "count": 40, "schoolSize": 10 },

@@ -52,8 +52,8 @@
     "browseStep": 500, "browseSpeed": 0.55, "fillRate": 0.012,
     "bask": 0.35, "bJumps": true
   },
-  "diet":    { "plankton": 0.9, "insects": 0.8, "benthos": 0.5, "plants": 0.4 },
-  "dietBig": { "plankton": 0.4, "insects": 0.6, "benthos": 0.9, "plants": 0.6 },
+  "diet":    { "plankton": 0.9, "insects": 0.8, "benthos": 0.5, "plants": 0.4, "groundbait": 0.9 },
+  "dietBig": { "plankton": 0.4, "insects": 0.6, "benthos": 0.9, "plants": 0.6, "groundbait": 0.9 },
   "mood": { "dawn": 1.0, "day": 0.55, "dusk": 0.95, "night": 0.3, "tempLow": 8, "tempBest": 19, "tempHigh": 26, "overcast": 0.2,
             "lightRain": 1.2, "heavyRain": 0.6, "ripple": 1.1, "strongWind": 0.5, "fog": 1.0, "front": 0.7 },
 

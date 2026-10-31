@@ -25,7 +25,7 @@ UENUM()
 enum class EFishGoal : uint8 { Cruise, Feed, Rest, Count UMETA(Hidden) };
 
 /** What a fish eats (see LakeFood): the natural food of the pond, fry, other fish; None: no food in particular. */
-enum class EFishFood : uint8 { None, Plankton, Insects, Benthos, Plants, Fry, Fish };
+enum class EFishFood : uint8 { None, Plankton, Insects, Benthos, Plants, Fry, Fish, Groundbait };
 
 /** What the float does while a fish works at the bait. */
 /** Where an angler is in the fishing cycle (replicated: every machine animates the rod from it). */
@@ -246,8 +246,9 @@ struct FFishDiet
     UPROPERTY() float Plants = 0;     // soft weed and algae
     UPROPERTY() float Fry = 0;        // fry shoals in the shallows
     UPROPERTY() float Fish = 0;       // other fish (up to Feeding.PreyMaxWeight of its own weight)
+    UPROPERTY() float Groundbait = 0; // the angler's groundbait: crumbs and their smell (what is mixed in draws by the rest of the diet)
     float Of(EFishFood Food) const;
-    bool IsEmpty() const { return Plankton + Insects + Benthos + Plants + Fry + Fish <= 0; }
+    bool IsEmpty() const { return Plankton + Insects + Benthos + Plants + Fry + Fish + Groundbait <= 0; }
 };
 
 /**
@@ -696,6 +697,7 @@ private:
     friend class FLakeBitePatternsTest;
     friend class FLakeInteractionsTest;
     friend class FLakeFoodTest;
+    friend class FLakeGroundbaitTest;
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;
