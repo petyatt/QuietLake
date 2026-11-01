@@ -503,8 +503,12 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
     {
         const FVector2D P = Range > 0 ? Near + FVector2D(Random.FRandRange(-Range, Range), Random.FRandRange(-Range, Range))
                                       : FVector2D(Random.FRandRange(Lake.Min.X, Lake.Max.X), Random.FRandRange(Lake.Min.Y, Lake.Max.Y));
-        // Not so close to the bank that the fish would be pushed back before reaching it (SteerBounds).
-        if (LakeMap::Depth(P.X, P.Y) < 45 || LakeMap::ShoreDistance(P.X, P.Y) < 300) continue;
+        // A free fish keeps off the bank and out of the shallows: at least a metre and a half from
+        // the shore makes a target it is allowed to reach at all, and the passport's depth minimum
+        // keeps it out of water too shallow for its kind.
+        const float MinShore = 150.0f;
+        const float MinDepth = FMath::Max(45.0f, Habitat.MinDepthM * 100.0f);
+        if (LakeMap::Depth(P.X, P.Y) < MinDepth || LakeMap::ShoreDistance(P.X, P.Y) < MinShore) continue;
         // Somewhere it can swim to straight: not behind a point of land or the island.
         if (Range > 0)
         {
@@ -520,7 +524,14 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
         const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions) * Random.FRandRange(0.6f, 1.0f) * (Weigh ? Weigh(P) : 1.0f);
         if (Score > BestScore) { BestScore = Score; Best = P; }
     }
-    if (BestScore < 0 && LakeMap::Depth(Best.X, Best.Y) < 35) Best = LakeMap::Centre;
+    if (BestScore < 0)
+    {
+        // No allowed spot nearby (a school pressed against the bank): head for the open water.
+        const float MinShore = 150.0f;
+        const float MinDepth = FMath::Max(45.0f, Habitat.MinDepthM * 100.0f);
+        if (LakeMap::Depth(Best.X, Best.Y) < MinDepth || LakeMap::ShoreDistance(Best.X, Best.Y) < MinShore)
+            Best = LakeMap::Centre;
+    }
     const float Bottom = ALakeFish::BottomZ(Best.X, Best.Y);
     // Heat and bright sun also press the fish towards the bottom of the water column.
     const float Lower = Conditions ? FMath::Clamp(DepthShiftM(Species, *Conditions) * 0.25f, -0.2f, 0.3f) : 0.0f;
@@ -1000,14 +1011,30 @@ FVector ALakeFish::SteerSchool(bool bFollow) const
 
 FVector ALakeFish::SteerBounds() const
 {
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
     const FVector P = GetActorLocation();
     const float Shore = LakeMap::ShoreDistance(P.X, P.Y);
     const float Depth = LakeFish::SurfaceZ - BottomZ(P.X, P.Y);
     FVector Push = FVector::ZeroVector;
-    if (Shore < 200 || Depth < 30)
+    if (State == EState::Hooked)
     {
-        // Back towards deeper water.
-        Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 60 * FMath::Max(1.0f, (200 - Shore) / 60);
+        // A hooked fish is at the end of the line: the angler may lead it into the shallows.
+        if (Shore < 120 || Depth < 25)
+            Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 40 * FMath::Max(1.0f, (120 - Shore) / 60);
+    }
+    else
+    {
+        // A free fish keeps off the bank: its body stays at least a metre and a half from the shore,
+        // and it does not go into water shallower than its passport asks for (the fry shoals are a
+        // separate thing and stay in the shallows by design).
+        const float MinShore = 150.0f;
+        const float MinDepth = FMath::Max(30.0f, S.Habitat.MinDepthM * 100.0f);
+        if (Shore < MinShore || Depth < MinDepth)
+        {
+            const float Close = FMath::Max(1.0f, (MinShore - Shore) / 60.0f);
+            const float Shallow = FMath::Max(1.0f, (MinDepth - Depth) / 60.0f);
+            Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 60.0f * FMath::Max(Close, Shallow);
+        }
     }
     if (P.Z > LakeFish::SurfaceZ - 8) Push.Z -= 25;
     if (P.Z < BottomZ(P.X, P.Y) + 6) Push.Z += 25;
