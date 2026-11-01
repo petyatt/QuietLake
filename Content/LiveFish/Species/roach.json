@@ -2,7 +2,7 @@
   "order": 1,
   "name": "Плотва",
   "noun": "плотва",
-  "description": "Стаи вдоль края тростника и кувшинок в толще воды. Пробует тычками, топит наискосок или ведёт в сторону и выплёвывает, почуяв сопротивление поплавка. На тихих зорьках берёт насекомых с поверхности.",
+  "description": "Стаи вдоль края тростника и кувшинок в толще воды. Пробует тычками, топит наискосок или ведёт в сторону и выплёвывает, почуяв сопротивление поплавка. На тихих зорьках берёт насекомых с поверхности. На крючке подвижна, часто меняет направление коротких потяжек.",
   "mesh": "/Game/Fish/SM_Fish_Roach.SM_Fish_Roach",
   "meshLength": 22,
   "condition": 1.1,
@@ -62,6 +62,13 @@
   "strength": 0.7,
   "stamina": 6,
   "runBurst": 0.5,
+  "fight": {
+    "alongWeight": 0.6, "awayWeight": 0.22, "diveWeight": 0.12, "surfaceWeight": 0.06,
+    "pullMin": 0.55, "pullMax": 1.1, "pullSpeed": 0.5, "pauseMin": 0.4,
+    "pauseMax": 0.85, "burstChance": 0.48, "burstMin": 0.2, "burstMax": 0.4,
+    "seriesMin": 1, "seriesMax": 2, "seriesGap": 0.23, "recovery": 0.15,
+    "effortCost": 1.6
+  },
   "stock": { "count": 208, "schoolSize": 8, "schoolsWith": [ "rudd", "bleak", "bream" ] },
   "signs": { "rise": "Плотва берёт с поверхности — круги", "jump": "Из воды выпрыгнула плотва" }
 }

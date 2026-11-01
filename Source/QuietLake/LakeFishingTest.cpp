@@ -192,15 +192,16 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
     TestTrue(TEXT("Raised to the top the rig is out"), !Fisher->bRetrieving && Fisher->FishingState == EFishingState::Idle);
 
-    // A big pike against a reel that is never released breaks the line.
+    // A fixed line breaks beyond its existing stretch limit, regardless of a random fight profile.
     Cast();
     ALakeFish* Pike = SpawnFish(World, EFishSpecies::Pike, 3.2f, Fisher->BaitLocation());
     Fisher->OnFishTake(Pike);
     Fisher->NextActionTime = 0;
     Fisher->ServerCancel_Implementation();
     Fisher->ServerFish_Implementation();
-    for (int32 Step = 0; Step < 600 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); Pike->Simulate(0.05f); }
-    TestTrue(TEXT("Continuous reeling against a pike breaks the line"), Fisher->FishingState == EFishingState::Idle);
+    Pike->SetActorLocation(Fisher->RodTip() + FVector(Facing, 0) * (ALakeRod::LineLength + 300));
+    Fisher->UpdateFight(0.05f);
+    TestTrue(TEXT("Exceeding the fixed line's stretch limit breaks it"), Fisher->FishingState == EFishingState::Idle);
     TestEqual(TEXT("Broken line awards no fish"), Fisher->CatchCount, 1);
     TestFalse(TEXT("Pike is free again"), Pike->IsHooked());
 
@@ -1371,6 +1372,192 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
 // The species passports (Content/LiveFish/Species): the files read without problems and in order,
 // each fish has its model; the example species in the README there is read from its file alone, a
 // misspelt field and a missing diet are reported.
+// Exercise the production Hooked path with fixed random streams; no frame-rate-dependent rolls.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeFightProfilesTest, "QuietLake.Fishing.FightProfiles", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
+{
+    using namespace LakeFish;
+    using EPhase = ALakeFish::EFightPhase;
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    const FVector Open(LakeMap::Centre, SurfaceZ - 80);
+    ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(Open - FVector(600, 0, -150), FRotator::ZeroRotator);
+    struct FStats { int32 Bursts = 0, Gaps = 0, Dives = 0, Surfaces = 0; float Rest = 0, Pull = 0; };
+    TMap<FString, FStats> Stats;
+    for (int32 I = 0; I < NumSpecies(); ++I)
+    {
+        const EFishSpecies Sp = (EFishSpecies)I;
+        const FFishSpeciesInfo& S = Info(Sp);
+        ALakeFish* Fish = SpawnFish(World, Sp, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.4f), Open);
+        Fish->Random.Initialize(1234 + I);
+        Fish->FightIndividual = 1;
+        Fish->Hook(Fisher);
+        FStats& T = Stats.Add(S.Id);
+        // Each frame uses the actual actor simulation, including motion, stamina and profile phases.
+        EPhase Previous = Fish->FightPhase;
+        for (int32 Step = 0; Step < 2400; ++Step)
+        {
+            Fish->SetActorLocation(Open);
+            Fish->Stamina = Fish->MaxStamina; // isolate the species' fresh rhythm
+            Fish->Simulate(0.025f);
+            T.Bursts += Fish->FightPhase == EPhase::Burst && Previous != EPhase::Burst;
+            T.Gaps += Fish->FightPhase == EPhase::Gap && Previous != EPhase::Gap;
+            T.Rest += Fish->FightPhase == EPhase::Pause ? 0.025f : 0;
+            T.Pull += Fish->FightPhase == EPhase::Pull ? 0.025f : 0;
+            Previous = Fish->FightPhase;
+            if (Step == 0) TestTrue(S.Id + TEXT(": Hook starts a new target immediately"), FVector::Dist(Fish->RoamTarget, Open) > 100);
+        }
+        for (int32 Pick = 0; Pick < 1000; ++Pick)
+        {
+            Fish->SetActorLocation(Open);
+            Fish->Stamina = Fish->MaxStamina;
+            Fish->ChooseFightTarget();
+            const FVector Target = Fish->RoamTarget;
+            T.Dives += Target.Z < ALakeFish::BottomZ(Target.X, Target.Y) + 20;
+            T.Surfaces += Target.Z > SurfaceZ - 20;
+        }
+        // Under a sustained opposing load, effort drains the reserve; a genuine pause restores it.
+        Fish->SetActorLocation(Open);
+        Fish->Vel = FVector::ZeroVector;
+        Fish->SetActorRotation(FRotator::ZeroRotator);
+        Fish->Stamina = Fish->MaxStamina * 0.6f;
+        Fish->FightPhase = EPhase::Pull;
+        const float BeforeLoad = Fish->Stamina;
+        for (int32 Step = 0; Step < 40; ++Step)
+        {
+            Fish->ApplyLineForce(FVector(-S.Acceleration * S.Strength * Fish->WeightKg, 0, 0));
+            Fish->MoveHooked(FVector(S.BurstSpeed, 0, 0), S.BurstSpeed, 0.025f);
+        }
+        TestTrue(S.Id + TEXT(": resisting the line costs stamina"), Fish->Stamina < BeforeLoad - 0.2f);
+        Fish->FightPhase = EPhase::Pause;
+        Fish->FightRemaining = 4;
+        Fish->Vel = FVector::ZeroVector;
+        Fish->RoamTarget = Fish->GetActorLocation();
+        const float BeforeRest = Fish->Stamina;
+        Fish->Simulate(0.05f);
+        TestTrue(S.Id + TEXT(": Hooked pause really recovers stamina"), Fish->Stamina > BeforeRest);
+        // Neither a current burst nor the common movement tail can restore a tired fish to full speed.
+        Fish->FightPhase = EPhase::Burst;
+        Fish->FightRemaining = 2;
+        Fish->Stamina = Fish->MaxStamina;
+        FVector Desired; float FreshSpeed = 0, TiredSpeed = 0;
+        Fish->UpdateFightMotion(0.01f, Desired, FreshSpeed);
+        Fish->Stamina = Fish->MaxStamina * 0.1f;
+        Fish->UpdateFightMotion(0.01f, Desired, TiredSpeed);
+        TestTrue(S.Id + TEXT(": even bursts weaken with fatigue"), TiredSpeed < FreshSpeed * 0.3f);
+        Fish->FightPhase = EPhase::Pause;
+        Fish->FightRemaining = 10;
+        Fish->Stamina = Fish->MaxStamina;
+        Fish->Vel = FVector::ZeroVector;
+        Fish->MoveHooked(FVector::ZeroVector, 0, 0.05f);
+        TestTrue(S.Id + TEXT(": recovery never overfills reserve"), Fish->Stamina <= Fish->MaxStamina);
+        TestTrue(S.Id + TEXT(": stamina never negative"), Fish->Stamina >= 0);
+        AddInfo(FString::Printf(TEXT("%s: bursts=%d gaps=%d rest=%.1fs pull=%.1fs dives=%d surface=%d /1000"), *S.Id, T.Bursts, T.Gaps, T.Rest, T.Pull, T.Dives, T.Surfaces));
+        Fish->Destroy();
+    }
+    TestTrue(TEXT("Perch produce many short series through Hooked"), Stats[TEXT("perch")].Gaps > 12 && Stats[TEXT("perch")].Bursts > Stats[TEXT("crucian")].Bursts * 2);
+    TestTrue(TEXT("Crucian have longer rests than roach"), Stats[TEXT("crucian")].Rest > Stats[TEXT("roach")].Rest);
+    TestTrue(TEXT("Bream favour heavy sustained pulls and depth"), Stats[TEXT("bream")].Pull > Stats[TEXT("perch")].Pull && Stats[TEXT("bream")].Dives > 400);
+    TestTrue(TEXT("Rudd keep higher than roach and bream"), Stats[TEXT("rudd")].Surfaces > Stats[TEXT("roach")].Surfaces * 2 && Stats[TEXT("rudd")].Dives < 100);
+    TestTrue(TEXT("Bleak work with the default fight profile"), Stats.Contains(TEXT("bleak")) && Stats[TEXT("bleak")].Bursts > 0);
+
+    ALakeFish* Pike = SpawnFish(World, EFishSpecies::Pike, 1.4f, Open);
+    Pike->Hook(Fisher);
+    Pike->Random.Initialize(77);
+    Pike->FightIndividual = 1;
+    // Find a permitted probabilistic leap, then follow the real ballistic movement.
+    for (int32 I = 0; I < 100 && !Pike->bFightJump; ++I)
+    {
+        Pike->SetActorLocation(FVector(Open.X, Open.Y, SurfaceZ - 8));
+        Pike->Stamina = Pike->MaxStamina;
+        Pike->StartFightBurst();
+    }
+    TestTrue(TEXT("A fresh pike can launch a hooked leap"), Pike->bFightJump);
+    TestFalse(TEXT("A leaping pike cannot be landed"), Pike->ReadyToLand());
+    const float LaunchStamina = Pike->Stamina;
+    float Peak = -1000;
+    for (int32 Step = 0; Step < 100; ++Step)
+    {
+        Pike->MoveHooked(FVector::ZeroVector, 0, 0.01f);
+        Peak = FMath::Max(Peak, float(Pike->GetActorLocation().Z - SurfaceZ));
+    }
+    TestTrue(TEXT("The fish itself clears the water and returns"), Peak > 25 && !Pike->bFightJump && Pike->GetActorLocation().Z <= SurfaceZ);
+    TestTrue(TEXT("The leap does not regenerate stamina in flight"), Pike->Stamina <= LaunchStamina);
+    Pike->SetActorLocation(FVector(Open.X, Open.Y, SurfaceZ - 8));
+    for (int32 I = 0; I < 100; ++I) Pike->StartFightBurst();
+    TestFalse(TEXT("The jump cooldown prevents repeated leaps"), Pike->bFightJump);
+    // Applied line force is still integrated in the airborne branch.
+    Pike->bFightJump = true;
+    Pike->Vel = FVector(0, 0, 200);
+    Pike->ApplyLineForce(FVector(140, 0, 0));
+    Pike->MoveHooked(FVector::ZeroVector, 0, 0.01f);
+    TestTrue(TEXT("The line remains attached and affects an airborne fish"), Pike->Vel.X > 0.5);
+    Pike->bFightJump = false;
+    Pike->NextFightJump = 0;
+    Pike->Stamina = Pike->MaxStamina * 0.1f;
+    for (int32 I = 0; I < 100; ++I) Pike->StartFightBurst();
+    TestFalse(TEXT("An exhausted pike cannot leap"), Pike->bFightJump);
+
+    FVector2D Facing;
+    const FVector2D Edge = LakeMap::StartSpot(&Facing);
+    Fisher->SetActorLocation(FVector(Edge, 100));
+    Fisher->SetActorRotation(FVector(Facing, 0).Rotation());
+    const FVector NearBank(Edge + Facing * 180, SurfaceZ - 15);
+    bool bFinalRun = false;
+    for (int32 Seed = 1; Seed <= 40 && !bFinalRun; ++Seed)
+    {
+        Pike->SetActorLocation(NearBank);
+        Pike->Hook(Fisher);
+        Pike->Random.Initialize(Seed);
+        Pike->StateTime = 4;
+        Pike->Stamina = Pike->MaxStamina * 0.3f;
+        Fisher->FishingState = EFishingState::Fight;
+        Fisher->HookedFish = Pike;
+        Fisher->bReeling = true;
+        Fisher->FightTime = 4;
+        Fisher->UpdateFight(0.01f);
+        bFinalRun = Pike->bShoreRun;
+    }
+    TestTrue(TEXT("A final run gets a chance before automatic landing"), bFinalRun && Fisher->FishingState == EFishingState::Fight);
+    TestTrue(TEXT("The final run heads away from the angler"), FVector::DotProduct(Pike->RoamTarget - NearBank, FVector(Facing, 0)) > 0);
+    Pike->bShoreRun = false;
+    for (int32 I = 0; I < 100; ++I) Pike->ReadyToLand();
+    TestFalse(TEXT("The final run cannot be rolled over and over"), Pike->bShoreRun);
+    Pike->Hook(Fisher);
+    TestTrue(TEXT("Rehook clears old manoeuvre state"), !Pike->bShoreTried && !Pike->bFightJump && Pike->FightRemaining == 0);
+    // Size and individuality influence the production burst timing.
+    ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.3f, Open);
+    Perch->Hook(Fisher);
+    Perch->Random.Initialize(9); Perch->Size01 = 0; Perch->FightIndividual = 1;
+    Perch->StartFightBurst(); const float SmallBurst = Perch->FightRemaining;
+    Perch->Random.Initialize(9); Perch->Size01 = 1;
+    Perch->StartFightBurst(); const float BigBurst = Perch->FightRemaining;
+    Perch->Random.Initialize(9); Perch->FightIndividual = 1.15f;
+    Perch->StartFightBurst();
+    TestTrue(TEXT("Size and individual pace alter bouts"), BigBurst > SmallBurst * 1.5f && Perch->FightRemaining < BigBurst);
+    TestFalse(TEXT("Perch have no hooked leap"), Perch->bFightJump);
+
+    EFishSpecies Bream = EFishSpecies::Crucian;
+    for (int32 I = 0; I < NumSpecies(); ++I) if (Info((EFishSpecies)I).Id == TEXT("bream")) Bream = (EFishSpecies)I;
+    FRandomStream Bites(44);
+    int32 BottomLifts = 0, FloatingLifts = 0;
+    for (int32 I = 0; I < 300; ++I)
+    {
+        for (const FBiteStep& Step : MakeBite(Bream, 0.5f, 1, true, false, Bites)) BottomLifts += Step.Motion == EBiteMotion::Lift;
+        for (const FBiteStep& Step : MakeBite(Bream, 0.5f, 1, false, false, Bites)) FloatingLifts += Step.Motion == EBiteMotion::Lift;
+    }
+    TestTrue(TEXT("Bream lift when feeding from the bottom"), BottomLifts > 200);
+    TestEqual(TEXT("Bream never lift a suspended bait as if it lay on bottom"), FloatingLifts, 0);
+    // Bad profile data is diagnosed by the actual JSON reader, including nested typos.
+    FString File;
+    FFileHelper::LoadFileToString(File, *(FPaths::ProjectContentDir() / TEXT("LiveFish/Species/bleak.json")));
+    File.InsertAt(File.Find(TEXT("\"stock\"")), TEXT("\"fight\":{\"pullMin\":-1,\"seriesMax\":0,\"jumpChance\":2,\"recovry\":1},\n"));
+    FFishSpeciesInfo Invalid; TArray<FString> Problems;
+    ReadSpecies(File, TEXT("invalid-fight.json"), Invalid, Problems);
+    TestTrue(TEXT("Invalid fight values and misspelled fields are reported"), Problems.Num() >= 4);
+    World->DestroyWorld(false);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeSpeciesFilesTest, "QuietLake.Fishing.SpeciesFiles", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeSpeciesFilesTest::RunTest(const FString& Parameters)
 {
@@ -1400,7 +1587,8 @@ bool FLakeSpeciesFilesTest::RunTest(const FString& Parameters)
     const bool bRead = From >= 0 && To > From && LakeFish::ReadSpecies(Readme.Mid(From + 7, To - From - 7), TEXT("README example (bream.json)"), Bream, Problems);
     for (const FString& Problem : Problems) AddInfo(Problem);
     TestTrue(TEXT("A new species is read from its file"), bRead && Problems.IsEmpty() && Bream.Name == TEXT("Лещ") && Bream.Order == 4 && Bream.Stock.SchoolSize == 10
-        && Bream.Bite.Take.Num() == 2 && Bream.Bite.Take[0].Motion == EBiteMotion::Lift && FMath::IsNearlyEqual(Bream.BaitLike(EBait::Maggot), 0.9f) && Bream.Feeding.bRootsInSilt
+        && Bream.Bite.Take.Num() == 2 && Bream.Bite.Take[0].Motion == EBiteMotion::Drift && Bream.Bite.TakeFromBottom.Num() == 2
+        && Bream.Bite.TakeFromBottom[0].Motion == EBiteMotion::Lift && FMath::IsNearlyEqual(Bream.BaitLike(EBait::Maggot), 0.9f) && Bream.Feeding.bRootsInSilt
         && FMath::IsNearlyEqual(Bream.Feeding.Wariness, 0.7f) && FMath::IsNearlyEqual(LakeFish::Info(EFishSpecies::Perch).Diet.Benthos, 0.7f)
         && FMath::IsNearlyEqual(Bream.Diet.Plankton, 0.35f) && FMath::IsNearlyEqual(Bream.DietBig.Benthos, 1.0f));
     // A species without a diet is reported (it would feed the old way, by its habitat table only).

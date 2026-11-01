@@ -156,6 +156,22 @@ bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpecie
     if (Info.Stock.SchoolSize < 1) Problems.Add(FString::Printf(TEXT("%s: stock.schoolSize must be 1 or more"), *File));
     if (Info.Name.IsEmpty() || Info.Noun.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: name and noun are needed"), *File));
     if (Info.Diet.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: diet is empty - what does it eat? (plankton, insects, benthos, plants, fry, fish)"), *File));
+    const FFishFightStyle& F = Info.Fight;
+    auto FightProblem = [&](const TCHAR* Detail) { Problems.Add(FString::Printf(TEXT("%s: fight.%s"), *File, Detail)); };
+    for (float V : { F.PullMin, F.PullMax, F.PauseMin, F.PauseMax, F.BurstMin, F.BurstMax, F.SeriesGap,
+        F.Recovery, F.EffortCost, F.Variation, F.JumpSpeed, F.JumpCooldown, F.ShoreDistance, Info.Stamina, Info.Strength, Info.RunBurst })
+        if (!FMath::IsFinite(V)) FightProblem(TEXT("parameters must be finite"));
+    for (float V : { F.AlongWeight, F.AwayWeight, F.DiveWeight, F.SurfaceWeight })
+        if (!FMath::IsFinite(V) || V < 0) FightProblem(TEXT("direction weights must be finite and nonnegative"));
+    if (F.AlongWeight + F.AwayWeight + F.DiveWeight + F.SurfaceWeight <= 0) FightProblem(TEXT("direction weights must have a positive sum"));
+    for (float V : { F.PullSpeed, F.PauseSpeed, F.BurstChance, F.JumpChance, F.ShoreRunChance })
+        if (!FMath::IsFinite(V) || V < 0 || V > 1) FightProblem(TEXT("speeds and probabilities must be in 0..1"));
+    if (F.Variation < 0 || F.Variation > 0.5f) FightProblem(TEXT("variation must be in 0..0.5"));
+    if (F.PullMin <= 0 || F.PullMax < F.PullMin || F.PauseMin <= 0 || F.PauseMax < F.PauseMin
+        || F.BurstMin < 0 || F.BurstMax < F.BurstMin || (F.BurstMin == 0 && F.BurstMax != 0)) FightProblem(TEXT("duration ranges are invalid"));
+    if (F.SeriesMin < 1 || F.SeriesMax < F.SeriesMin || F.SeriesMax > 12 || F.SeriesGap <= 0) FightProblem(TEXT("series needs 1..12 pulses and a positive gap"));
+    if (F.Recovery < 0 || F.EffortCost <= 0 || F.JumpSpeed <= 0 || F.JumpCooldown < 1 || F.ShoreDistance <= 0
+        || Info.Stamina <= 0 || Info.Strength <= 0 || Info.RunBurst <= 0) FightProblem(TEXT("reserves, forces and special manoeuvre parameters are invalid"));
     for (const FFishDiet* Diet : { &Info.Diet, &Info.DietBig })
         for (float V : { Diet->Plankton, Diet->Insects, Diet->Benthos, Diet->Plants, Diet->Fry, Diet->Fish, Diet->Groundbait })
             if (V < 0 || V > 1.5f) { Problems.Add(FString::Printf(TEXT("%s: diet values go from 0 to 1"), *File)); break; }
@@ -565,6 +581,8 @@ void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int3
     MaxStamina = S.Stamina * FMath::Lerp(0.6f, 1.8f, Size01);
     Stamina = MaxStamina;
     WanderSeed = Random.FRandRange(0, 100);
+    // Reuse an individual draw without changing the random sequence of free swimming.
+    FightIndividual = FMath::Lerp(1 - S.Fight.Variation, 1 + S.Fight.Variation, Phase / (2 * PI));
     Yaw = GetActorRotation().Yaw;
     Pitch = 0;
     if (School >= 0)
@@ -1656,7 +1674,13 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     State = EState::Hooked;
     StateTime = 0;
     TargetAngler = Angler;
-    BurstTime = 2.0f;   // the first run after the strike
+    BurstTime = 0;
+    FightPhase = EFightPhase::Pause;
+    FightRemaining = 0;
+    FightPulses = 0;
+    bFightJump = bShoreTried = bShoreRun = false;
+    NextFightJump = SimTime;
+    PendingLineForce = FVector::ZeroVector;
     StrikeEnd = -1;
     // The thrashing scares the school mates nearby, and they remember it (of that bait, half as much).
     if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
@@ -1715,6 +1739,7 @@ void ALakeFish::DropBait()
 
 void ALakeFish::LiftOut()
 {
+    bFightJump = false;
     bLifted = true;
     HangTime = 0;
     HangForward = GetActorForwardVector();
@@ -1724,6 +1749,7 @@ void ALakeFish::LiftOut()
 
 void ALakeFish::LowerIntoWater(FVector LineVelocity)
 {
+    bFightJump = false;
     bLifted = false;
     State = EState::Hooked;
     Vel = LineVelocity.GetClampedToMaxSize(200);
@@ -1885,13 +1911,135 @@ void ALakeFish::Move(FVector Desired, float MaxSpeed, float DeltaSeconds)
     SetActorLocationAndRotation(P, FRotator(Pitch, Yaw, Roll));
 }
 
+void ALakeFish::ChooseFightTarget(bool bFinalRun)
+{
+    ALakeCharacter* Angler = TargetAngler.Get();
+    if (!Angler) return;
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    const FFishFightStyle& F = S.Fight;
+    const FVector P = GetActorLocation();
+    FVector Away = (P - Angler->GetActorLocation()).GetSafeNormal2D();
+    if (Away.IsNearlyZero()) Away = FVector(LakeMap::DeeperDirection(P.X, P.Y), 0);
+    const FVector Along = FVector::CrossProduct(Away, FVector::UpVector) * (Random.FRand() < 0.5f ? 1 : -1);
+    const float Pick = Random.FRand() * (F.AlongWeight + F.AwayWeight + F.DiveWeight + F.SurfaceWeight);
+    const bool bAlong = Pick < F.AlongWeight;
+    const bool bDive = Pick >= F.AlongWeight + F.AwayWeight && Pick < F.AlongWeight + F.AwayWeight + F.DiveWeight;
+    const bool bSurface = Pick >= F.AlongWeight + F.AwayWeight + F.DiveWeight;
+    const FVector Dir = bFinalRun ? (Away + FVector(LakeMap::DeeperDirection(P.X, P.Y), 0)).GetSafeNormal()
+        : bAlong ? (Along + Away * 0.25f).GetSafeNormal() : (Away + Along * Random.FRandRange(-0.5f, 0.5f)).GetSafeNormal();
+    RoamTarget = P + Dir * Random.FRandRange(300, 700) * (0.4f + StaminaFraction());
+    // A target on dry land would make the fish push into an invisible wall throughout a bout.
+    for (int32 I = 0; I < 8 && (!LakeMap::IsWater(RoamTarget.X, RoamTarget.Y) || LakeMap::Depth(RoamTarget.X, RoamTarget.Y) < 20); ++I)
+        RoamTarget = (RoamTarget + P) * 0.5f;
+    const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y) + 8;
+    RoamTarget.Z = StaminaFraction() < 0.3f || bSurface ? LakeFish::SurfaceZ - 12
+        : bDive || bFinalRun ? Bottom + 6 : FMath::Lerp(LakeFish::SurfaceZ - 12, Bottom, (S.DepthMin + S.DepthMax) * 0.5f);
+    RoamTarget.Z = FMath::Clamp(RoamTarget.Z, Bottom, FMath::Max(Bottom, LakeFish::SurfaceZ - 8));
+}
+
+void ALakeFish::FightSplash()
+{
+    if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
+    {
+        const FVector P = GetActorLocation();
+        Life->EmitSign(ELakeSign::Splash, FVector(P.X, P.Y, LakeFish::SurfaceZ), FMath::Min(0.35f + WeightKg * 0.4f, 1.4f), Species, WeightKg, 0, true);
+    }
+    NextSign = SimTime + Random.FRandRange(0.9f, 2.2f);
+}
+
+void ALakeFish::StartFightBurst()
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    const FFishFightStyle& F = S.Fight;
+    FightPhase = EFightPhase::Burst;
+    const float Base = F.BurstMin > 0 ? Random.FRandRange(F.BurstMin, F.BurstMax) : S.RunBurst;
+    FightRemaining = Base * FMath::Lerp(0.8f, 1.4f, Size01) * FMath::Lerp(0.55f, 1.0f, StaminaFraction()) / FightIndividual;
+    BurstTime = FightRemaining;
+    if (!bShoreRun && !bFightJump && F.JumpChance > 0 && SimTime >= NextFightJump && StaminaFraction() > 0.4f
+        && GetActorLocation().Z > LakeFish::SurfaceZ - 35 && Random.FRand() < F.JumpChance * StaminaFraction())
+    {
+        bFightJump = true;
+        NextFightJump = SimTime + F.JumpCooldown;
+        Vel.Z = F.JumpSpeed * FMath::Lerp(0.8f, 1.0f, StaminaFraction());
+        // The launch has a real cost even when the following airborne motion is passive.
+        Stamina = FMath::Max(0.0f, Stamina - F.EffortCost * 0.4f);
+        FightSplash();
+    }
+}
+
+bool ALakeFish::ReadyToLand()
+{
+    if (State != EState::Hooked || bLifted) return false;
+    const FFishFightStyle& F = LakeFish::Info(Species).Fight;
+    const ALakeCharacter* Angler = TargetAngler.Get();
+    const FVector P = GetActorLocation();
+    const float Fresh = StaminaFraction();
+    if (!bShoreTried && !bFightJump && F.ShoreRunChance > 0 && StateTime > 3 && Fresh > 0.15f && Fresh < 0.6f
+        && Angler && FVector::Dist2D(P, Angler->GetActorLocation()) < F.ShoreDistance && LakeMap::ShoreDistance(P.X, P.Y) < 450)
+    {
+        bShoreTried = true;
+        if (Random.FRand() < F.ShoreRunChance * FightIndividual)
+        {
+            bShoreRun = true;
+            FightPulses = 1;
+            ChooseFightTarget(true);
+            StartFightBurst();
+        }
+    }
+    return !bFightJump && !bShoreRun;
+}
+
+void ALakeFish::UpdateFightMotion(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    const FFishFightStyle& F = S.Fight;
+    const float Fresh = StaminaFraction();
+    FightRemaining -= DeltaSeconds;
+    ReadyToLand();
+    if (FightRemaining <= 0 && !bFightJump)
+    {
+        if (FightPhase == EFightPhase::Burst && --FightPulses > 0)
+        {
+            FightPhase = EFightPhase::Gap;
+            FightRemaining = F.SeriesGap / FightIndividual;
+        }
+        else if (FightPhase == EFightPhase::Gap) StartFightBurst();
+        else if (FightPhase == EFightPhase::Pull || FightPhase == EFightPhase::Burst)
+        {
+            bShoreRun = false;
+            FightPhase = EFightPhase::Pause;
+            FightRemaining = Random.FRandRange(F.PauseMin, F.PauseMax) * FMath::Lerp(1.8f, 1.0f, Fresh) / FightIndividual;
+        }
+        else
+        {
+            ChooseFightTarget();
+            if (Random.FRand() < F.BurstChance * Fresh * FightIndividual)
+            {
+                FightPulses = FMath::Max(1, FMath::RoundToInt(Random.RandRange(F.SeriesMin, F.SeriesMax) * FMath::Lerp(0.4f, 1.0f, Fresh)));
+                StartFightBurst();
+            }
+            else
+            {
+                FightPhase = EFightPhase::Pull;
+                FightRemaining = Random.FRandRange(F.PullMin, F.PullMax) * FMath::Lerp(0.8f, 1.3f, Size01) / FightIndividual;
+            }
+        }
+    }
+    BurstTime = FightPhase == EFightPhase::Burst ? FMath::Max(0.0f, FightRemaining) : 0;
+    const bool bRest = FightPhase == EFightPhase::Pause || FightPhase == EFightPhase::Gap;
+    const float Pace = bRest ? F.PauseSpeed : FightPhase == EFightPhase::Burst ? 1.0f : F.PullSpeed;
+    MaxSpeed = S.BurstSpeed * Pace * FMath::Lerp(0.12f, 1.0f, Fresh) * FightIndividual;
+    Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * MaxSpeed;
+    if (GetActorLocation().Z > LakeFish::SurfaceZ - 30 && Effort > 0.35f && SimTime >= NextSign) FightSplash();
+}
+
 void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     Desired = Desired.GetClampedToMaxSize(MaxSpeed);
     FVector Heading = GetActorForwardVector();
     const bool bBurst = BurstTime > 0;
-    const float TurnRate = S.TurnRate * (bBurst ? 1.8f : 1.0f) * 0.8f;
+    const float TurnRate = S.TurnRate * (bBurst ? 1.8f : 1.0f) * 0.8f * Agility * FightIndividual;
     // On the line the fish throws itself about: the body turns straight at the wanted heading,
     // limited by the species' turn rate. Fish keep their back up: pitch is limited.
     if (Desired.SizeSquared() > 4)
@@ -1906,26 +2054,47 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     }
     // Thrust only along the body axis, like a real tail; reverse thrust is weak.
     float Accel = S.Acceleration * (bBurst ? 2.5f : 1.0f);
-    Accel *= S.Strength * FMath::Lerp(0.25f, 1.0f, StaminaFraction());
+    const bool bRest = FightPhase == EFightPhase::Pause || FightPhase == EFightPhase::Gap;
+    Accel *= S.Strength * FMath::Lerp(0.12f, 1.0f, StaminaFraction()) * FightIndividual * (bRest ? 0.08f : 1.0f);
     const float ForwardSpeed = FVector::DotProduct(Vel, Heading);
     const float TargetSpeed = Desired.Size() * FMath::Max(0.0f, FVector::DotProduct(Heading, Desired.GetSafeNormal()));
-    const float Thrust = FMath::Clamp((TargetSpeed - ForwardSpeed) * 3.0f, -Accel * 0.3f, Accel);
-    Effort = FMath::Clamp(FMath::Abs(Thrust) / FMath::Max(1.0f, S.Acceleration * 2.5f) + ForwardSpeed / S.BurstSpeed * 0.5f, 0.0f, 1.0f);
+    const float Thrust = bFightJump ? 0 : FMath::Clamp((TargetSpeed - ForwardSpeed) * 3.0f, -Accel * 0.3f, Accel);
+    // Passive towing is not exercise. Count propulsion and opposition to the line while active.
+    const float Opposition = FMath::Max(0.0f, float(-FVector::DotProduct(PendingLineForce, Heading)))
+        / FMath::Max(1.0f, WeightKg * S.Acceleration * S.Strength);
+    Effort = FMath::Clamp(FMath::Abs(Thrust) / FMath::Max(1.0f, S.Acceleration * S.Strength)
+        + (bRest || bFightJump ? 0 : FMath::Max(0.0f, ForwardSpeed) / S.BurstSpeed * 0.4f + Opposition * 0.35f), 0.0f, 1.0f);
+    const float Recover = bRest && !bFightJump ? S.Fight.Recovery * FMath::Max(0.0f, 1 - Effort / 0.2f) : 0;
+    Stamina = FMath::Clamp(Stamina + DeltaSeconds * (Recover - S.Fight.EffortCost * Effort), 0.0f, MaxStamina);
 
     Vel += Heading * Thrust * DeltaSeconds;
     // External pull from the fishing line, divided by the fish's mass.
     Vel += PendingLineForce / FMath::Max(0.03f, WeightKg) * DeltaSeconds;
     PendingLineForce = FVector::ZeroVector;
     // Water drag: low along the streamlined body, high sideways and vertically.
-    const FVector Forward = Heading * FVector::DotProduct(Vel, Heading);
-    const FVector Side = Vel - Forward;
-    const float ForwardDrag = 1.2f / S.BurstSpeed * Forward.Size();
-    Vel = Forward / (1 + ForwardDrag * DeltaSeconds) + Side / (1 + 5.0f * DeltaSeconds);
+    if (bFightJump)
+    {
+        Vel.Z -= 980.0f * DeltaSeconds;
+        Heading = Vel.GetSafeNormal();
+    }
+    else
+    {
+        const FVector Forward = Heading * FVector::DotProduct(Vel, Heading);
+        const FVector Side = Vel - Forward;
+        const float ForwardDrag = 1.2f / S.BurstSpeed * Forward.Size();
+        Vel = Forward / (1 + ForwardDrag * DeltaSeconds) + Side / (1 + 5.0f * DeltaSeconds);
+    }
 
     FVector P = GetActorLocation() + Vel * DeltaSeconds;
     const float Bottom = BottomZ(P.X, P.Y);
     const float Top = LakeFish::SurfaceZ - 4;
-    if (P.Z > Top) { P.Z = Top; Vel.Z = FMath::Min(0.0, Vel.Z); }
+    if (bFightJump && P.Z <= Top && Vel.Z <= 0)
+    {
+        bFightJump = false;
+        Vel.Z *= 0.25f;
+        FightSplash();
+    }
+    if (!bFightJump && P.Z > Top) { P.Z = Top; Vel.Z = FMath::Min(0.0, Vel.Z); }
     if (P.Z < Bottom + 4) { P.Z = Bottom + 4; Vel.Z = FMath::Max(0.0, Vel.Z); }
     if (!LakeMap::IsWater(P.X, P.Y) || LakeFish::SurfaceZ - Bottom < 10)
     {
@@ -1990,36 +2159,7 @@ void ALakeFish::Simulate(float DeltaSeconds)
     case EState::Hooked:
     {
         if (!Angler) { State = EState::Roam; break; }
-        // The fish "leads": runs along the bank, away from the angler or down to the bottom, with
-        // bursts while it is fresh (longer for a heavy fish). A tired fish comes up and gives in.
-        const float Fresh = StaminaFraction();
-        if (StateTime > NextRun)
-        {
-            StateTime = 0;
-            NextRun = Random.FRandRange(1.5f, 3.5f) * FMath::Lerp(1.5f, 1.0f, Fresh);
-            const FVector Away = (GetActorLocation() - Angler->GetActorLocation()).GetSafeNormal2D();
-            const FVector Along = FVector::CrossProduct(Away, FVector::UpVector) * (Random.FRand() < 0.5f ? 1 : -1);
-            const float Pick = Random.FRand();
-            const FVector Dir = Pick < 0.45f ? (Along + Away * 0.3f).GetSafeNormal() : (Away + Along * Random.FRandRange(-0.5f, 0.5f)).GetSafeNormal();
-            RoamTarget = GetActorLocation() + Dir * Random.FRandRange(300, 700) * (0.4f + Fresh);
-            const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
-            RoamTarget.Z = Fresh < 0.3f ? LakeFish::SurfaceZ - 12                                 // tired: up to the surface
-                         : Pick > 0.75f ? Bottom + 10                                                 // dive
-                         : FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, S.DepthMax);
-            if (Random.FRand() < 0.55f * Fresh) BurstTime = S.RunBurst + 1.5f * Size01;
-        }
-        Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * S.BurstSpeed;
-        MaxSpeed = FMath::Lerp(S.CruiseSpeed * 0.5f, S.BurstSpeed, Fresh);
-        // Pulling against the line costs stamina; with a slack line the fish gets its breath back.
-        Stamina = FMath::Clamp(Stamina - DeltaSeconds * (0.15f + Effort * 0.9f) + (Effort < 0.2f ? DeltaSeconds * 0.12f : 0.0f), 0.0f, MaxStamina);
-        // Thrashing at the top: splashes the angler can see and hear.
-        if (GetActorLocation().Z > LakeFish::SurfaceZ - 30 && Effort > 0.35f && SimTime >= NextSign)
-            if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
-            {
-                const FVector P = GetActorLocation();
-                Life->EmitSign(ELakeSign::Splash, FVector(P.X, P.Y, LakeFish::SurfaceZ), FMath::Min(0.35f + WeightKg * 0.4f, 1.4f), Species, WeightKg, 0, true);
-                NextSign = SimTime + Random.FRandRange(0.9f, 2.2f);
-            }
+        UpdateFightMotion(DeltaSeconds, Desired, MaxSpeed);
         break;
     }
     case EState::Flee:
@@ -2035,8 +2175,8 @@ void ALakeFish::Simulate(float DeltaSeconds)
         break;
     }
     }
-    if (State == EState::Flee || State == EState::Hooked) MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed);
-    if (BurstTime > 0) MaxSpeed = S.BurstSpeed;
+    if (State == EState::Flee) MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed);
+    if (BurstTime > 0 && State != EState::Hooked) MaxSpeed = S.BurstSpeed;
     Desired += SteerBounds();
     Move(Desired, MaxSpeed, DeltaSeconds);
 }

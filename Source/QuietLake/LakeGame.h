@@ -184,6 +184,7 @@ private:
     friend class FLakeFishingTest;
     friend struct FLakeFishingFixture;
     friend class FLakeBitePatternsTest;
+    friend class FLakeFightProfilesTest;
     friend class FLakeFishBehaviourTest;
     friend class FLakeCastingTest;
     friend class FLakeWindDriftTest;

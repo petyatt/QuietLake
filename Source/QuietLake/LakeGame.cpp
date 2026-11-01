@@ -1063,7 +1063,7 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     }
     if (Force >= BreakForce) FinishFishing(TEXT("Леска оборвалась! Чаще отпускайте ЛКМ. ЛКМ — новый заброс."));
     else if (FightTime >= 120) FinishFishing(TEXT("Рыба сошла: вываживание затянулось. ЛКМ — новый заброс."));
-    else if (bReady && bReeling) StartLanding(Fish);
+    else if (bReady && bReeling && Fish->ReadyToLand()) StartLanding(Fish);
 }
 void ALakeCharacter::StartLanding(ALakeFish* Fish)
 {

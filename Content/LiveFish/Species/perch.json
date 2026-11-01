@@ -2,7 +2,7 @@
   "order": 0,
   "name": "Окунь",
   "noun": "окунь",
-  "description": "Стайный хищник свалов, коряг и свай. Смелый, берёт почти сразу: тычок-другой, резко топит и уводит, потом стоит и заглатывает червя. Гоняет малька стаей.",
+  "description": "Стайный хищник свалов, коряг и свай. Смелый, берёт почти сразу: тычок-другой, резко топит и уводит, потом стоит и заглатывает червя. Гоняет малька стаей. На крючке часто сопротивляется сериями коротких толчков.",
   "mesh": "/Game/Fish/SM_Fish_Perch.SM_Fish_Perch",
   "meshLength": 26,
   "condition": 1.25,
@@ -54,6 +54,13 @@
   "strength": 1.0,
   "stamina": 9,
   "runBurst": 0.5,
+  "fight": {
+    "alongWeight": 0.5, "awayWeight": 0.25, "diveWeight": 0.25, "surfaceWeight": 0,
+    "pullMin": 0.6, "pullMax": 1.2, "pullSpeed": 0.5, "pauseMin": 0.7,
+    "pauseMax": 1.3, "burstChance": 0.85, "burstMin": 0.18, "burstMax": 0.32,
+    "seriesMin": 3, "seriesMax": 5, "seriesGap": 0.18, "recovery": 0.16,
+    "effortCost": 1.7
+  },
   "stock": { "count": 144, "schoolSize": 6 },
   "signs": { "splash": "Окунь бьёт малька", "scatter": "Окуни гоняют малька — «котёл»", "jump": "Из воды выпрыгнул окунь" }
 }

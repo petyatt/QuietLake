@@ -335,6 +335,37 @@ struct FFishSigns
     UPROPERTY() FString Jump;
 };
 
+/** Game tuning for fighting on a fixed line. Direction weights are relative; times are seconds. */
+USTRUCT()
+struct FFishFightStyle
+{
+    GENERATED_BODY()
+    UPROPERTY() float AlongWeight = 0.45f;
+    UPROPERTY() float AwayWeight = 0.30f;
+    UPROPERTY() float DiveWeight = 0.25f;
+    UPROPERTY() float SurfaceWeight = 0;
+    UPROPERTY() float PullMin = 1.5f;
+    UPROPERTY() float PullMax = 3.5f;
+    UPROPERTY() float PullSpeed = 0.55f; // fraction of burst speed while pulling steadily
+    UPROPERTY() float PauseMin = 0.6f;
+    UPROPERTY() float PauseMax = 1.4f;
+    UPROPERTY() float PauseSpeed = 0.06f;
+    UPROPERTY() float BurstChance = 0.55f;
+    UPROPERTY() float BurstMin = 0;     // zero: use the legacy runBurst, scaled by size
+    UPROPERTY() float BurstMax = 0;
+    UPROPERTY() int32 SeriesMin = 1;
+    UPROPERTY() int32 SeriesMax = 1;
+    UPROPERTY() float SeriesGap = 0.25f;
+    UPROPERTY() float Recovery = 0.18f; // stamina units/s at rest, not a fraction of the reserve
+    UPROPERTY() float EffortCost = 1.5f;
+    UPROPERTY() float Variation = 0.15f; // individual pace/thrust spread, 0..0.5
+    UPROPERTY() float JumpChance = 0;   // per burst, only fresh and close to the surface
+    UPROPERTY() float JumpSpeed = 390;  // vertical launch speed, cm/s
+    UPROPERTY() float JumpCooldown = 8;
+    UPROPERTY() float ShoreRunChance = 0; // one opportunity per hooking, near angler and bank
+    UPROPERTY() float ShoreDistance = 700; // cm to angler; also within 450 cm of the bank
+};
+
 /**
  * The passport of a species: everything Live Fish knows of it, read from its file in
  * Content/LiveFish/Species (see the README.md there). Speeds in cm/s, distances in cm, weights in
@@ -377,6 +408,7 @@ struct FFishSpeciesInfo
     UPROPERTY() float Strength = 1;       // thrust per kg relative to a perch, used when hooked
     UPROPERTY() float Stamina = 10;       // seconds of hard pulling at full strength
     UPROPERTY() float RunBurst = 0.5f;    // s of a hooked fish's burst (plus more for a big one)
+    UPROPERTY() FFishFightStyle Fight;
     UPROPERTY() FFishStock Stock;
     UPROPERTY() FFishLearning Learning;   // how it learns from the angler
     UPROPERTY() FFishSigns Signs;
@@ -548,6 +580,8 @@ public:
      */
     void HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds);
     bool IsHooked() const { return State == EState::Hooked; }
+    /** Consider a final run before landing; a leap or final run must finish first. */
+    bool ReadyToLand();
     float StaminaFraction() const { return Stamina / FMath::Max(0.01f, MaxStamina); }
     FVector MouthLocation() const;
     FVector Velocity() const { return Vel; }
@@ -629,7 +663,11 @@ private:
     void UpdateRooting(FVector& Desired, float& MaxSpeed);
     void UpdateBait(float DeltaSeconds);
     void Move(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds);
-    /** The old direct-turning model, kept for a fish fighting on the line (its fight is tuned to it). */
+    void ChooseFightTarget(bool bShoreRun = false);
+    void StartFightBurst();
+    void UpdateFightMotion(float DeltaSeconds, FVector& Desired, float& MaxSpeed);
+    void FightSplash();
+    /** Body thrust, line force and drag; leaps retain line force and gravity. */
     void MoveHooked(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds);
     void UpdateVisual(float DeltaSeconds);
     UFUNCTION() void OnRep_NetLocation();
@@ -662,7 +700,11 @@ private:
     TMap<TWeakObjectPtr<ALakeCharacter>, float> IgnoreBaitUntil;
     FVector PendingLineForce = FVector::ZeroVector;
     float SimTime = 0;
-    float NextRun = 0;                // hooked: seconds until the next run
+    enum class EFightPhase : uint8 { Pull, Burst, Gap, Pause };
+    EFightPhase FightPhase = EFightPhase::Pause;
+    float FightRemaining = 0, FightIndividual = 1, NextFightJump = 0;
+    int32 FightPulses = 0;
+    bool bFightJump = false, bShoreTried = false, bShoreRun = false;
     float Activity = 1;               // see LakeFish::Activity
     float NextMoodCheck = 0;
     FFishConditions Seen;             // the time and the weather, looked at with the mood
@@ -737,6 +779,7 @@ private:
     friend class FLakeLearningTest;
     friend class FLakeWaterTest;
     friend class FLakeMixedSchoolsTest;
+    friend class FLakeFightProfilesTest;
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;
