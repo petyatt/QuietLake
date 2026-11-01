@@ -395,12 +395,13 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
                 if (Name == TEXT("A_Birds")) BirdSound = A;
             }
         }
-        // Moonlight: a second, faint, cool directional light that also lights the atmosphere.
+        // Moonlight: a second, cool directional light. It is deliberately not an atmosphere sun
+        // light: as one, it painted the night sky with a daylight-blue gradient (and the sky then
+        // banded); the night sky is left to the faint atmosphere and the moon.
         auto* MoonActor = World->SpawnActor<ADirectionalLight>(FVector(0, 0, 3000), FRotator(-30, 0, 0));
         MoonActor->SetMobility(EComponentMobility::Movable);
         Moon = Cast<UDirectionalLightComponent>(MoonActor->GetLightComponent());
-        Moon->SetAtmosphereSunLight(true);
-        Moon->SetAtmosphereSunLightIndex(1);
+        Moon->SetAtmosphereSunLight(false);
         Moon->SetLightColor(FLinearColor(0.62f, 0.72f, 1.0f));
         Moon->SetLightSourceAngle(0.5f);
         Moon->SetCastShadows(true);
@@ -477,8 +478,11 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         Moon->SetIntensity(LastMoon);
         Moon->SetVisibility(LastMoon > 0.003f);
     }
-    // Under a thick cloud the whole sky is dimmer, more so in rain.
-    if (SkyLight && Changed(LastSky, FMath::Lerp(1.0f, 0.8f, W.Cloud * W.Cloud) * FMath::Lerp(1.0f, 0.6f, W.Rain), 0.01f)) SkyLight->SetIntensity(LastSky);
+    // Under a thick cloud the whole sky is dimmer, more so in rain. At night the sky is only the
+    // moon: left at daylight strength it lit the fog and the whole valley like day
+    // (and the fog showed banding in the sky), so its intensity follows the sun.
+    if (SkyLight && Changed(LastSky, FMath::Lerp(0.07f, 1.0f, Day) * FMath::Lerp(1.0f, 0.8f, W.Cloud * W.Cloud) * FMath::Lerp(1.0f, 0.6f, W.Rain), 0.01f))
+        SkyLight->SetIntensity(LastSky);
     if (Atmosphere)
     {
         // A grey sky under cloud and rain: less blue scattering, more milky haze.
@@ -497,8 +501,12 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         const float SunShare = FMath::Lerp(1.0f, 0.12f, Overcast * Overcast);
         const float ClearEV = FMath::Lerp(-3.3f, -0.1f, S(0.0f, 35.0f, Elevation));
         const float DayEV = ClearEV + 0.3f + 0.5f * FMath::Log2(SunShare) + 1.3f * FogNow;
-        Post->Settings.AutoExposureMinBrightness = FMath::Lerp(-3.2f, DayEV - 0.25f, Day);
-        Post->Settings.AutoExposureMaxBrightness = FMath::Lerp(1.0f, DayEV + 0.25f, Day);
+        // Night: the adaptation is clamped to a dark target, never allowed to lift a near-black sky
+        // to daytime (that showed as a bright blue night with banding and flicker in the sky). The
+        // brightness values here are luminance clamps: a larger value means a darker exposure.
+        const float NightMin = 1.1f, NightMax = 2.1f;
+        Post->Settings.AutoExposureMinBrightness = FMath::Lerp(NightMin, DayEV - 0.25f, Day);
+        Post->Settings.AutoExposureMaxBrightness = FMath::Lerp(NightMax, DayEV + 0.25f, Day);
         Post->Settings.AutoExposureBias = FMath::Lerp(-0.4f, 0.0f, Day);
 #if !UE_BUILD_SHIPPING
         // -ExposureProbe: free adaptation and the HDR debug view, to read what the eye would choose.
