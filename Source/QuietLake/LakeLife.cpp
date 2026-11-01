@@ -875,6 +875,7 @@ void ALakeLife::LogFood()
         int32 On[8] = {};
         int32 Feeding = 0, All = 0;
         double Depth = 0, Column = 0, Bank = 0, Water = 0;
+        double AllDepth = 0, AllColumn = 0;
         for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
         {
             const ALakeFish* Fish = Weak.Get();
@@ -883,6 +884,8 @@ void ALakeLife::LogFood()
             ++All;
             Bank += LakeMap::ShoreDistance(P.X, P.Y) / 100;
             Water += LakeMap::Depth(P.X, P.Y) / 100;
+            AllDepth += (LakeFish::SurfaceZ - P.Z) / 100;
+            AllColumn += FMath::Clamp((LakeFish::SurfaceZ - P.Z) / FMath::Max(1.0f, LakeFish::SurfaceZ - ALakeFish::BottomZ(P.X, P.Y)), 0.0f, 1.0f);
             if (Fish->GetGoal() != EFishGoal::Feed) continue;
             ++Feeding;
             ++On[FMath::Clamp((int32)Fish->GetFeedOn(), 0, 7)];
@@ -894,7 +897,8 @@ void ALakeLife::LogFood()
         for (int32 F = 0; F < 8; ++F)
             if (On[F]) Line += FString::Printf(TEXT(" %s %.0f%%"), LakeFood::Name((EFishFood)F), 100.0f * On[F] / Feeding);
         if (Feeding) Line += FString::Printf(TEXT(", at %.1f m (%.2f of the depth)"), Depth / Feeding, Column / Feeding);
-        Line += FString::Printf(TEXT("; all %d: %.1f m from the bank over %.1f m of water"), All, Bank / All, Water / All);
+        Line += FString::Printf(TEXT("; all %d: %.1f m from the bank over %.1f m of water, at %.2f m (%.2f of the depth)"),
+            All, Bank / All, Water / All, AllDepth / All, AllColumn / All);
     }
     // Fishing pressure and the fish that have learnt the hook.
     if (!Pressure.IsEmpty())
@@ -1378,10 +1382,7 @@ void ALakeLife::SetupVisuals()
     };
     Rings = Pool(SignMaterial, RingPool);
     Sprays = Pool(SprayMaterial, SprayPool);
-    SplashSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Life/A_Splash.A_Splash"));
     PlopSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Life/A_Plop.A_Plop"));
-    BubbleSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Life/A_Bubbles.A_Bubbles"));
-    ScatterSound = LoadObject<USoundBase>(nullptr, TEXT("/Game/Life/A_Scatter.A_Scatter"));
     Attenuation = NewObject<USoundAttenuation>(this);
     Attenuation->Attenuation.bAttenuate = true;
     Attenuation->Attenuation.bSpatialize = true;
@@ -1404,6 +1405,13 @@ void ALakeLife::SetupVisuals()
             Underwater->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1, Murk));
         }
     }
+}
+
+void ALakeLife::PlayRigLanding(const FVector& Where)
+{
+    // The only water sound of a cast: the float and the shot coming down on the surface. Bites are
+    // silent on purpose — the player reads the float, not the sound — and the fish make no sound.
+    PlaySound(PlopSound, Where, 0.4f, FMath::FRandRange(1.0f, 1.15f));
 }
 
 void ALakeLife::PlaySound(USoundBase* Sound, const FVector& Location, float Volume, float Pitch)
@@ -1490,28 +1498,22 @@ void ALakeLife::ShowSign(const FLakeSign& Sign)
     {
     case ELakeSign::Rise:
         AddRing(Sign.Kind, P, S);
-        PlaySound(PlopSound, P, FMath::Min(0.25f + 0.35f * S, 0.8f), FMath::Clamp(1.35f - 0.35f * S, 0.8f, 1.4f));
         break;
     case ELakeSign::Gulp:
         AddRing(ELakeSign::Rise, P, S);
-        PlaySound(PlopSound, P, 0.2f, 1.5f);
         break;
     case ELakeSign::Bubbles:
         AddRing(Sign.Kind, P, S);
-        PlaySound(BubbleSound, P, 0.45f, FMath::FRandRange(0.9f, 1.15f));
         break;
     case ELakeSign::Swirl:
         AddRing(Sign.Kind, P, S);
-        PlaySound(PlopSound, P, FMath::Min(0.5f + 0.3f * S, 1.0f), 0.65f);
         break;
     case ELakeSign::Splash:
         AddRing(Sign.Kind, P, S);
         AddSpray(P, S);
-        PlaySound(SplashSound, P, FMath::Min(0.4f + 0.4f * S, 1.0f), FMath::Clamp(1.25f - 0.25f * S, 0.75f, 1.3f));
         break;
     case ELakeSign::Scatter:
         AddRing(Sign.Kind, P, S);
-        PlaySound(ScatterSound, P, 0.6f, FMath::FRandRange(0.9f, 1.1f));
         break;
     case ELakeSign::Jump:
     {
@@ -1551,7 +1553,6 @@ void ALakeLife::ShowSign(const FLakeSign& Sign)
         Body->SetVisibility(true);
         AddRing(ELakeSign::Rise, Jump.From, 0.5f * Jump.Size);
         AddSpray(Jump.From, 0.35f * Jump.Size);
-        PlaySound(PlopSound, Jump.From, 0.35f, 1.2f);
         break;
     }
     default: break;
@@ -1592,7 +1593,6 @@ void ALakeLife::UpdateJumps(float Now)
             const FVector To = J.From + J.Dir * J.Length;
             AddRing(ELakeSign::Splash, To, 0.55f * J.Size);
             AddSpray(To, 0.5f * J.Size);
-            PlaySound(SplashSound, To, FMath::Min(0.35f + 0.25f * J.Size, 0.9f), FMath::Clamp(1.4f - 0.25f * J.Size, 0.9f, 1.4f));
             continue;
         }
         // Up and over: the body follows the arc, nose up on the way out and down on the way in.

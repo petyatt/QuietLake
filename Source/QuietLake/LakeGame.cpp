@@ -333,6 +333,7 @@ void ALakeCharacter::OnRigLanded(FVector Where)
     const FVector Target(Where.X, Where.Y, LakeFish::SurfaceZ);
     FloatPosition = Target;
     PlaceBait();
+    if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->PlayRigLanding(Target);
     BaitActiveTime = FMath::Min(BaitActiveTime, ServerNow() + 0.1f);
     // Laid out quietly the rig barely disturbs the fish; let go too soon it comes down in a heap and splashes.
     const bool bClean = CastResult == ECastResult::Good;

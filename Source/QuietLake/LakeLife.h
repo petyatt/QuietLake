@@ -68,6 +68,8 @@ public:
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaSeconds) override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+    /** The one water sound of a cast: the float and the shot coming down on the surface. */
+    void PlayRigLanding(const FVector& Where);
 
     // --- server ---
     /**

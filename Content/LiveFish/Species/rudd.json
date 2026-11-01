@@ -13,7 +13,7 @@
   "habitat":     { "shallows": 1.0, "reedEdge": 0.8, "dropOff": 0.1, "cover": 0.3, "deep": 0.0, "open": 0.1, "minDepthM": 0.5, "maxDepthM": 2.0 },
   "feedHabitat": { "shallows": 1.0, "reedEdge": 0.9, "dropOff": 0.0, "cover": 0.2, "deep": 0.0, "open": 0.1, "minDepthM": 0.4, "maxDepthM": 1.8 },
   "restHabitat": { "shallows": 0.6, "reedEdge": 0.6, "dropOff": 0.3, "cover": 0.5, "deep": 0.0, "open": 0.3, "minDepthM": 0.8, "maxDepthM": 2.5 },
-  "depthMin": 0.0,
+  "depthMin": 0.1,
   "depthMax": 0.4,
 
   "cruiseSpeed": 24,
@@ -46,7 +46,7 @@
     "wariness": 0.9, "dominance": 0.7,
     "sipAtDusk": 0.6, "restColumn": 0.35, "feedColumnMin": 0.0, "feedColumnMax": 0.6,
     "browseStep": 400, "browseSpeed": 0.55, "fillRate": 0.012,
-    "bask": 0.5, "bJumps": true
+    "bask": 0.25, "bJumps": true
   },
   "diet":    { "plankton": 0.5, "insects": 0.9, "benthos": 0.3, "plants": 0.9, "groundbait": 0.8 },
   "dietBig": { "plankton": 0.3, "insects": 0.8, "benthos": 0.3, "plants": 1.0, "groundbait": 0.8 },

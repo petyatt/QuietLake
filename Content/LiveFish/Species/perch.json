@@ -15,8 +15,8 @@
   "habitat":     { "shallows": 0.1, "reedEdge": 0.3, "dropOff": 1.0, "cover": 0.9, "deep": 0.5, "open": 0.3, "minDepthM": 1.2, "maxDepthM": 4.8 },
   "feedHabitat": { "shallows": 0.4, "reedEdge": 1.0, "dropOff": 0.8, "cover": 0.4, "deep": 0.1, "open": 0.2, "minDepthM": 0.6, "maxDepthM": 3.5 },
   "restHabitat": { "shallows": 0.0, "reedEdge": 0.1, "dropOff": 0.5, "cover": 1.0, "deep": 0.6, "open": 0.0, "minDepthM": 1.5, "maxDepthM": 5.0 },
-  "depthMin": 0.3,
-  "depthMax": 0.75,
+  "depthMin": 0.55,
+  "depthMax": 0.92,
 
   "cruiseSpeed": 28,
   "burstSpeed": 160,
