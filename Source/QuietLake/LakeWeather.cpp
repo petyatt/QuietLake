@@ -1,4 +1,4 @@
-﻿#include "LakeWeather.h"
+#include "LakeWeather.h"
 #include "LakeGame.h"
 #include "LakeMap.h"
 #include "Net/UnrealNetwork.h"
@@ -401,6 +401,8 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         MoonActor->SetMobility(EComponentMobility::Movable);
         Moon = Cast<UDirectionalLightComponent>(MoonActor->GetLightComponent());
         Moon->SetAtmosphereSunLight(false);
+        // Below the sun's priority, so the two directional lights never compete for forward shading.
+        Moon->SetForwardShadingPriority(0);
         Moon->SetLightColor(FLinearColor(0.62f, 0.72f, 1.0f));
         Moon->SetLightSourceAngle(0.5f);
         Moon->SetCastShadows(true);
@@ -457,6 +459,16 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
     // away cached shadow pages and sky captures, which is expensive. The sun moves 0.125 degrees a
     // second, so a step of 0.15 degrees is invisible.
     auto Changed = [](float& Last, float Now, float Step) { if (FMath::Abs(Now - Last) < Step) return false; Last = Now; return true; };
+    // Two directional lights (the sun and the moon): the engine wants exactly one of them as the
+    // forward shading light for translucency, the water and the volumetric fog, or it warns that
+    // they compete. Whoever lights the scene wins — the sun by day, the moon at night.
+    const int32 SunMain = Day > 0.35f ? 1 : 0;
+    if (SunMain != ForwardMain)
+    {
+        ForwardMain = SunMain;
+        if (Sun) Sun->SetForwardShadingPriority(SunMain);
+        if (Moon) Moon->SetForwardShadingPriority(1 - SunMain);
+    }
     // Sun: rises in the north-east, low and warm at the ends of the day, softened by cloud.
     if (FVector::DotProduct(ToSun, LastSunDir) < FMath::Cos(FMath::DegreesToRadians(0.15f)))
     {

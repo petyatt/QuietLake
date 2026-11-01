@@ -1,4 +1,4 @@
-#include "LakeGame.h"
+﻿#include "LakeGame.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
 #include "LakeBirds.h"
@@ -1026,6 +1026,8 @@ void ALakeEnvironment::BeginPlay()
         Sun->SetMobility(EComponentMobility::Movable);
         auto* SunComponent = Cast<UDirectionalLightComponent>(Sun->GetLightComponent());
         SunComponent->SetAtmosphereSunLight(true);
+        // The sun is the forward shading light by day: the moon takes over at night (LakeWeather).
+        SunComponent->SetForwardShadingPriority(1);
         SunComponent->SetIntensity(6.5f);
         SunComponent->SetUseTemperature(true);
         SunComponent->SetTemperature(5500.0f);
