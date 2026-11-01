@@ -1787,6 +1787,45 @@ void ALakeLife::RunPreview()
 void ALakeLife::RunFishPreview()
 {
 #if !UE_BUILD_SHIPPING
+    if (FParse::Param(FCommandLine::Get(), TEXT("MeshyPreview")))
+    {
+        // Compact integration scene: real swimming actors, then the actual lifted pose.
+        const FVector C(LakeMap::Centre, LakeFish::SurfaceZ - 90);
+        auto* Cam = GetWorld()->SpawnActor<ACameraActor>(C + FVector(0, -340, 20), FRotator::ZeroRotator);
+        Cam->SetActorRotation((C - Cam->GetActorLocation()).Rotation());
+        Cam->GetCameraComponent()->SetFieldOfView(55);
+        if (auto* PC = GetWorld()->GetFirstPlayerController()) { PC->SetViewTarget(Cam); if (PC->MyHUD) PC->MyHUD->bShowHUD = false; }
+        TArray<ALakeFish*> Models;
+        const EFishSpecies Types[] = { EFishSpecies::Crucian, EFishSpecies::Perch, EFishSpecies::Pike };
+        for (int32 I = 0; I < 3; ++I)
+        {
+            const FVector P = C + FVector((I - 1) * 115, 0, 0);
+            auto* F = GetWorld()->SpawnActor<ALakeFish>(P, FRotator::ZeroRotator);
+            F->Setup(Types[I], I == 2 ? 1.5f : 0.4f, P, -1);
+            Models.Add(F);
+        }
+        FTimerHandle Hold;
+        GetWorldTimerManager().SetTimer(Hold, [Models, C]
+        {
+            for (int32 I = 0; I < Models.Num(); ++I)
+                Models[I]->SetActorLocation(C + FVector((I - 1) * 115, 0, 0));
+        }, 0.02f, true);
+        FTimerHandle Shot;
+        GetWorldTimerManager().SetTimer(Shot, [this, Models]
+        {
+            for (auto* F : Models) UE_LOG(LogTemp, Display, TEXT("MESHY_GAME species=%d speed=%.2f length=%.2f pos=%s"), (int32)F->Species, F->SpeedNow(), LakeFish::LengthCm(F->Species, F->WeightKg), *F->MouthLocation().ToString());
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / TEXT("Meshy_Swimming.png"), false, false);
+        }, 7.0f, false);
+        FTimerHandle Lift;
+        GetWorldTimerManager().SetTimer(Lift, [this, Models, C]
+        {
+            for (int32 I = 0; I < Models.Num(); ++I) { Models[I]->LiftOut(); Models[I]->HangOnLine(C + FVector((I - 1) * 115, 0, 0), FVector::UpVector, 0.02f); }
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / TEXT("Meshy_Lifted.png"), false, false);
+        }, 9.0f, false);
+        FTimerHandle Quit;
+        GetWorldTimerManager().SetTimer(Quit, [this] { if (auto* PC = GetWorld()->GetFirstPlayerController()) PC->ConsoleCommand(TEXT("quit")); }, 10.0f, false);
+        return;
+    }
     // -FishPreview: how the fish swim. First the paths of the fish near the start drawn from high
     // above for 40 s (smooth arcs, schools moving as one); then a showcase school of roach, one of
     // perch, a feeding crucian and a pike in ambush filmed close up under the water in short

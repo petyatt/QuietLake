@@ -518,6 +518,12 @@ https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-paramete
   с кодом 0: `Saved/Logs/Feel-Full1.log`, `Feel-Full2.log`. В игре руками не проверялось: ощущение веса —
   это настройка чисел (жёсткость `HangAnchor`, предел глубины по фазам), смотреть по кадрам `Fight_*.png`.
 
+## Проверено 1 ноября 2026 — облегчённые Meshy-рыбы
 
+Карась, окунь и щука подключены отдельными `SM_Fish_Meshy_*` и `M_Meshy_*`; прежние ассеты сохранены. Фактические треугольники LOD0/1/2 в UE: карась 12500/3000/600, окунь 17500/4000/750, щука 16000/4000/750. Пороги screen size: 1/0,12/0,025. Длины исходных моделей 33,60962 / 29,36509 / 81,77314 см; паспорта содержат эти длины и новые mesh-ссылки, масштаб рыбы по весу сохранён.
 
+UV0 сохраняет атлас. Продольная координата плавания записана в красный канал vertex color; текстурные материалы используют её для прежней WPO-волны и изгиба, с теми же Custom Primitive Data. Base Color импортирован с sRGB; normal и roughness без sRGB, normal с переворотом зелёного канала для UE. Metallic оставлен константой 0 (исходная карта практически нулевая); исходники четырёх карт сохранены в папке обзора и ZIP. Плавники сохранены геометрией, новые кости не вводились. Отдельного перезапекания normal после decimation не делалось — при предельно близком осмотре возможна разница с исходным high-poly.
 
+Сборка QuietLakeEditor успешна (Saved/Logs/MeshyBuild.log). Полный редактор проверил реальные LOD, материалы и bounds (MeshyVerify.log). Один тест SpeciesFiles успешен (MeshySpeciesTest.log). Короткая сцена `-FishPreview -MeshyPreview` показала три реальных ALakeFish, их плавание и вызов позы LiftOut/HangOnLine; снимки Saved/Meshy_Swimming.png и Meshy_Lifted.png, компактное сравнение Saved/Meshy_Comparison.png. Это постановочная проверка моделей, не полный цикл поимки и передачи в руку и не замер FPS/сети. Groundbait не запускался.
+
+Подготовка: Tools/PrepareMeshyLODs.py; импорт в полном редакторе: Tools/ImportMeshyLODs.py (использует ImportMeshyFish.py); проверка: Tools/VerifyMeshyFish.py. Подготовка пишет только Tools/GeneratedFish/Meshy, не запускать для неё GenerateFishModels.py. Исходные архивы и распаковка сохранены. Два устаревших неподдерживаемых поля паспорта карася удалены, их копия Saved/MeshyRemovedLegacyFields.json.
