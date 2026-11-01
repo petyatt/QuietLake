@@ -873,6 +873,9 @@ void ALakeFish::Decide()
     const float A = FMath::Clamp(Activity, 0.0f, 1.3f);
     float Score[(int32)EFishGoal::Count];
     Score[(int32)EFishGoal::Feed] = FMath::Pow(Hunger, 1.3f) * A * 1.4f;
+    // A predator hunts only in a lively hour: at night it rests at its lie instead of patrolling.
+    if (LakeFish::Info(Species).Feeding.PreyMaxWeight > 0)
+        Score[(int32)EFishGoal::Feed] *= FMath::Clamp((A - 0.2f) * 4.0f, 0.0f, 1.0f);
     // The smell of groundbait close by stirs its appetite.
     if (const ALakeLife* Life = ALakeLife::Get(GetWorld()); Life && !Life->Food().Groundbait().IsEmpty())
     {
@@ -1378,6 +1381,8 @@ void ALakeFish::UpdateStrike(FVector& Desired, float& MaxSpeed)
     Prey = nullptr;
     PreyFry = -1;
     NextLook = SimTime + Random.FRandRange(4.0f, 10.0f);
+    // The dash carried it out of cover: it goes back to a new lie, not stay in the open water.
+    if (S.Habitat.bAmbush) ChooseLie();
 }
 
 void ALakeFish::LookForPrey()
@@ -1386,6 +1391,8 @@ void ALakeFish::LookForPrey()
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     ALakeLife* Life = ALakeLife::Get(GetWorld());
     if (!Life || SimTime < NextLook || Hunger < 0.4f) return;
+    // At night a predator rests: only a lively hour makes it hunt.
+    if (Activity < 0.2f) return;
     NextLook = SimTime + Random.FRandRange(0.5f, 0.9f);
     const FVector Mouth = MouthLocation(), Forward = GetActorForwardVector();
     ALakeFish* Best = nullptr;
@@ -1397,7 +1404,7 @@ void ALakeFish::LookForPrey()
         const float Dist = To.Size();
         if (Dist < BestDist && FVector::DotProduct(Forward, To / FMath::Max(1.0f, Dist)) > 0.6f) { Best = Other; BestDist = Dist; }
     });
-    if (!Best || Random.FRand() > 0.3f * Hunger) return;
+    if (!Best || Random.FRand() > 0.3f * Hunger * FMath::Clamp(Activity, 0.0f, 1.3f)) return;
     Prey = Best;
     PreyFry = -1;
     StrikeEnd = SimTime + 0.6f;
@@ -1425,8 +1432,14 @@ void ALakeFish::SenseThreats(float DeltaSeconds)
         const bool bMoving = Other->Vel.SizeSquared() > FMath::Square(8.0f) || Other->StrikeEnd > 0;
         const float Range = 500.0f * (bMoving ? 1.0f : 1.0f - F.Camouflage);
         const float Dist = FVector::Dist(P, Other->GetActorLocation());
-        if (Dist >= Range) return;
-        const float L = S.Feeding.Wariness * (1 - Dist / Range) * (Other->Goal == EFishGoal::Feed ? 1.0f : 0.6f) * (Other->StrikeEnd > 0 ? 1.5f : 1.0f);
+        // Right next to a predator even a still one is felt: the water it displaces, the shadow of its
+        // body. Prey does not calmly swim past a pike's nose.
+        const float Close = Dist < 220.0f ? 0.45f * S.Feeding.Wariness : 0.0f;
+        if (Dist >= Range && Close <= 0.0f) return;
+        const float Seen = Dist < Range
+            ? S.Feeding.Wariness * (1 - Dist / Range) * (Other->Goal == EFishGoal::Feed ? 1.0f : 0.6f) * (Other->StrikeEnd > 0 ? 1.5f : 1.0f)
+            : 0.0f;
+        const float L = FMath::Max(Seen, Close);
         if (L > Level) { Level = L; Worst = Other; }
     };
     if (const ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->ForEachFishNear(P, 500, Visit);
@@ -1465,7 +1478,11 @@ void ALakeFish::UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& Ma
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     ALakeLife* Life = ALakeLife::Get(GetWorld());
     if (!Life) return;
-    if (!bAtSpot || Hunger < 0.3f) return;
+    if (!bAtSpot) return;
+    // At its lie the pike holds its place: still, with only a slow turn of the head towards a fish.
+    Desired = FVector::ZeroVector;
+    MaxSpeed = S.CruiseSpeed * 0.25f;
+    if (Hunger < 0.3f || Activity < 0.2f) return;   // a fed or sluggish pike does not strike
     // Stalking: a fish nearby but not yet in front of the snout - the pike turns slowly towards it
     // with its fins and edges a little closer, the body stiff and the tail still.
     if (const ALakeFish* Stalked = Prey.Get(); Stalked && SimTime < NextLook + 0.4f)
@@ -1492,7 +1509,7 @@ void ALakeFish::UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& Ma
     Prey = Best ? nullptr : Near;
     const int32 Fry = Best ? -1 : Life->NearestFry(Mouth, 350);
     if (!Best && Fry < 0) return;
-    if (Random.FRand() > 0.35f * Hunger * FMath::Clamp(Activity, 0.3f, 1.3f)) return;
+    if (Random.FRand() > 0.35f * Hunger * FMath::Clamp(Activity, 0.0f, 1.3f)) return;
     Prey = Best;
     PreyFry = Fry;
     StrikeEnd = SimTime + 0.8f;

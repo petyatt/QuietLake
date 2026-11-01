@@ -870,13 +870,19 @@ void ALakeLife::LogFood()
         Weather->Hours(), LakeFood::PlanktonDepthM(C), LakeFood::Season(EFishFood::Insects, C), LakeFood::Season(EFishFood::Benthos, C),
         FoodField.EatenPatches(EFishFood::Plankton), FoodField.EatenPatches(EFishFood::Insects), FoodField.EatenPatches(EFishFood::Benthos), FoodField.EatenPatches(EFishFood::Plants));
     // By species: what the feeding fish are on and how deep they feed; how far from the bank all of them are.
+    // Where the pike are: the panel shows how close the prey gets to one and how much it fears it.
+    TArray<FVector> PikePos;
+    for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
+        if (const ALakeFish* Fish = Weak.Get(); Fish && Fish->IsFree() && Fish->Species == EFishSpecies::Pike)
+            PikePos.Add(Fish->GetActorLocation());
     for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp)
     {
         int32 On[8] = {};
         int32 Feeding = 0, All = 0;
         double Depth = 0, Column = 0, Bank = 0, Water = 0;
         double AllDepth = 0, AllColumn = 0;
-        double NearShore = 1e9, Shallowest = 1e9;
+        double NearShore = 1e9, Shallowest = 1e9, AllFear = 0;
+        double NearPike = 1e9, NearPikeFear = 0;
         for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
         {
             const ALakeFish* Fish = Weak.Get();
@@ -886,6 +892,12 @@ void ALakeLife::LogFood()
             Bank += LakeMap::ShoreDistance(P.X, P.Y) / 100;
             Water += LakeMap::Depth(P.X, P.Y) / 100;
             NearShore = FMath::Min(NearShore, LakeMap::ShoreDistance(P.X, P.Y) / 100);
+            AllFear += Fish->FearNow();
+            for (const FVector& Pike : PikePos)
+            {
+                const float ToPike = FVector::Dist(P, Pike) / 100.0f;
+                if (ToPike < NearPike) { NearPike = ToPike; NearPikeFear = Fish->FearNow(); }
+            }
             Shallowest = FMath::Min(Shallowest, LakeMap::Depth(P.X, P.Y) / 100);
             AllDepth += (LakeFish::SurfaceZ - P.Z) / 100;
             AllColumn += FMath::Clamp((LakeFish::SurfaceZ - P.Z) / FMath::Max(1.0f, LakeFish::SurfaceZ - ALakeFish::BottomZ(P.X, P.Y)), 0.0f, 1.0f);
@@ -900,8 +912,8 @@ void ALakeLife::LogFood()
         for (int32 F = 0; F < 8; ++F)
             if (On[F]) Line += FString::Printf(TEXT(" %s %.0f%%"), LakeFood::Name((EFishFood)F), 100.0f * On[F] / Feeding);
         if (Feeding) Line += FString::Printf(TEXT(", at %.1f m (%.2f of the depth)"), Depth / Feeding, Column / Feeding);
-        Line += FString::Printf(TEXT("; all %d: %.1f m from the bank over %.1f m of water (closest %.1f m, shallowest %.1f m), at %.2f m (%.2f of the depth)"),
-            All, Bank / All, Water / All, NearShore, Shallowest, AllDepth / All, AllColumn / All);
+        Line += FString::Printf(TEXT("; all %d: %.1f m from the bank over %.1f m of water (closest %.1f m, shallowest %.1f m), at %.2f m (%.2f of the depth), fear %.2f; nearest pike %.1f m, its fear %.2f"),
+            All, Bank / All, Water / All, NearShore, Shallowest, AllDepth / All, AllColumn / All, AllFear / All, NearPike, NearPikeFear);
     }
     // Fishing pressure and the fish that have learnt the hook.
     if (!Pressure.IsEmpty())

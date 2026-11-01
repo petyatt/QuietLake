@@ -19,9 +19,9 @@
   "depthMax": 0.85,
 
   "cruiseSpeed": 10,
-  "burstSpeed": 420,
+  "burstSpeed": 240,
   "turnRate": 120,
-  "acceleration": 900,
+  "acceleration": 500,
   "tailBeat": 7,
   "gait": { "hoverTurn": 20, "turnRadius": 1.0, "turnAccel": 160, "response": 0.5, "wanderDeg": 10, "wanderHz": 0.05, "kick": 1.0, "kickPeriod": 1.0, "spacing": 3.0 },
 
@@ -43,7 +43,7 @@
     "earlyStrikeText": "Щука выпустила наживку: на первой потяжке подсечка менее надёжна. Повторная потяжка даёт лучший шанс."
   },
   "feeding": {
-    "wariness": 0.4, "camouflage": 0.7, "dominance": 2.0, "strikeChance": 0.3, "hungerRate": 0.25,
+    "wariness": 0.4, "camouflage": 0.55, "dominance": 2.0, "strikeChance": 0.3, "hungerRate": 0.25,
     "bPredator": true, "preyMaxWeight": 0.3, "restColumn": 0.8,
     "browseStep": 700, "browseSpeed": 0.55, "fillRate": 0.0,
     "bask": 0.12, "unflappable": 0.4
