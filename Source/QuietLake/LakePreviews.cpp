@@ -443,6 +443,68 @@ void ALakeCharacter::RunPreviews()
         Watch(17.0f, TEXT("Fight_5.png"));
         At(24.0f, [] { FPlatformMisc::RequestExit(false); });
     }
+    // -MouthPreview: the head of every species close up, to see the mouth a hook goes into.
+    if (FParse::Param(FCommandLine::Get(), TEXT("MouthPreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        auto Shot = [](const FString& Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
+        auto LookFrom = [this](FVector From, FVector Target, float Fov)
+        {
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
+        };
+        At(4.0f, [this]
+        {
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Clear;
+                Clear.Cloud = 0.15f; Clear.Fog = 0; Clear.Rain = 0; Clear.Wind = 0.04f;
+                Weather->SetWeatherNow(Clear);
+                Weather->SetHours(12.0f);
+            }
+            FVector2D Facing;
+            const FVector2D Spot = LakeMap::StartSpot(&Facing);
+            SetActorLocation(FVector(Spot + Facing * 40, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetControlRotation(FRotator(-8, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+        });
+        auto Current = MakeShared<TWeakObjectPtr<ALakeFish>>();
+        for (int32 I = 0; I < LakeFish::NumSpecies(); ++I)
+        {
+            At(6.0f + I, [this, I, Current]
+            {
+                FVector2D Facing;
+                const FVector2D Edge = LakeMap::StartSpot(&Facing);
+                const EFishSpecies Sp = (EFishSpecies)I;
+                const FVector P(Edge + Facing * 330, LakeFish::SurfaceZ - 35);
+                const FRotator Facing0(0, FMath::RadiansToDegrees(FMath::Atan2(-Facing.Y, -Facing.X)), 0);
+                ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(P, Facing0);
+                Fish->Setup(Sp, LakeFish::Info(Sp).MaxWeight * 0.6f, P, -1);
+                *Current = Fish;
+            });
+            At(6.55f + I, [this, I, Current, LookFrom, Shot]
+            {
+                ALakeFish* Fish = Current->Get();
+                if (!Fish) return;
+                const FVector Forward = Fish->GetActorForwardVector();
+                const FVector Head = Fish->MouthLocation();
+                LookFrom(Head + Forward * 52 + FVector(0, 0, 9), Head - Forward * 8, 40);
+                const EFishSpecies Sp = (EFishSpecies)I;
+                const FString Name = FString::Printf(TEXT("Mouth_%s.png"), *LakeFish::Info(Sp).Id);
+                Shot(Name);
+            });
+            At(6.75f + I, [Current] { if (ALakeFish* Fish = Current->Get()) Fish->Destroy(); });
+        }
+        At(7.0f + LakeFish::NumSpecies(), [] { FPlatformMisc::RequestExit(false); });
+    }
     // -CastPreview: casts from the hand at the camp on a clear morning, filmed from the side: a
     // clean one (the rig in the hand, the swing, the rig in the air, the landing close up, the float
     // standing up), one let go too soon and a clean one aimed nearer; the rig's path and each

@@ -59,6 +59,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-BitePreview` | каждое движение поплавка при поклёвке крупным планом | `LakePreviews.cpp` |
 | `-LandPreview` | рыба на леске выходит из воды и попадает в руку | `LakePreviews.cpp` |
 | `-FightPreview` | вываживание сбоку под водой: глубина, ход, повороты, натяжение; лог `QUIET_LAKE_FIGHT` | `LakePreviews.cpp` |
+| `-MouthPreview` | рот каждого вида рыб крупным планом, кадр `Saved/Mouth_<вид>.png` | `LakePreviews.cpp` |
 | `-CastPreview` | заброс с руки сбоку и вблизи, ранний и ближний заброс, тяжёлое и лёгкое удилища, вынимание с ловлей рукой, ходьба с оснасткой, глубокий спуск и спуск глубже воды | `LakePreviews.cpp` |
 | `-RodPreview` | удилище: изгиб кончика при забросе лёгким, средним и тяжёлым, при вываживании | `LakePreviews.cpp` |
 | `-LeaderPreview` | поводок крупным планом: оснастка в руке, замах, полёт, приводнение, лежащая снасть, подъём с остановкой (ЛКМ отпущена и снова зажата), вынимание; лог `QUIET_LAKE_LEADER` (`-Depth=`) | `LakePreviews.cpp` |
@@ -73,6 +74,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 
 Скрипты ассетов в `Tools/`: `Generate*.py` запускаются Blender (`--background --factory-startup --python …`),
 `Create*.py` и `Import*.py` — питоном редактора (`GenerateFishModels.py`/`ImportFish.py` с `QUIETLAKE_FISH=Bream,Rudd` в окружении делают только эти виды) (`CreateGrownPlants.py` готовит графы редактора растений, выгрузка — Ctrl+E в окне графа): `UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -run=pythonscript -script=C:/Fish/Tools/<имя>.py`.
+Готовая (купленная) модель рыбы — конвейер с тремя LOD: `PrepareMeshyLODs.py` в Blender переставляет модель (нос в начало координат, тело по +X, координата волны в красном канале вершинных цветов) и облегчает её по бюджету вида; `ImportMeshyLODs.py` запускается **в полном редакторе** (`UnrealEditor.exe … -ExecutePythonScript=`, в commandlet нет `StaticMeshEditorSubsystem`) через `ImportMeshyLODsRun.py`, импортирует LOD0 и подкладывает LOD1/2, собирает материал `M_Meshy_<Вид>`. Список видов — `QUIETLAKE_FISH`, папка источников — `QUIETLAKE_MESHY_SOURCE` (по умолчанию `Saved/AssetReview/Meshy-20261101/<вид>`), длины моделей пишутся в `meshLength` паспорта. Простой вариант без LOD — `ProcessMeshyFish.py` + `ImportTexturedFish.py`.
 
 ## Код (`Source/QuietLake`)
 

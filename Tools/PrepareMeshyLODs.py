@@ -1,13 +1,22 @@
 """Prepare review sources as static fish: texture UV0, longitudinal wave in vertex red."""
-import bpy, json, math
+import bpy, json, math, os
 from pathlib import Path
 from mathutils import Matrix
 ROOT=Path('C:/Fish')
-SOURCE=Path('C:/Users/PT/.codex/worktrees/77d2/Fish/Saved/AssetReview/Meshy-20261101')
+SOURCE=Path(os.environ.get('QUIETLAKE_MESHY_SOURCE', 'C:/Fish/Saved/AssetReview/Meshy-20261101'))
 OUT=ROOT/'Tools/GeneratedFish/Meshy'
 OUT.mkdir(parents=True,exist_ok=True)
+BUDGETS={'Crucian':(12500,3000,600),'Perch':(17500,4000,750),'Pike':(16000,4000,750),
+         'Bream':(16000,4000,750),'Rudd':(12500,3000,600),'Bleak':(11000,2500,500),
+         'Roach':(12500,3000,600)}
+ONLY=[n.strip() for n in os.environ.get('QUIETLAKE_FISH', '').split(',') if n.strip()]
 report={}
-for species,budgets in [('Crucian',(12500,3000,600)),('Perch',(17500,4000,750)),('Pike',(16000,4000,750))]:
+manifest=OUT/'manifest.json'
+if manifest.exists():
+    try: report=json.loads(manifest.read_text(encoding='utf-8'))
+    except ValueError: report={}
+for species,budgets in BUDGETS.items():
+    if ONLY and species not in ONLY: continue
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.fbx(filepath=str(next((SOURCE/species.lower()).glob('*.fbx'))))
     obj=next(o for o in bpy.context.scene.objects if o.type=='MESH')
