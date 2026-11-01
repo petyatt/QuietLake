@@ -1679,6 +1679,7 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     FightRemaining = 0;
     FightPulses = 0;
     bFightJump = bShoreTried = bShoreRun = false;
+    bFightAwake = false;   // it feels the strike as the line pulls, not before
     NextFightJump = SimTime;
     PendingLineForce = FVector::ZeroVector;
     StrikeEnd = -1;
@@ -1775,10 +1776,10 @@ void ALakeFish::HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds)
     const FVector Axis = FMath::Lerp(Flat + FVector(0, 0, 0.25f), Up * 1.25f, Out).GetSafeNormal();
     // Out of the water it fights in bouts: hard thrashing, then a moment hanging still.
     const float Bout = FMath::Sin(HangTime * 2.3f + Phase) * FMath::Sin(HangTime * 0.9f + 1.0f);
-    const float Want = Out < 0.3f ? 0.85f : Bout > -0.15f ? 1.0f : 0.25f;
+    const float Want = Out < 0.3f ? 0.8f : Bout > -0.15f ? 0.5f : 0.15f;
     HangEffort = FMath::FInterpTo(HangEffort, Want, Dt, 6.0f);
     // The body bends from side to side around the hook and slowly turns on the line.
-    const float Bend = FMath::DegreesToRadians((5 + 18 * HangEffort) * Out * FMath::Sin(HangTime * (8 + 6 * HangEffort) + Phase));
+    const float Bend = FMath::DegreesToRadians((4 + 12 * HangEffort) * Out * FMath::Sin(HangTime * (8 + 6 * HangEffort) + Phase));
     const float Twist = FMath::DegreesToRadians(50 * Out * FMath::Sin(HangTime * 0.7f + Phase));
     const FQuat Base = FRotationMatrix::MakeFromXZ(Axis, FMath::Lerp(FVector::UpVector, -Flat, Out)).ToQuat();
     const FQuat Pose = Base * FQuat(FVector::ForwardVector, Twist) * FQuat(FVector::UpVector, Bend);
@@ -1932,8 +1933,15 @@ void ALakeFish::ChooseFightTarget(bool bFinalRun)
     for (int32 I = 0; I < 8 && (!LakeMap::IsWater(RoamTarget.X, RoamTarget.Y) || LakeMap::Depth(RoamTarget.X, RoamTarget.Y) < 20); ++I)
         RoamTarget = (RoamTarget + P) * 0.5f;
     const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y) + 8;
-    RoamTarget.Z = StaminaFraction() < 0.3f || bSurface ? LakeFish::SurfaceZ - 12
-        : bDive || bFinalRun ? Bottom + 6 : FMath::Lerp(LakeFish::SurfaceZ - 12, Bottom, (S.DepthMin + S.DepthMax) * 0.5f);
+    const float Fresh = StaminaFraction();
+    // A fish with strength sits deeper than its usual band and bores down; only a tired one comes up
+    // and lets itself be landed. The species' own layer stays in the choice (a rudd keeps higher
+    // than a bream even while fresh).
+    const float Band = FMath::Clamp((S.DepthMin + S.DepthMax) * 0.5f, 0.0f, 1.0f);
+    const float BandZ = FMath::Lerp(LakeFish::SurfaceZ - 12, Bottom, Band);
+    RoamTarget.Z = Fresh < 0.3f || bSurface ? LakeFish::SurfaceZ - 12
+        : bDive || bFinalRun ? Bottom + 6
+        : FMath::Lerp(BandZ, Bottom + 6, 0.55f * FMath::SmoothStep(0.3f, 0.9f, Fresh));
     RoamTarget.Z = FMath::Clamp(RoamTarget.Z, Bottom, FMath::Max(Bottom, LakeFish::SurfaceZ - 8));
 }
 
@@ -1993,6 +2001,15 @@ void ALakeFish::UpdateFightMotion(float DeltaSeconds, FVector& Desired, float& M
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     const FFishFightStyle& F = S.Fight;
+    if (!bFightAwake)
+    {
+        // The hook is in, but the line is still slack: the fish holds where it took the bait and
+        // does not know yet. It stays alive and ordinary until the pull comes.
+        Desired = FVector::ZeroVector;
+        MaxSpeed = 0.0f;
+        BurstTime = 0;
+        return;
+    }
     const float Fresh = StaminaFraction();
     FightRemaining -= DeltaSeconds;
     ReadyToLand();
@@ -2088,6 +2105,9 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     FVector P = GetActorLocation() + Vel * DeltaSeconds;
     const float Bottom = BottomZ(P.X, P.Y);
     const float Top = LakeFish::SurfaceZ - 4;
+    // A fish that still has strength keeps down: it does not porpoise along the surface until it tires.
+    const float KeepDown = 150.0f * FMath::SmoothStep(0.25f, 0.8f, StaminaFraction());
+    if (!bFightJump && P.Z > LakeFish::SurfaceZ - KeepDown) { P.Z = LakeFish::SurfaceZ - KeepDown; Vel.Z = FMath::Min(0.0f, Vel.Z); }
     if (bFightJump && P.Z <= Top && Vel.Z <= 0)
     {
         bFightJump = false;

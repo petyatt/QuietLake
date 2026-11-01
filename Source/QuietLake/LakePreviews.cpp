@@ -331,6 +331,22 @@ void ALakeCharacter::RunPreviews()
                      GetActorLocation() + GetActorForwardVector() * 30 + FVector(0, 0, 20), 55);
         });
         At(13.75f, [Shot] { Shot(TEXT("Land_Hand.png")); });
+        // The fish is taken in the free hand for a moment before it goes into the keepnet: film it
+        // there, whenever exactly the catch comes.
+        At(15.2f, [this, LookFrom]
+        {
+            LookFrom(GetActorLocation() + GetActorRightVector() * 235 + GetActorForwardVector() * 150 + FVector(0, 0, 55),
+                     HandPoint(0) - FVector(0, 0, 18), 52);
+        });
+        {
+            auto Probe = MakeShared<FTimerHandle>();
+            GetWorldTimerManager().SetTimer(*Probe, FTimerDelegate::CreateLambda([this, Shot, Probe]
+            {
+                if (!bFishInHand) return;
+                Shot(TEXT("Land_InHand.png"));
+                GetWorldTimerManager().ClearTimer(*Probe);
+            }), 0.05f, true);
+        }
         for (int32 I = 0; I <= 160; ++I)
             At(10.5f + I * 0.1f, [this, I]
             {

@@ -139,6 +139,13 @@ public:
     /** Landing: when the tired fish was lifted out of the water on the line, to be swung to the hand. */
     UPROPERTY(Replicated) float LandServerTime = -100;
     UPROPERTY(Replicated) float LandProgress = 0;
+    /**
+     * The fish is taken in the free hand: it stays visible there for HandFishTime, then goes into the
+     * keepnet. The catch counts when it is taken, not when it is put away.
+     */
+    UPROPERTY(Replicated) bool bFishInHand = false;
+    UPROPERTY(Replicated) float HandFishStart = -100;
+    static constexpr float HandFishTime = 2.5f;
     static constexpr float LandTime = 4.0f;
     /** Seconds of raising the rod with a fish on the line, LMB held. */
     static constexpr float LandLiftTime = 2.8f;
@@ -279,6 +286,8 @@ private:
     void UpdateLanding();
     bool TakeRodFromStand();
     FString RetrieveEndMessage;
+    /** Server: what the catch line says once the fish is in the hand. */
+    FString CatchMessage;
     UFUNCTION(Server, Reliable) void ServerRelease();
     UFUNCTION(Server, Reliable) void ServerFish();
     UFUNCTION(Server, Reliable) void ServerCancel();

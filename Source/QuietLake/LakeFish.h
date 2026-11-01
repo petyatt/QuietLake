@@ -580,6 +580,12 @@ public:
      */
     void HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds);
     bool IsHooked() const { return State == EState::Hooked; }
+    /**
+     * The hook is in, but the line may still be slack: the fish has not felt the pull yet and holds
+     * at the bait until it does (the angler raises the rod, the line tightens).
+     */
+    bool IsFightAwake() const { return bFightAwake; }
+    void WakeOnLine() { bFightAwake = true; }
     /** Consider a final run before landing; a leap or final run must finish first. */
     bool ReadyToLand();
     float StaminaFraction() const { return Stamina / FMath::Max(0.01f, MaxStamina); }
@@ -703,6 +709,7 @@ private:
     enum class EFightPhase : uint8 { Pull, Burst, Gap, Pause };
     EFightPhase FightPhase = EFightPhase::Pause;
     float FightRemaining = 0, FightIndividual = 1, NextFightJump = 0;
+    bool bFightAwake = false;         // the line has pulled: it now knows and fights
     int32 FightPulses = 0;
     bool bFightJump = false, bShoreTried = false, bShoreRun = false;
     float Activity = 1;               // see LakeFish::Activity

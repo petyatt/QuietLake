@@ -63,13 +63,13 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     // Lifting the rig out takes a few seconds; skip to its end.
     auto Settle = [Fisher]()
     {
-        // Lifting a fish out ends with it in the hand.
-        if (Fisher->FishingState == EFishingState::Landing)
+        // Lifting a fish out ends with it in the free hand; it is held there a moment, then put away.
+        for (int32 I = 0; I < 4 && Fisher->FishingState == EFishingState::Landing; ++I)
         {
             Fisher->LandProgress = 1;
             Fisher->bReeling = true;
+            if (Fisher->bFishInHand) Fisher->HandFishStart = -1000.0f;   // skip the hold
             Fisher->UpdateLanding();
-            return;
         }
         if (!Fisher->bRetrieving) return;
         Fisher->RetrieveProgress = 1;
@@ -1391,6 +1391,7 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
         Fish->Random.Initialize(1234 + I);
         Fish->FightIndividual = 1;
         Fish->Hook(Fisher);
+        Fish->WakeOnLine();   // the line is taut here: the fish feels the hook and fights
         FStats& T = Stats.Add(S.Id);
         // Each frame uses the actual actor simulation, including motion, stamina and profile phases.
         EPhase Previous = Fish->FightPhase;
