@@ -91,14 +91,17 @@ float meadow = V.r * (1 - V.g);
 float forest = V.g;
 float moss = saturate((n - 0.52) * 5) * (0.35 * meadow + 0.75 * forest);
 float grass = saturate(meadow * (1 - moss) * saturate((n + 0.25) * 1.6));
-float wet = 1 - saturate((P.z + 21) / 9);          // waterline is at Z = -25
+float wet = 1 - smoothstep(-23.0, 16.0, P.z + (n - 0.5) * 14.0);          // waterline is at Z = -25
 return float3(grass, moss, wet);
 """, [('P', position), ('V', vertex)])
 
 BLEND = 'float g = W.x, m = W.y; float f = saturate(1 - g - m);\n'
 color = custom(mat, BLEND + """
 float3 c = G * (g * 0.78) + F * f + M * m;
-float macro = lerp(0.85, 1.12, frac(sin(dot(floor(P.xy / 900), float2(12.9898, 78.233))) * 43758.5453));
+float2 cell = floor(P.xy / 900), blend = frac(P.xy / 900);
+blend = blend * blend * (3 - 2 * blend);
+float4 h = frac(sin(float4(dot(cell, float2(12.9898, 78.233)), dot(cell + float2(1, 0), float2(12.9898, 78.233)), dot(cell + float2(0, 1), float2(12.9898, 78.233)), dot(cell + 1, float2(12.9898, 78.233)))) * 43758.5453);
+float macro = lerp(0.85, 1.12, lerp(lerp(h.x, h.y, blend.x), lerp(h.z, h.w, blend.x), blend.y));
 c *= macro;
 c = lerp(c, c * float3(0.5, 0.48, 0.45), W.z);       // damp soil is darker
 // Bare clay on the faces of bluffs and scarps (vertex blue): ochre, banded by its layers,

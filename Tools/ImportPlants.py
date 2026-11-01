@@ -83,6 +83,7 @@ if unreal.EditorAssetLibrary.does_asset_exist(path) and not unreal.EditorAssetLi
     raise RuntimeError('Cannot delete ' + path)
 grass = assets.create_asset('M_GrassBlades', FOLDER, unreal.Material, unreal.MaterialFactoryNew())
 grass.set_editor_property('two_sided', True)
+grass.set_editor_property('shading_model', unreal.MaterialShadingModel.MSM_TWO_SIDED_FOLIAGE)
 grass.set_editor_property('used_with_instanced_static_meshes', True)
 grass.set_editor_property('used_with_nanite', True)
 vc = node(grass, unreal.MaterialExpressionVertexColor)
@@ -93,7 +94,7 @@ mpc = unreal.load_asset('/Game/Weather/MPC_Weather')
 wnd, wdx, wdy, wet = (node(grass, unreal.MaterialExpressionCollectionParameter, collection=mpc, parameter_name=n) for n in ('Wind', 'WindDirX', 'WindDirY', 'Wetness'))
 # The vertex colours are painted bright; real grass reflects far less light (albedo ~0.1-0.2), so
 # they are scaled down here, and wet grass darkens further.
-rgb = node(grass, unreal.MaterialExpressionCustom, code='return C * 0.45 * lerp(0.85, 1.1, frac(sin(dot(O.xy, float2(12.9898, 78.233))) * 43758.5453)) * lerp(1.0, 0.72, Wt);',
+rgb = node(grass, unreal.MaterialExpressionCustom, code='return C * 0.60 * lerp(0.85, 1.1, frac(sin(dot(O.xy, float2(12.9898, 78.233))) * 43758.5453)) * lerp(1.0, 0.72, Wt);',
            output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT3)
 rough = node(grass, unreal.MaterialExpressionCustom, code='return lerp(0.7, 0.4, Wt);', output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT1)
 sway = node(grass, unreal.MaterialExpressionCustom, output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT3,
@@ -113,6 +114,7 @@ for src, out, dst, inp in ((vc, '', rgb, 'C'), (pos, '', rgb, 'O'), (wet, '', rg
     if not lib.connect_material_expressions(src, out, dst, inp):
         raise RuntimeError('link failed ' + inp)
 prop(rgb, '', unreal.MaterialProperty.MP_BASE_COLOR)
+prop(rgb, '', unreal.MaterialProperty.MP_SUBSURFACE_COLOR)
 prop(sway, '', unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
 prop(rough, '', unreal.MaterialProperty.MP_ROUGHNESS)
 prop(node(grass, unreal.MaterialExpressionConstant, r=0.25), '', unreal.MaterialProperty.MP_SPECULAR)

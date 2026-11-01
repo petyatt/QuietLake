@@ -7,13 +7,17 @@
  * Pure deterministic functions, identical on every machine, used by the environment builder,
  * the fish, the angler and the tests. Distances in cm unless a name says metres.
  *
- * Layout: a long village lake, about 860 m from west to east and 30-220 m across, winding along
- * a valley. An old earth dam closes the west end (the deepest water, 7-8 m, lies before it); the
- * wide middle reach holds a wooded island, a hole and an underwater hump; the lake narrows to a
- * shallow reedy upper end where a brook comes in. A long weedy backwater runs north into the
- * forest; a shallow bay with the pier and boats opens to the south; a snaggy forest cove and a
- * ravine cove break the banks. The north and east banks are forested hills with ravines and a
- * clay bluff; the south-west and the dam are open hilly meadow, with a plateau left for a village.
+ * Layout: a long village lake, about 660 m from west to east and 22-165 m across, winding along a
+ * valley. The west end is a rounded natural bank with a small bay and the deepest water (7-8 m);
+ * only a row of rotten piles is left of the old dam. The wide middle reach holds a wooded island,
+ * a hole and an underwater hump; the lake narrows to a shallow reedy upper end where a brook comes
+ * in. A long weedy backwater runs north into the forest; a shallow bay with the pier and boats
+ * opens to the south; a snaggy forest cove and a ravine cove break the banks. The north and east
+ * banks are forested hills with ravines and a clay bluff; the south-west and the west end are open
+ * hilly meadow, with a plateau left for a village.
+ *
+ * The lake's layout is written at its old size and laid out at LakeScale (LakeMap::Lay); depths,
+ * heights, the width of the shallows and of the reeds are in real metres.
  */
 namespace LakeMap
 {

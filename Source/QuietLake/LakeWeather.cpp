@@ -515,10 +515,11 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
     // Fog: a thin haze over the valley and a dense layer on the water; mist on calm mornings.
     if (Fog && Changed(LastFog, FogNow + 3.0f * W.Rain, 0.004f))
     {
-        Fog->SetFogDensity(0.01f + 0.045f * FogNow + 0.02f * W.Rain);
+        Fog->SetFogDensity(0.01f + 0.032f * FogNow + 0.02f * W.Rain);
         FExponentialHeightFogData Water = Fog->SecondFogData;
-        Water.FogDensity = 0.02f + 0.34f * FogNow;
+        Water.FogDensity = 0.02f + 0.26f * FogNow;
         Water.FogHeightFalloff = 2.0f;
+        Water.FogHeightOffset = -100.0f;
         Fog->SetSecondFogData(Water);
         Fog->SetVolumetricFogExtinctionScale(0.5f + 0.8f * FogNow + 0.4f * W.Rain);
     }

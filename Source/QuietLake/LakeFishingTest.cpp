@@ -1864,8 +1864,15 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
 
     // 5. A crucian in the lilies roots for silt fauna, eats its patch down and moves on.
     {
+        constexpr int32 Seed = -646273053; // Decision stream from the failing full-suite run.
         TestTrue(TEXT("Noon found"), SetSun(45, 70) > 0);
+        // Fresh food and fixed decisions: unrelated actor allocations must not pick this scenario.
+        Life->Food() = FLakeFoodField();
+        Life->Step(0);
         ALakeFish* Crucian = Spawn(EFishSpecies::Crucian, 0.4f, Lily);
+        Crucian->Random.Initialize(Seed);
+        Crucian->WanderSeed = 0;
+        Crucian->Energy = 1;
         int32 OnSilt = 0;
         for (int32 I = 0; I < 20; ++I) { Choose(Crucian); OnSilt += Crucian->FeedOn == EFishFood::Benthos; }
         AddInfo(FString::Printf(TEXT("Crucian in the lilies: on silt fauna %d of 20"), OnSilt));
@@ -1875,12 +1882,20 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
         const float Bottom = ALakeFish::BottomZ(First.X, First.Y);
         TestTrue(TEXT("It feeds at the bottom"), Crucian->RoamTarget.Z < Bottom + 20);
         int32 Steps = 0;
-        // The patch it eats is where it starts rooting (near its target). Moved on: its target now in a
-        // patch clearly richer than that one, a few metres off.
+        // Neighbouring 5 m cells can meet centimetres away. Verify arrival and feeding in richer
+        // benthos, not an arbitrary distance to a target the fish may never reach.
         FVector2D Patch = First;
         bool bPatch = false;
-        auto MovedOn = [&] { const FVector2D To(Crucian->RoamTarget); return bPatch && Life->Food().Left(EFishFood::Benthos, Patch) < 0.8f
-            && Life->Food().Left(EFishFood::Benthos, To) > Life->Food().Left(EFishFood::Benthos, Patch) + 0.2f && FVector2D::Distance(To, Patch) > 250; };
+        auto MovedOn = [&]
+        {
+            const FVector2D Here(Crucian->GetActorLocation());
+            const FLakeFoodField& Food = Life->Food();
+            const FFishConditions C = Weather->FishConditions();
+            return bPatch && Crucian->bRooting && Crucian->FeedOn == EFishFood::Benthos
+                && Food.Left(EFishFood::Benthos, Patch) < 0.8f
+                && Food.Left(EFishFood::Benthos, Here) > Food.Left(EFishFood::Benthos, Patch) + 0.2f
+                && Food.Available(EFishFood::Benthos, Here, C) > Food.Available(EFishFood::Benthos, Patch, C);
+        };
         for (; Steps < 8000 && !MovedOn(); ++Steps)
         {
             Crucian->Hunger = 1;
@@ -1889,9 +1904,37 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
             if (!bPatch && Crucian->bRooting) { bPatch = true; Patch = FVector2D(Crucian->GetActorLocation()); }
         }
         const float Left = Life->Food().Left(EFishFood::Benthos, Patch);
-        AddInfo(FString::Printf(TEXT("Crucian: its patch eaten down to %.2f, moved on to a patch with %.2f left, %.0f cm off, after %.0f s"),
-            Left, Life->Food().Left(EFishFood::Benthos, FVector2D(Crucian->RoamTarget)), (float)FVector2D::Distance(Patch, FVector2D(Crucian->RoamTarget)), Steps * Dt));
-        TestTrue(TEXT("A crucian eats its patch down and moves on to another"), MovedOn());
+        AddInfo(FString::Printf(TEXT("Crucian seed %d: patch %.2f, feeding patch %.2f, %.0f cm off after %.0f s"), Seed,
+            Left, Life->Food().Left(EFishFood::Benthos, FVector2D(Crucian->GetActorLocation())), (float)FVector2D::Distance(Patch, FVector2D(Crucian->GetActorLocation())), Steps * Dt));
+        TestTrue(FString::Printf(TEXT("A crucian reaches and roots in richer benthos after eating its patch down (seed %d)"), Seed), MovedOn());
+        Crucian->Destroy();
+    }
+    // A depleted patch must trigger a fresh food search, across several decision streams.
+    for (int32 Seed : { -646273053, 1, 7919, 20261031 })
+    {
+        Life->Food() = FLakeFoodField();
+        Life->Step(0);
+        ALakeFish* Crucian = Spawn(EFishSpecies::Crucian, 0.4f, Lily);
+        Crucian->Random.Initialize(Seed);
+        for (int32 K = 0; K < 50; ++K)
+        {
+            Choose(Crucian);
+            if (Crucian->FeedOn == EFishFood::Benthos) break;
+        }
+        TestTrue(TEXT("A benthos feeding patch found"), Crucian->FeedOn == EFishFood::Benthos);
+        Crucian->SetActorLocation(Crucian->RoamTarget);
+        Crucian->bAtSpot = Crucian->bRooting = true;
+        Crucian->PhaseUntil = 10;
+        Crucian->NextFoodCheck = 0;
+        const FVector2D Patch(Crucian->GetActorLocation());
+        Life->Food().Eat(EFishFood::Benthos, Patch, 100, Crucian->WeightKg);
+        Crucian->Simulate(Dt);
+        const EFishFood Food = Crucian->FeedOn;
+        const float Found = Life->Food().Available(Food, FVector2D(Crucian->RoamTarget), Weather->FishConditions());
+        // Switching to plants is also a valid response; continuing on empty benthos is not.
+        TestTrue(FString::Printf(TEXT("An exhausted patch triggers a search for available natural food (seed %d)"), Seed),
+            LakeFood::IsNatural(Food) && Found > 0.08f && !Crucian->bAtSpot && !Crucian->bRooting);
+        AddInfo(FString::Printf(TEXT("Exhausted patch seed %d: food %s, target availability %.2f"), Seed, LakeFood::Name(Food), Found));
         Crucian->Destroy();
     }
     // 6. Roach feed at the top at dusk (insects, plankton risen) and deep at noon (plankton sunk).
@@ -2040,37 +2083,62 @@ bool FLakeGroundbaitTest::RunTest(const FString& Parameters)
             && LakeFood::GroundbaitMix(Life->Food().Groundbait()[0]) == EBait::Maggot);
         World->DestroyWorld(false);
     }
-    // 4. A school of roach 10 m off comes to groundbait and feeds on the bottom there; without it, it does not come.
-    auto School = [&](bool bGroundbait, float& NearSeconds, float& CameAfter, float& FeedDepth)
+    // 4. A school of roach 5 m off smells groundbait and comes to feed on the bottom there. Two
+    //    things decide it, and the check sets both of them up instead of hoping for them:
+    //     - the smell has to pass the 0.03 the fish act on. Its reach grows from 600 cm to 1500 over
+    //       three minutes (LakeFood::Scent), so after a minute and a half it is 0.005 at 10 m. The
+    //       old form of this check waited that long, the smell never counted, and whether the school
+    //       came was decided by where it happened to browse; now the balls lie three minutes first.
+    //     - the groundbait has to beat what the fish finds on its own, and it is worth only 0.5-1 of
+    //       its value (LakeFood::GroundbaitAppeal): among rich natural food that is a coin toss, so
+    //       the place is eaten out first and the check states that it was.
+    auto School = [&](bool bGroundbait, float& NearSeconds, float& CameAfter, float& FeedDepth, float& Scent, float& GroundbaitSeconds, float& Natural)
     {
         UWorld* World;
         ALakeLife* Life;
         MakeWorld(World, Life);
+        const FVector2D Away = Spot + Facing * 500;
         if (bGroundbait)
         {
-            for (int32 I = 0; I < 3; ++I) Life->Food().AddGroundbait(Spot, EBait::Bread);
-            for (int32 I = 0; I < 90; ++I) Life->Step(1);   // its smell has a minute and a half to spread
+            for (int32 I = 0; I < 5; ++I) Life->Food().AddGroundbait(Spot, EBait::Bread);
+            for (int32 I = 0; I < 180; ++I) Life->Step(1);   // its smell has three minutes to spread
         }
-        const FVector2D Away = Spot + Facing * 1000;
+        // Eat the natural food out where the school is, so the smell is the only good food there.
+        for (int32 X = -2000; X <= 2000; X += 250)
+            for (int32 Y = -2000; Y <= 2000; Y += 250)
+                for (EFishFood F : { EFishFood::Plankton, EFishFood::Insects, EFishFood::Benthos, EFishFood::Plants })
+                    Life->Food().Eat(F, Away + FVector2D(X, Y), 1000.0f, 1.0f);
+        const ALakeWeather* Weather = ALakeWeather::Get(World);
+        const FFishConditions Conditions = Weather ? Weather->FishConditions() : FFishConditions();
+        const FFishDiet Diet = LakeFish::DietOf(EFishSpecies::Roach, 0.12f);
+        Natural = 0;
+        for (EFishFood F : { EFishFood::Plankton, EFishFood::Insects, EFishFood::Benthos, EFishFood::Plants })
+            Natural = FMath::Max(Natural, Diet.Of(F) * Life->Food().Available(F, Away, Conditions));
         TArray<ALakeFish*> Fish;
         for (int32 I = 0; I < 5; ++I)
         {
             const FVector2D P = Away + FVector2D(I * 40.0f, (I % 2) * 40.0f);
             ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.12f, FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)), 4242);
+            Roach->Random.Initialize(4242 + 17 * I);   // the same decisions whatever ran before
+            Roach->WanderSeed = 0;
             Roach->Hunger = 1;
             Fish.Add(Roach);
         }
         Life->Step(0);
+        Scent = 0;
+        Life->Food().SmellGroundbait(Away, Scent);
         for (ALakeFish* Roach : Fish) Roach->SetGoal(EFishGoal::Feed, 1000);
         NearSeconds = 0;
         CameAfter = -1;
         FeedDepth = 0;
+        GroundbaitSeconds = 0;
         int32 Deep = 0;
         for (int32 Steps = 0; Steps < 6000; ++Steps)   // 5 min
         {
             Life->Step(Dt);
             for (ALakeFish* Roach : Fish) { Roach->Hunger = FMath::Max(Roach->Hunger, 0.6f); Roach->Simulate(Dt); }
             const ALakeFish* Lead = Life->SchoolLeader(4242);
+            if (Lead && Lead->GetFeedOn() == EFishFood::Groundbait) GroundbaitSeconds += Dt;
             if (Lead && FVector2D::Distance(FVector2D(Lead->GetActorLocation()), Spot) < 250)
             {
                 NearSeconds += Dt;
@@ -2084,11 +2152,24 @@ bool FLakeGroundbaitTest::RunTest(const FString& Parameters)
     };
     {
         float WithNear, WithCame, WithDepth, WithoutNear, WithoutCame, WithoutDepth;
-        School(true, WithNear, WithCame, WithDepth);
-        School(false, WithoutNear, WithoutCame, WithoutDepth);
-        AddInfo(FString::Printf(TEXT("Roach school 10 m off: with groundbait came after %.0f s, %.0f s of 5 min by it, at %.2f of the depth; without it %.0f s by the spot"), WithCame, WithNear, WithDepth, WithoutNear));
-        TestTrue(TEXT("A school 10 m off comes to groundbait and feeds near the bottom there"), WithCame >= 0 && WithNear > 60 && WithDepth > 0.6f);
-        TestTrue(TEXT("Without groundbait it does not gather at that spot"), WithoutNear < WithNear * 0.3f);
+        float WithScent, WithoutScent, WithOnIt, WithoutOnIt, WithNatural, WithoutNatural;
+        School(true, WithNear, WithCame, WithDepth, WithScent, WithOnIt, WithNatural);
+        School(false, WithoutNear, WithoutCame, WithoutDepth, WithoutScent, WithoutOnIt, WithoutNatural);
+        // How far the smell carries at all: the balls' reach stops well short of 30 m whatever the age.
+        FLakeFoodField Far;
+        Far.Init();
+        Far.AddGroundbait(Spot, EBait::Bread);
+        for (int32 I = 0; I < 600; ++I) Far.Step(1);
+        const float FarScent = Far.Scent(Far.Groundbait()[0], Spot + Facing * 3000);
+        AddInfo(FString::Printf(TEXT("Roach school 5 m off: smell %.3f at the school, natural food left %.2f; with groundbait came after %.0f s, %.0f s of 5 min by it and %.0f s on the groundbait, at %.2f of the depth; without it %.0f s by the spot and %.0f s on groundbait; smell at 30 m %.3f"),
+            WithScent, WithNatural, WithCame, WithNear, WithOnIt, WithDepth, WithoutNear, WithoutOnIt, FarScent));
+        TestTrue(TEXT("Five balls smell strongly enough at 5 m after three minutes"), WithScent > 0.4f);
+        TestTrue(TEXT("There is no groundbait smell without it"), WithoutScent < 0.001f);
+        TestTrue(TEXT("The natural food where the school is has been eaten out"), WithNatural < 0.1f);
+        TestTrue(TEXT("A school 5 m off comes to groundbait and feeds near the bottom there"), WithCame >= 0 && WithCame < 120 && WithNear > 120 && WithDepth > 0.6f);
+        TestTrue(TEXT("It feeds on that groundbait"), WithOnIt > 60);
+        TestTrue(TEXT("Without groundbait none of it is eaten"), WithoutOnIt < 0.001f);
+        TestTrue(TEXT("The smell does not carry 30 m"), FarScent < 0.001f);
     }
     // 5. A crucian roots in it and eats it down.
     {

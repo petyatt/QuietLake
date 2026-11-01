@@ -1,6 +1,9 @@
 #include "LakeGame.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
+#include "LakeBirds.h"
+#include "LakeForest.h"
+#include "LakeRod.h"
 #include "Async/ParallelFor.h"
 #include "ProceduralMeshComponent.h"
 #include "KismetProceduralMeshLibrary.h"
@@ -53,6 +56,18 @@ namespace
         const FVector2D AB = B - A;
         const float T = FMath::Clamp(FVector2D::DotProduct(P - A, AB) / FMath::Max(1.0f, AB.SizeSquared()), 0.0f, 1.0f);
         return FVector2D::Distance(P, A + AB * T);
+    }
+    /** A narrow, gently bent footpath from the village meadow to the pier. */
+    float PierApproach(const FVector2D& P)
+    {
+        const auto& Pier = LakeMap::Pier();
+        const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);
+        const FVector2D A = Pier.Root - Pier.Dir * 1450 + Side * 120;
+        const FVector2D B = Pier.Root - Pier.Dir * 500 + Side * 45;
+        const FVector2D C = Pier.Root + Pier.Dir * 200;
+        const float Distance = FMath::Min(SegmentDistance2D(P, A, B), SegmentDistance2D(P, B, C));
+        const float Edge = 18 * FMath::PerlinNoise2D(P / 180);
+        return 1 - FMath::SmoothStep(55.0f + Edge, 140.0f + Edge, Distance);
     }
     /** Where the forest begins, in metres from the water; close to the water in the woods, varying along the bank. */
     float ForestStart(const FVector2D& P) { return 7.0f + 7.0f * (0.5f + 0.5f * FMath::PerlinNoise2D(P / 4000)); }
@@ -151,9 +166,12 @@ void ALakeEnvironment::BeginPlay()
                     const float Bare = FMath::SmoothStep(0.55f, 0.95f, (float)FVector2D(DX, DY).Size()) * FMath::SmoothStep(0.2f, 1.0f, L);
                     const float Open = FMath::SmoothStep(900.0f, 1800.0f, (float)FVector2D::Distance(P, Start));
                     const float Forest = Woodland(P, L) * Open;
-                    const float Meadow = FMath::SmoothStep(1.5f, 5.0f, L) * (1 - Forest);
+                    const float ShorePatch = 0.55f * FMath::PerlinNoise2D(P / 170 + FVector2D(13, 5))
+                        + 0.35f * FMath::PerlinNoise2D(P / 650);
+                    const float Meadow = FMath::SmoothStep(0.35f + ShorePatch, 3.2f + ShorePatch, L) * (1 - Forest);
                     // Clay faces get some dark forest soil mixed in: dirty, not like a sand dune.
-                    Colors.Add(FLinearColor(Meadow * (1 - Bare), Forest * (1 - Bare) + 0.3f * Bare, 0.7f * Bare));
+                    const float Worn = 1 - 0.85f * PierApproach(P);
+                    Colors.Add(FLinearColor(Meadow * (1 - Bare) * Worn, Forest * (1 - Bare) * Worn + 0.3f * Bare, 0.7f * Bare));
                 };
                 for (int32 Y = 0; Y <= NY; ++Y)
                     for (int32 X = 0; X <= NX; ++X)
@@ -330,6 +348,8 @@ void ALakeEnvironment::BeginPlay()
     // wooded. The camp, the village plateau and the spots stay open.
     int32 TreeCount = 0;
     TArray<FTransform> TrunkTransforms;
+    const bool PCGForest = ALakeForest::HasGraph();
+    if (!PCGForest)
     {
         const FBox2D Land = LakeMap::TerrainBounds.ExpandBy(-500);
         constexpr float TreeCell = 500.0f;
@@ -404,6 +424,28 @@ void ALakeEnvironment::BeginPlay()
             ++TreeCount;
             ++Leaning;
         }
+    }
+    // Small groves frame the camp; keep the central view and the walking approach open.
+    {
+        FRandomStream GroveRandom(311026);
+        const FVector2D Side(-StartFacing.Y, StartFacing.X);
+        const FVector2D Centres[] = { Start - StartFacing * 1050 + Side * 1850,
+            Start - StartFacing * 1550 - Side * 1650, Start + StartFacing * 150 + Side * 2700 };
+        for (const FVector2D& Centre : Centres)
+            for (int32 I = 0; I < 3; ++I)
+            {
+                const FVector2D P = Centre + FVector2D(GroveRandom.FRandRange(-260, 260), GroveRandom.FRandRange(-260, 260));
+                if (LakeMap::ShoreDistance(P.X, P.Y) > -200 || Slope(P.X, P.Y) > 0.6f || LakeMap::SpotAmount(P) > 0.1f) continue;
+                const auto& Variants = I == 1 ? Alders : Birches;
+                if (Variants.IsEmpty()) continue;
+                const FVector Base(P, Ground(P) - 12);
+                const float Size = GroveRandom.FRandRange(0.55f, 0.85f);
+                const FQuat Lean = FQuat(FVector(StartFacing.Y, -StartFacing.X, 0), FMath::DegreesToRadians(I == 0 ? 8.0f : 3.0f));
+                Pending.FindOrAdd(Variants[GroveRandom.RandRange(0, Variants.Num() - 1)]).Add(
+                    FTransform(Lean * FQuat(FVector::UpVector, GroveRandom.FRandRange(0, 2 * PI)), Base, FVector(Size)));
+                TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, Base + FVector(0, 0, 180), FVector(0.28f, 0.28f, 3.6f)));
+                ++TreeCount;
+            }
     }
     Trunks->AddInstances(TrunkTransforms, false, true);
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BUILD trees %d, %.1f s"), TreeCount, FPlatformTime::Seconds() - BuildStart);
@@ -480,6 +522,44 @@ void ALakeEnvironment::BeginPlay()
             FRotator(Random.FRandRange(-4, 4), Random.FRandRange(0, 360), Random.FRandRange(-4, 4)));
     }
 
+    // Pebbles, washed-up twigs and exposed roots break the waterline in small, irregular pockets.
+    {
+        FRandomStream DetailRandom(61031);
+        int32 Pebbles = 0, Twigs = 0;
+        for (int32 I = 0; I < Shore.Num(); I += 3)
+        {
+            const auto& Sh = Shore[I];
+            if (LakeMap::BluffHeight(Sh.Location) > 1.0f || SegmentDistance2D(Sh.Location, Pier.Root, PierEnd) < 250) continue;
+            const float Patch = FMath::PerlinNoise2D(Sh.Location / 720 + FVector2D(8, 19));
+            if (Patch < -0.15f) continue;
+            const FVector2D Along(-Sh.Outward.Y, Sh.Outward.X);
+            for (int32 K = 0; K < 4; ++K)
+            {
+                const FVector2D P = Sh.Location + Sh.Outward * DetailRandom.FRandRange(-45, 160)
+                    + Along * DetailRandom.FRandRange(-120, 120);
+                if (Slope(P.X, P.Y) > 0.6f) continue;
+                const float Size = DetailRandom.FRandRange(0.025f, 0.075f);
+                Add(Rocks, FVector(P, Ground(P) - 2), FVector(Size, Size * 0.8f, Size * 0.55f), FRotator(0, DetailRandom.FRandRange(0, 360), 0));
+                ++Pebbles;
+            }
+            // Keep debris outside the angler's feet and casting lane.
+            if (LakeMap::SpotAmount(Sh.Location) > 0.15f || DetailRandom.FRand() > 0.35f) continue;
+            const FVector2D P = Sh.Location + Sh.Outward * DetailRandom.FRandRange(15, 100);
+            const FVector2D Q = P + Along.GetRotated(DetailRandom.FRandRange(-25, 25)) * DetailRandom.FRandRange(45, 130);
+            const FVector A(P, Ground(P) + 1.5f), B(Q, Ground(Q) + 1.5f);
+            Add(Bark, (A + B) * 0.5f, FVector(0.025f, 0.025f, FVector::Dist(A, B) / 100), FRotationMatrix::MakeFromZ(B - A).Rotator());
+            ++Twigs;
+            if (LakeMap::ForestAmount(P) > 0.5f)
+                for (int32 Root = 0; Root < 2; ++Root)
+                {
+                    const FVector2D R = P + Sh.Outward * DetailRandom.FRandRange(100, 200) + Along * (Root ? 35 : -35);
+                    const FVector End(R, Ground(R) + 2);
+                    Add(Bark, (A + End) * 0.5f, FVector(0.045f, 0.045f, FVector::Dist(A, End) / 100), FRotationMatrix::MakeFromZ(End - A).Rotator());
+                }
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SHORE pebbles=%d driftwood=%d"), Pebbles, Twigs);
+    }
+
     // Reed belt along the low banks: bulrush standing in the water, dry reed at the edge. It is broken
     // by the fishing spots, the pier, the dam and the bluffs; widest in the backwater, the bay and the
     // upper end, patchy under the trees.
@@ -502,6 +582,38 @@ void ALakeEnvironment::BeginPlay()
             Place(bBulrush ? Bulrush : DryReed, Upright(FVector(P, Ground(P) - 8), Random.FRandRange(0.8f, 1.3f)));
             ++ReedCount;
         }
+    }
+
+    {
+        FRandomStream LandingRandom(311031);
+        const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);
+        auto Plant = [&](const TArray<UInstancedSkinnedMeshComponent*>& Variants, const FVector2D& P, float Scale)
+        {
+            if (Variants.IsEmpty()) return;
+            Pending.FindOrAdd(Variants[LandingRandom.RandRange(0, Variants.Num() - 1)]).Add(
+                FTransform(FRotator(0, LandingRandom.FRandRange(0, 360), 0), FVector(P, Ground(P) - 6), FVector(Scale)));
+        };
+        int32 Bushes = 0, Clumps = 0;
+        for (float Sign : { -1.0f, 1.0f })
+        {
+            for (int32 I = 0; I < 3; ++I)
+            {
+                const FVector2D P = Pier.Root + Side * Sign * (900 + I * 230) - Pier.Dir * LandingRandom.FRandRange(100, 400);
+                if (LakeMap::ShoreDistance(P.X, P.Y) > -150 || PierApproach(P) > 0.1f) continue;
+                Plant(Shrubs, P, LandingRandom.FRandRange(0.16f, 0.25f));
+                ++Bushes;
+            }
+            for (int32 I = 0; I < 16; ++I)
+            {
+                const FVector2D P = Pier.Root + Side * Sign * LandingRandom.FRandRange(650, 1550)
+                    + Pier.Dir * LandingRandom.FRandRange(300, 750);
+                const float Depth = LakeMap::Depth(P.X, P.Y);
+                if (!LakeMap::IsWater(P.X, P.Y) || Depth < 5 || Depth > 95) continue;
+                Plant(I % 3 ? Bulrush : DryReed, P, LandingRandom.FRandRange(0.5f, 0.8f));
+                ++Clumps;
+            }
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_PIER_DRESSING low shrubs=%d reed clumps=%d; village meadow left open"), Bushes, Clumps);
     }
 
     for (TPair<UInstancedSkinnedMeshComponent*, TArray<FTransform>>& Batch : Pending)
@@ -578,26 +690,33 @@ void ALakeEnvironment::BeginPlay()
             {
                 const FVector2D P(X + Random.FRandRange(-30, 30), Y + Random.FRandRange(-30, 30));
                 const float SD = LakeMap::ShoreDistance(P.X, P.Y);
-                if (SD > 30 || SD < -4500) continue;
+                if (SD > 65 || SD < -4500) continue;
                 const float L = -SD / 100;
                 const float Trees = Woodland(P, L);
-                const bool bTrampled = FVector2D::Distance(P, Start) < 1100;
+                const FVector2D CampLocal = P - Start;
+                const float CampSide = FMath::Abs(FVector2D::DotProduct(CampLocal, FVector2D(-StartFacing.Y, StartFacing.X)));
+                const bool bTrampled = FVector2D::Distance(P, Start) < 800 && CampSide < 180;
+                const float Patch = FMath::PerlinNoise2D(P / 340 + FVector2D(21, 8));
+                // The wet edge alternates low sedge and small bare, muddy pockets.
+                if (L < 1.8f && Random.FRand() > FMath::Clamp(0.62f + Patch * 0.6f, 0.15f, 0.9f)) continue;
                 if (Trees > 0.5f && Random.FRand() > 0.12f) continue;     // thin under the trees
+                const float Path = PierApproach(P);
+                if (Path > 0.65f) continue;
                 if (SegmentDistance2D(P, Pier.Root - Pier.Dir * 50, Pier.Root + Pier.Dir * 400) < 140) continue;
                 if (Slope(P.X, P.Y) > 0.6f) continue;                      // bare clay faces
                 const float Spot = LakeMap::SpotAmount(P);
                 UHierarchicalInstancedStaticMeshComponent* Kind;
                 // Tall bank grass in long stretches (not at the spots or under the bluffs).
-                const bool bBank = L > 1.2f && L < 14.0f + 3.0f * FMath::PerlinNoise2D(P / 1500) && !bTrampled && Spot < 0.05f
+                const bool bBank = L > 1.2f && L < 14.0f + 3.0f * FMath::PerlinNoise2D(P / 1500) && !bTrampled && Path < 0.05f && Spot < 0.05f
                     && FMath::PerlinNoise2D(P / 4500 + FVector2D(7, 3)) > -0.25f && LakeMap::BluffHeight(P) < 0.8f;
                 // Bank grass: fewer, larger tufts (cheaper to draw, just as dense to the eye).
                 if (bBank && Random.FRand() < 0.4f) continue;
                 if (bBank) Kind = FMath::PerlinNoise2D(P / 700 + FVector2D(31, 7)) > 0.3f && Random.FRand() < 0.6f ? Meadowsweet : Waist;
-                else if (bTrampled || Spot > 0.3f) { if (Random.FRand() < 0.35f) continue; Kind = Short; }
-                else if (L < 2.5f) Kind = Random.FRand() < 0.75f ? Sedge : Tall;
+                else if (bTrampled || Path > 0.1f || (Spot > 0.3f && (FVector2D::Distance(P, Start) > 1200 || CampSide < 210))) { if (Random.FRand() < 0.35f) continue; Kind = Short; }
+                else if (L < 2.5f) Kind = Patch > -0.05f ? Sedge : Short;
                 else if (FMath::PerlinNoise2D(P / 900) > 0.3f && Random.FRand() < 0.5f) Kind = Blooms;
                 else Kind = Random.FRand() < 0.5f ? Short : Tall;
-                const float Scale = Random.FRandRange(0.8f, 1.3f) * (bTrampled ? 0.8f : bBank ? 1.2f : 1.0f);
+                const float Scale = Random.FRandRange(0.65f, 1.25f) * (bTrampled || Path > 0.1f ? 0.55f : L < 1.5f ? 0.6f : bBank ? 1.1f : 1.0f);
                 Add(Kind, FVector(P, Ground(P) - 2), FVector(Scale, Scale, Scale * Random.FRandRange(0.85f, 1.2f)), FRotator(0, Random.FRandRange(0, 360), 0));
                 ++GrassCount;
             }
@@ -634,6 +753,18 @@ void ALakeEnvironment::BeginPlay()
                     FRotator(Random.FRandRange(-2, 2), 0, Random.FRandRange(-2, 2)));
             }
         }
+    }
+
+    {
+        const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);
+        for (float A : { 380.0f, 1040.0f })
+            for (float Sign : { -1.0f, 1.0f })
+            {
+                const FVector2D Q = Pier.Root + Pier.Dir * A + Side * Sign * (Pier.Width * 0.5f - 20);
+                const FVector Low(Q, LakeMap::SurfaceZ - 12);
+                const FVector High(Q + Pier.Dir * 170, LakeMap::SurfaceZ + 37);
+                Add(Wood, (Low + High) * 0.5f, FVector(0.07f, 0.07f, FVector::Dist(Low, High) / 100), FRotationMatrix::MakeFromZ(High - Low).Rotator());
+            }
     }
 
     // --- snags: fallen trees lying from the bank into the water, branches sticking up ---------------
@@ -696,6 +827,26 @@ void ALakeEnvironment::BeginPlay()
             const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);
             const FVector2D P = Pier.Root + Pier.Dir * (Pier.Length - 170) + Side * 330;
             Prop(TEXT("Boat_A"), FVector(P, LakeMap::SurfaceZ - 16), FRotator(0, YawOf(Pier.Dir) + 172, 1.5f), true);
+            auto* Mooring = Group(TEXT("Cylinder"), TEXT("M_OldBark"), false);
+            auto Rope = [&](FVector A, FVector B)
+            {
+                FVector Previous = A;
+                for (int32 K = 1; K <= 10; ++K)
+                {
+                    const float T = K / 10.0f;
+                    const FVector Next = FMath::Lerp(A, B, T) - FVector(0, 0, 10 * 4 * T * (1 - T));
+                    Add(Mooring, (Previous + Next) * 0.5f, FVector(0.012f, 0.012f, FVector::Dist(Previous, Next) / 100),
+                        FRotationMatrix::MakeFromZ(Next - Previous).Rotator());
+                    Previous = Next;
+                }
+            };
+            for (float End : { -1.0f, 1.0f })
+            {
+                const FVector2D Post = Pier.Root + Pier.Dir * (Pier.Length - 170 + End * 120) + Side * 215;
+                Add(Bark, FVector(Post, LakeMap::SurfaceZ + 45), FVector(0.14f, 0.14f, 1.4f));
+                const FVector2D Tie = P + Pier.Dir * End * 160 - Side * 25;
+                Rope(FVector(Post, LakeMap::SurfaceZ + 105), FVector(Tie, LakeMap::SurfaceZ + 30));
+            }
         }
         // Nets hung to dry above the landing.
         for (float S : { -1.0f, 1.0f })
@@ -768,6 +919,9 @@ void ALakeEnvironment::BeginPlay()
     for (const LakeMap::FSpot& Spot : LakeMap::Spots())
     {
         if (!Spot.bBoards) continue;
+        // Timber belongs at the used, soft-bank landings; wild banks stay natural.
+        if (FCString::Strcmp(Spot.Name, TEXT("Лагерь")) != 0 && FCString::Strcmp(Spot.Name, TEXT("Заводь")) != 0
+            && FCString::Strcmp(Spot.Name, TEXT("Коряжник")) != 0 && FCString::Strcmp(Spot.Name, TEXT("Верховье")) != 0) continue;
         const FVector2D Along(-Spot.Outward.Y, Spot.Outward.X);
         const float Yaw = YawOf(Spot.Outward);
         for (int32 K = 0; K < 3; ++K)
@@ -967,6 +1121,94 @@ void ALakeEnvironment::BeginPlay()
         Audio(TEXT("A_Birds"),FVector(LakeMap::StartSpot() + FVector2D(-1800, 1200), 550),0.3f,true);
     }
 #if !UE_BUILD_SHIPPING
+    // Direct art review: one selected camera, one screenshot, no lake tour or fishing sequence.
+    FString SceneView;
+    if (FParse::Value(FCommandLine::Get(), TEXT("ScenePreview="), SceneView))
+    {
+        const FVector2D Side(-StartFacing.Y, StartFacing.X);
+        FVector Eye(Start - StartFacing * 250, Ground(Start - StartFacing * 250) + 170);
+        FRotator View(-6, YawOf(StartFacing) + 25, 0);
+        if (SceneView.Equals(TEXT("Shore"), ESearchCase::IgnoreCase))
+        {
+            Eye = FVector(Start + StartFacing * 500 + Side * 500, LakeMap::SurfaceZ + 160);
+            const FVector2D Bank = Start + Side * 450;
+            View = (FVector(Bank, Ground(Bank) + 25) - Eye).Rotation();
+        }
+        else if (SceneView.Equals(TEXT("Pier"), ESearchCase::IgnoreCase))
+        {
+            Eye = FVector(Pier.Root + Pier.Dir * 600 + FVector2D(-Pier.Dir.Y, Pier.Dir.X) * 900, LakeMap::SurfaceZ + 240);
+            View = (FVector(Pier.Root + Pier.Dir * 700, LakeMap::SurfaceZ + 70) - Eye).Rotation();
+        }
+        else if (SceneView.Equals(TEXT("PierWide"), ESearchCase::IgnoreCase))
+        {
+            const FVector2D PierSide(-Pier.Dir.Y, Pier.Dir.X);
+            Eye = FVector(Pier.Root + Pier.Dir * 750 + PierSide * 1850, LakeMap::SurfaceZ + 360);
+            View = (FVector(Pier.Root + Pier.Dir * 750, LakeMap::SurfaceZ + 50) - Eye).Rotation();
+        }
+        else if (SceneView.Equals(TEXT("PierBank"), ESearchCase::IgnoreCase))
+        {
+            const FVector2D PierSide(-Pier.Dir.Y, Pier.Dir.X);
+            Eye = FVector(Pier.Root + Pier.Dir * 500 + PierSide * 950, LakeMap::SurfaceZ + 230);
+            const FVector2D Target = Pier.Root - Pier.Dir * 420;
+            View = (FVector(Target, Ground(Target) + 35) - Eye).Rotation();
+        }
+        else if (SceneView.Equals(TEXT("Forest"), ESearchCase::IgnoreCase))
+        {
+            const LakeMap::FShorePoint* Best = nullptr;
+            for (const auto& Sh : LakeMap::Shoreline())
+                if (LakeMap::ForestAmount(Sh.Location) > 0.9f && LakeMap::BluffHeight(Sh.Location) < 0.3f
+                    && LakeMap::SpotAmount(Sh.Location) < 0.02f && FVector2D::Distance(Sh.Location, Start) > 3000
+                    && (!Best || FVector2D::Distance(Sh.Location, Start) < FVector2D::Distance(Best->Location, Start))) Best = &Sh;
+            if (Best)
+            {
+                Eye = FVector(Best->Location - Best->Outward * 1600, LakeMap::SurfaceZ + 260);
+                View = (FVector(Best->Location + Best->Outward * 1000, LakeMap::SurfaceZ + 380) - Eye).Rotation();
+            }
+        }
+        else if (SceneView.Equals(TEXT("Birds"), ESearchCase::IgnoreCase))
+        {
+            Eye = FVector(Start + StartFacing * 5500 + Side * 3500, LakeMap::SurfaceZ + 2600);
+            View = FRotator(0, YawOf(StartFacing), 0);
+        }
+        else if (!SceneView.Equals(TEXT("Camp"), ESearchCase::IgnoreCase))
+        {
+            for (const auto& Spot : LakeMap::Spots())
+                if (SceneView.Equals(Spot.Name, ESearchCase::IgnoreCase))
+                {
+                    const FVector2D P = Spot.Location + Spot.Outward * 220;
+                    Eye = FVector(P, Ground(P) + 170);
+                    View = FRotator(-8, YawOf(-Spot.Outward), 0);
+                }
+        }
+        FTimerHandle CameraTimer, CaptureTimer, ExitTimer;
+        GetWorldTimerManager().SetTimer(CameraTimer, [this, Eye, View]
+        {
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Clear;
+                Clear.Cloud = 0.3f; Clear.Fog = 0; Clear.Rain = 0; Clear.Wind = 0.1f; Clear.WindYaw = 40;
+                Weather->SetWeatherNow(Clear); Weather->SetHours(9.5f);
+            }
+            if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
+            {
+                PC->SetIgnoreLookInput(true); PC->SetIgnoreMoveInput(true);
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+                if (PC->GetPawn()) PC->GetPawn()->SetActorHiddenInGame(true);
+                for (TActorIterator<ALakeRod> It(GetWorld()); It; ++It) It->SetActorHiddenInGame(true);
+                auto* Cam = GetWorld()->SpawnActor<ACameraActor>(Eye, View);
+                Cam->GetCameraComponent()->SetFieldOfView(60); PC->SetViewTarget(Cam);
+            }
+        }, 0.2f, false);
+        const FString File = TEXT("Scene_") + FPaths::MakeValidFileName(SceneView) + TEXT(".png");
+        GetWorldTimerManager().SetTimer(CaptureTimer, [File]
+        {
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / File, false, false);
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SCENE_PREVIEW %s frame=%.1f ms"), *File, FApp::GetDeltaTime() * 1000);
+        }, 8.0f, false);
+        if (!FParse::Param(FCommandLine::Get(), TEXT("PreviewStay")))
+            GetWorldTimerManager().SetTimer(ExitTimer, [] { FPlatformMisc::RequestExit(false); }, 9.0f, false);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SCENE_CAMERA %s eye=%s view=%s"), *SceneView, *Eye.ToCompactString(), *View.ToCompactString());
+    }
     // Reproducible visual check; only enabled by an explicit command-line switch.
     if (FParse::Param(FCommandLine::Get(),TEXT("LakePreview")))
     {
@@ -1099,6 +1341,8 @@ void ALakeEnvironment::BeginPlay()
         GetWorldTimerManager().SetTimer(ExitTimer, [] { FPlatformMisc::RequestExit(false); }, FishShotAt + 32, false);
     }
 #endif
+    if (PCGForest) GetWorld()->SpawnActor<ALakeForest>(FVector(LakeMap::TerrainBounds.GetCenter(), 0), FRotator::ZeroRotator);
+    if (GetNetMode() != NM_DedicatedServer) GetWorld()->SpawnActor<ALakeBirds>();
     // The fish are stocked by Live Fish (ALakeLife::StockPond).
     // Diagnostic for the network test: how many fish this machine sees after replication settles.
     FTimerHandle FishCountTimer;
