@@ -1743,6 +1743,8 @@ void ALakeFish::LiftOut()
     bFightJump = false;
     bLifted = true;
     HangTime = 0;
+    HangAnchor = MouthLocation();
+    HangAnchorVel = FVector::ZeroVector;
     HangForward = GetActorForwardVector();
     Vel = FVector::ZeroVector;
     PendingLineForce = FVector::ZeroVector;
@@ -1764,6 +1766,14 @@ void ALakeFish::HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds)
     const float Dt = FMath::Min(DeltaSeconds, 0.05f);
     HangTime += Dt;
     const float Len = LakeFish::LengthCm(Species, WeightKg);
+    // The fish is no rag on the line: its mass makes the mouth lag behind the hook and overshoot it,
+    // and the heavier the fish the slower the swing. (The hook itself is simulated by the rod.)
+    const float Stiffness = 70.0f / FMath::Max(0.15f, WeightKg);
+    const FVector Need = Mouth - HangAnchor;
+    HangAnchorVel += (Need * Stiffness - HangAnchorVel * (2.0f * FMath::Sqrt(Stiffness))) * Dt;
+    HangAnchor += HangAnchorVel * Dt;
+    if (FVector::DistSquared(HangAnchor, Mouth) > FMath::Square(FMath::Max(60.0f, Len))) HangAnchor = Mouth;
+    Mouth = HangAnchor;
     FVector Up = LineUp.GetSafeNormal();
     if (Up.IsNearlyZero()) Up = FVector::UpVector;
     // In the water it is drawn mouth first along the line, lying flat; clear of the water its
@@ -2106,8 +2116,16 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     const float Bottom = BottomZ(P.X, P.Y);
     const float Top = LakeFish::SurfaceZ - 4;
     // A fish that still has strength keeps down: it does not porpoise along the surface until it tires.
-    const float KeepDown = 150.0f * FMath::SmoothStep(0.25f, 0.8f, StaminaFraction());
-    if (!bFightJump && P.Z > LakeFish::SurfaceZ - KeepDown) { P.Z = LakeFish::SurfaceZ - KeepDown; Vel.Z = FMath::Min(0.0f, Vel.Z); }
+    // The limit is soft and follows the beat of the fight, so it bobs and lurches between the runs
+    // instead of sticking to one depth like a board.
+    float KeepDown = FightPhase == EFightPhase::Burst ? 220.0f
+        : (FightPhase == EFightPhase::Pause || FightPhase == EFightPhase::Gap) ? 90.0f : 150.0f;
+    KeepDown *= FMath::SmoothStep(0.25f, 0.8f, StaminaFraction());
+    if (!bFightJump && P.Z > LakeFish::SurfaceZ - KeepDown)
+    {
+        P.Z = FMath::FInterpTo(GetActorLocation().Z, LakeFish::SurfaceZ - KeepDown, DeltaSeconds, 2.5f);
+        Vel.Z = FMath::Min(0.0f, Vel.Z);
+    }
     if (bFightJump && P.Z <= Top && Vel.Z <= 0)
     {
         bFightJump = false;
@@ -2275,7 +2293,10 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
 
     // Tail beat: faster the faster it swims (about one beat per 0.7 body lengths travelled), harder
     // with effort; gliding, the tail barely moves. On the line: the hanging fish's thrashing.
-    const float E = bHanging ? HangEffort : HasAuthority() ? Effort : NetEffort;
+    float E = bHanging ? HangEffort : HasAuthority() ? Effort : NetEffort;
+    // On the hook under water it keeps working its tail even when it holds position: a fighting fish
+    // never stands still, and a wooden one gives its weight away as a rag on a string.
+    if (!bHanging && State == EState::Hooked) E = FMath::Max(E, 0.35f);
     float Beat, Amp;
     if (bHanging)
     {
@@ -2284,7 +2305,8 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
     }
     else
     {
-        const float Hz = FMath::Min(7.0f, (0.35f + ShownSpeed / (0.7f * Len)) * (0.75f + 0.6f * E));
+        const float Hz = FMath::Max(FMath::Min(7.0f, (0.35f + ShownSpeed / (0.7f * Len)) * (0.75f + 0.6f * E)),
+            State == EState::Hooked ? 1.3f : 0.0f);
         Beat = 2 * PI * Hz;
         Amp = 0.022f + 0.07f * E + 0.015f * FMath::Clamp(ShownSpeed / S.CruiseSpeed, 0.0f, 1.0f);
     }

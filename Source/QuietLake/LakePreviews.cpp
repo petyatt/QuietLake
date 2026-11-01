@@ -362,6 +362,87 @@ void ALakeCharacter::RunPreviews()
         At(21.0f, [Shot] { Shot(TEXT("Land_Final.png")); });
         At(27.0f, [] { FPlatformMisc::RequestExit(false); });
     }
+    // -FightPreview: a hooked fish played from the bank on a clear morning, filmed from the side at
+    // the water's edge: how it holds and runs under the surface, what its body does and how heavy it
+    // feels on the line. The angler's hand on the rod is imitated: pull while the line is slack, give
+    // line when it is hard.
+    if (FParse::Param(FCommandLine::Get(), TEXT("FightPreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        auto Shot = [](const TCHAR* Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
+        auto LookFrom = [this](FVector From, FVector Target, float Fov)
+        {
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
+        };
+        At(4.0f, [this]
+        {
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Calm;
+                Calm.Cloud = 0.2f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.03f; Calm.WindYaw = 40;
+                Weather->SetWeather(Calm, 1);
+                Weather->SetHours(9.0f);
+            }
+            FVector2D Facing;
+            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
+            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetControlRotation(FRotator(-10, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+            FloatDepth = 150;
+        });
+        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(7.2f, [this] { ServerRelease_Implementation(); });
+        At(9.0f, [this]
+        {
+            const FVector Bait = BaitLocation();
+            ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(Bait, FRotator(0, GetActorRotation().Yaw + 90, 0));
+            Fish->Setup(EFishSpecies::Crucian, 0.8f, Bait, -1);
+            OnFishTake(Fish);
+            NextActionTime = 0;
+            ServerCancel_Implementation();   // RMB: the strike
+            ServerFish_Implementation();     // LMB held: draw the fish
+        });
+        {
+            auto Play = MakeShared<FTimerHandle>();
+            GetWorldTimerManager().SetTimer(*Play, FTimerDelegate::CreateLambda([this]
+            {
+                if (FishingState != EFishingState::Fight) return;
+                if (Tension > 0.5f) ServerRelease_Implementation();
+                else if (Tension < 0.25f) ServerFish_Implementation();
+            }), 0.2f, true);
+        }
+        auto Watch = [this, Shot, LookFrom, At](float T, const TCHAR* Name)
+        {
+            At(T, [this, Name, Shot, LookFrom]
+            {
+                ALakeFish* Fish = HookedFish.Get();
+                if (!Fish) return;
+                const FVector P = Fish->GetActorLocation();
+                // Under the surface beside the fish: the murk is thick, so stay close.
+                LookFrom(P + GetActorRightVector() * 200 + FVector(0, 0, 45), P, 48);
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FIGHT %s depth %.0f cm, speed %.0f, stamina %.2f, tension %.2f, awake %d, body yaw rate %.0f, on the line %d, mouth to hook %.0f cm"),
+                    Name, P.Z - LakeFish::SurfaceZ, Fish->SpeedNow(), Fish->StaminaFraction(), Tension,
+                    Fish->IsFightAwake() ? 1 : 0, Fish->ShownYawRate(), LineFish ? 1 : 0,
+                    RodVisual ? (float)FVector::Dist(Fish->MouthLocation(), RodVisual->HookLocation()) : -1.0f);
+                Shot(Name);
+            });
+        };
+        Watch(10.0f, TEXT("Fight_1.png"));
+        Watch(11.4f, TEXT("Fight_2.png"));
+        Watch(12.8f, TEXT("Fight_3.png"));
+        Watch(14.6f, TEXT("Fight_4.png"));
+        Watch(17.0f, TEXT("Fight_5.png"));
+        At(24.0f, [] { FPlatformMisc::RequestExit(false); });
+    }
     // -CastPreview: casts from the hand at the camp on a clear morning, filmed from the side: a
     // clean one (the rig in the hand, the swing, the rig in the air, the landing close up, the float
     // standing up), one let go too soon and a clean one aimed nearer; the rig's path and each

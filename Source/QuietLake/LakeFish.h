@@ -690,6 +690,8 @@ private:
     UPROPERTY(Replicated) bool bLifted = false;  // out of the water on an angler's line
     // Hanging on the line (cosmetic, every machine).
     float HangTime = 0, HangEffort = 0;
+    /** The mouth lags behind the hook and overshoots it: the fish's weight on the line. */
+    FVector HangAnchor = FVector::ZeroVector, HangAnchorVel = FVector::ZeroVector;
     FVector HangForward = FVector::ForwardVector;
     uint64 LastHangFrame = 0;
 

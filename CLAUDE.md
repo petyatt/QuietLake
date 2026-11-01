@@ -58,6 +58,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-LakePreview` | места озера с воздуха и с берега, кусты и опушка вблизи, затем рыбака: заброс, поплавок, рогатка | `LakeEnvironment.cpp`, `LakePreviews.cpp` |
 | `-BitePreview` | каждое движение поплавка при поклёвке крупным планом | `LakePreviews.cpp` |
 | `-LandPreview` | рыба на леске выходит из воды и попадает в руку | `LakePreviews.cpp` |
+| `-FightPreview` | вываживание сбоку под водой: глубина, ход, повороты, натяжение; лог `QUIET_LAKE_FIGHT` | `LakePreviews.cpp` |
 | `-CastPreview` | заброс с руки сбоку и вблизи, ранний и ближний заброс, тяжёлое и лёгкое удилища, вынимание с ловлей рукой, ходьба с оснасткой, глубокий спуск и спуск глубже воды | `LakePreviews.cpp` |
 | `-RodPreview` | удилище: изгиб кончика при забросе лёгким, средним и тяжёлым, при вываживании | `LakePreviews.cpp` |
 | `-LeaderPreview` | поводок крупным планом: оснастка в руке, замах, полёт, приводнение, лежащая снасть, подъём с остановкой (ЛКМ отпущена и снова зажата), вынимание; лог `QUIET_LAKE_LEADER` (`-Depth=`) | `LakePreviews.cpp` |

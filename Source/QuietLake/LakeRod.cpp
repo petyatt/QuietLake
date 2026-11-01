@@ -456,7 +456,9 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         if (bHookHeld)
         {
             HookPrev = HookPos;
-            HookPos = FMath::Lerp(HookPos, HookTarget, 0.08f);
+            // A hooked fish is on the line: its mouth is where the hook is. Chasing it softly left the
+            // line trailing half a metre behind a running fish, like a rubber band.
+            HookPos = FMath::Lerp(HookPos, HookTarget, In.FishingState == EFishingState::Fight ? 0.6f : 0.08f);
         }
         else if (bFishOut)
         {
