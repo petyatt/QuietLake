@@ -60,6 +60,9 @@ public:
     static constexpr float GripPoint = 12.0f;    // right hand, from the butt (at the end of the handle)
 
     FVector Tip() const { return Points.Num() ? Points.Last() : FVector::ZeroVector; }
+    static float FishSupport(float MouthZ, float Length);
+    static FVector TetherForce(FVector Anchor, FVector Mouth, FVector RelativeVelocity, float FreeLength, float Mass);
+    FVector PullOnFish(FVector Mouth, FVector Velocity, float Mass) const;
     FVector HookLocation() const { return HookPos; }
     FVector BobberLocation() const { return BobberPos; }
     float GetBiteTilt() const { return BiteTilt; }

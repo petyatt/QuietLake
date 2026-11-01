@@ -348,15 +348,6 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         HookTarget.Z = FMath::Clamp(HookTarget.Z, ALakeEnvironment::GroundHeight(HookTarget.X, HookTarget.Y) + 0.5f, LakeFish::SurfaceZ - 3);
     }
     // The fish cannot take the hook farther than the whole line reaches from the rod tip.
-    if (bHookHeld)
-    {
-        // Held back along the water, never lifted: the fish stays at its depth.
-        const float Reach = MainLength + LeaderLength - 2.0f;
-        const float Flat = FMath::Sqrt(FMath::Max(1.0f, FMath::Square(Reach) - FMath::Square(TipPos.Z - HookTarget.Z)));
-        const FVector2D Off(HookTarget.X - TipPos.X, HookTarget.Y - TipPos.Y);
-        if (Off.Size() > Flat) { const FVector2D Kept = Off.GetSafeNormal() * Flat; HookTarget.X = TipPos.X + Kept.X; HookTarget.Y = TipPos.Y + Kept.Y; }
-    }
-
     // The cast from the hand. While LMB is held the angler's fingers hold the shot. Let go, the rig is
     // free: nothing steers it. It swings out on the line under the rod as the rod is pushed forward
     // and down, and comes down where its own momentum takes it; the server takes that place from its
@@ -458,14 +449,14 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             HookPrev = HookPos;
             // A hooked fish is on the line: its mouth is where the hook is. Chasing it softly left the
             // line trailing half a metre behind a running fish, like a rubber band.
-            HookPos = FMath::Lerp(HookPos, HookTarget, In.FishingState == EFishingState::Fight ? 0.6f : 0.08f);
+            HookPos = In.LineFish ? HookTarget : FMath::Lerp(HookPos, HookTarget, 0.08f);
         }
         else if (bFishOut)
         {
             // Still in the water the fish is nearly weightless and the water holds it back hard;
             // in the air it swings on the line like a pendulum, the thrashing body slowing the swing.
-            const bool bFishWet = ALakeEnvironment::IsWater(HookPos) && HookPos.Z < LakeFish::SurfaceZ - 3;
-            Integrate(HookPos, HookPrev, FMath::Pow(bFishWet ? 0.02f : 0.45f, H), FVector(0, 0, -Gravity * (bFishWet ? 0.15f : 1.0f)));
+            const float Support = ALakeEnvironment::IsWater(HookPos) ? FishSupport(HookPos.Z, In.FishLength) : 0;
+            Integrate(HookPos, HookPrev, FMath::Pow(FMath::Lerp(0.45f, 0.02f, Support), H), FVector(0, 0, -Gravity * (1 - 0.98f * Support)));
         }
         else
         {
@@ -688,8 +679,13 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
     TipForce = FVector::ZeroVector;
     if (Points.Num())
     {
-        if (In.FishingState == EFishingState::Fight) TipForce = (BobberPos - Tip()).GetSafeNormal() * (2.0e4f + In.Tension * 1.2e6f);
-        else if (In.FishingState == EFishingState::Landing) TipForce = (HookPos - Tip()).GetSafeNormal() * In.FishGrams * 980.0f * 1.2f;
+        if (In.LineFish && In.FishingState <= EFishingState::Fight) TipForce = (FloatK - Tip()).GetSafeNormal() * (In.Tension * 2600.0f * 1000.0f);
+        else if (In.FishingState == EFishingState::Landing)
+        {
+            const float Support = ALakeEnvironment::IsWater(HookPos) ? FishSupport(HookPos.Z, In.FishLength) : 0;
+            const float Load = 980.0f * (1 - 0.98f * Support) + Support * FMath::Min(250.0f, float(HookVel.Size())) * 1.2f;
+            TipForce = (HookPos - Tip()).GetSafeNormal() * In.FishGrams * Load;
+        }
     }
     Heft = FMath::Max(0.5f, In.RodHeft);
     PrepareBlank(In.Hold);
@@ -747,4 +743,29 @@ float ALakeRod::LineBelly(int32* OutOnWater) const
 bool ALakeRod::FloatDown() const
 {
     return ALakeEnvironment::IsWater(FloatK) ? FloatK.Z <= LakeFish::SurfaceZ + 1.0f : FloatK.Z <= ALakeEnvironment::GroundHeight(FloatK.X, FloatK.Y) + 2.0f;
+}
+
+FVector ALakeRod::TetherForce(FVector Anchor, FVector Mouth, FVector RelativeVelocity, float FreeLength, float Mass)
+{
+    const FVector To = Anchor - Mouth;
+    const float Stretch = FMath::Max(0.0f, float(To.Size()) - FreeLength);
+    if (Stretch <= 0) return FVector::ZeroVector;
+    const float K = 2600.0f / 140.0f;
+    const float Damping = 1.4f * FMath::Sqrt(K * FMath::Max(0.03f, Mass));
+    const float Opening = FMath::Clamp(float(-FVector::DotProduct(RelativeVelocity, To.GetSafeNormal())), -200.0f, 200.0f);
+    return To.GetSafeNormal() * FMath::Max(0.0f, K * Stretch + Damping * Opening);
+}
+FVector ALakeRod::PullOnFish(FVector Mouth, FVector Velocity, float Mass) const
+{
+    if (!bInitialised) return FVector::ZeroVector;
+    const float BeforeHook = FVector::Dist(Tip(), FloatK) + FVector::Dist(FloatK, ShotPos);
+    const float Rest = LineLength - KeelDepth;
+    return TetherForce(ShotPos, Mouth, Velocity - ShotVel, FMath::Max(0.0f, Rest - BeforeHook), Mass);
+}
+
+
+float ALakeRod::FishSupport(float MouthZ, float Length)
+{
+    // As the head clears, a hanging body still has most of its volume in water.
+    return 1 - FMath::SmoothStep(0.0f, FMath::Max(8.0f, Length * 0.8f), MouthZ - LakeFish::SurfaceZ);
 }

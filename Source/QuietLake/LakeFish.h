@@ -381,6 +381,8 @@ struct FFishSpeciesInfo
     UPROPERTY() FString Noun;             // in a sentence: lowercase
     UPROPERTY() FString Description;
     UPROPERTY() FString Mesh;             // asset path
+    UPROPERTY() FVector MouthPoint = FVector::ZeroVector; // local model coordinates / mesh length
+    UPROPERTY() float MouthRadius = 0.018f; // contact radius / body length
     UPROPERTY() float MeshLength = 20;    // cm, length of the imported mesh
     UPROPERTY() float Condition = 1.2f;   // Fulton K: weight[g] = K * length[cm]^3 / 100
     UPROPERTY() float MinWeight = 0.1f;
@@ -586,6 +588,10 @@ public:
      */
     bool IsFightAwake() const { return bFightAwake; }
     void WakeOnLine() { bFightAwake = true; }
+    bool IsHoldingBait() const { return State == EState::Holding; }
+    float ContactRadius() const;
+    void SetHookGrip(float Grip) { HookGrip = FMath::Clamp(Grip, 0.2f, 1.0f); }
+    FVector MouthOffset() const;
     /** Consider a final run before landing; a leap or final run must finish first. */
     bool ReadyToLand();
     float StaminaFraction() const { return Stamina / FMath::Max(0.01f, MaxStamina); }
@@ -690,6 +696,9 @@ private:
     UPROPERTY(Replicated) bool bLifted = false;  // out of the water on an angler's line
     // Hanging on the line (cosmetic, every machine).
     float HangTime = 0, HangEffort = 0;
+    FVector HangAngularVelocity = FVector::ZeroVector;
+    float NextFightDisturb = 0, HookTurnSpeed = 0, HookGrip = 1;
+    FVector HookAngularVelocity = FVector::ZeroVector;
     /** The mouth lags behind the hook and overshoots it: the fish's weight on the line. */
     FVector HangAnchor = FVector::ZeroVector, HangAnchorVel = FVector::ZeroVector;
     FVector HangForward = FVector::ForwardVector;
@@ -789,6 +798,7 @@ private:
     friend class FLakeWaterTest;
     friend class FLakeMixedSchoolsTest;
     friend class FLakeFightProfilesTest;
+    friend class FLakeContactPhysicsTest;
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;

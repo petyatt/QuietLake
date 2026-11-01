@@ -192,6 +192,7 @@ private:
     friend struct FLakeFishingFixture;
     friend class FLakeBitePatternsTest;
     friend class FLakeFightProfilesTest;
+    friend class FLakeContactPhysicsTest;
     friend class FLakeFishBehaviourTest;
     friend class FLakeCastingTest;
     friend class FLakeWindDriftTest;
@@ -277,6 +278,10 @@ private:
     void Cancel();
     void Release();
     void UpdateFight(float DeltaSeconds);
+    void ResolveHook(float DeltaSeconds);
+    FVector LoadOnFish(ALakeFish* Fish) const;
+    float StrikeUntil = -1, HookImpulse = 0;
+    float YieldUntil = -1;
     void FinishFishing(const FString& Message);
     /** Raise the rod and draw the rig out while the button is held (or by itself, bAuto); the cast ends when the rod is up. */
     void StartRetrieve(const FString& Message, const FString& EndMessage, bool bAuto = false);

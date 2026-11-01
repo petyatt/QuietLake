@@ -15,6 +15,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Engine/StaticMesh.h"
+#include "Components/StaticMeshComponent.h"
 #include "TimerManager.h"
 #include "GameFramework/PlayerController.h"
 
@@ -1555,6 +1556,92 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
     FFishSpeciesInfo Invalid; TArray<FString> Problems;
     ReadSpecies(File, TEXT("invalid-fight.json"), Invalid, Problems);
     TestTrue(TEXT("Invalid fight values and misspelled fields are reported"), Problems.Num() >= 4);
+    World->DestroyWorld(false);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeContactPhysicsTest, "QuietLake.Fishing.ContactPhysics", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    const FVector Open(LakeMap::Centre, LakeFish::SurfaceZ - 100);
+    ALakeCharacter* Angler = World->SpawnActor<ALakeCharacter>(Open - FVector(300, 0, 0), FRotator::ZeroRotator);
+    for (EFishSpecies Sp : { EFishSpecies::Crucian, EFishSpecies::Perch, EFishSpecies::Pike })
+    {
+        const auto& S = LakeFish::Info(Sp);
+        for (float Weight : { S.MinWeight, S.MaxWeight })
+        {
+            ALakeFish* F = SpawnFish(World, Sp, Weight, Open);
+            F->SetActorRotation(FRotator(25, 63, 0));
+            const FVector Expected = F->Body->GetComponentTransform().TransformPosition(S.MouthPoint * S.MeshLength);
+            TestTrue(TEXT("Physical mouth equals the scaled model attachment"), FVector::Dist(Expected, F->MouthLocation()) < 0.01f);
+            TestTrue(TEXT("Contact is small and scales with the mouth"), F->ContactRadius() >= 0.4f && F->ContactRadius() <= 2);
+            F->State = ALakeFish::EState::Nibble; F->TargetAngler = Angler; F->BiteStepEnd = 10000;
+            Angler->FishingState = EFishingState::Waiting;
+            Angler->BaitPoint = F->MouthLocation() + FVector(5,2,-1);
+            for (int32 Dock = 0; Dock < 100; ++Dock) F->Simulate(0.02f);
+            TestTrue(TEXT("Fins bring the actual mouth into bait contact without snapping"), FVector::Dist(F->MouthLocation(), Angler->BaitPoint) <= F->ContactRadius());
+            F->Hook(Angler);
+            const FVector Start = F->GetActorLocation();
+            for (int32 I = 0; I < 100; ++I) { F->ApplyLineForce(FVector::ZeroVector); F->Simulate(0.05f); }
+            TestFalse(TEXT("Slack never wakes full fighting by elapsed time"), F->IsFightAwake());
+            TestTrue(TEXT("Slack fish remains alive and swims"), FVector::Dist(Start, F->GetActorLocation()) > 1);
+            F->ApplyLineForce(FVector(100, 0, 0));
+            TestTrue(TEXT("A real load awakens resistance"), F->IsFightAwake());
+            F->Stamina = F->MaxStamina * 0.5f;
+            F->FightPhase = ALakeFish::EFightPhase::Pull;
+            F->Vel = FVector::ZeroVector;
+            const float Before = F->Stamina;
+            F->MoveHooked(FVector(100, 0, 0), 100, 0.05f);
+            TestTrue(TEXT("Muscular work consumes stamina"), F->Stamina < Before);
+            F->Vel = FVector::ZeroVector; F->PendingLineForce = FVector::ZeroVector;
+            F->FightPhase = ALakeFish::EFightPhase::Pause;
+            const float Rest = F->Stamina;
+            F->MoveHooked(FVector::ZeroVector, 0, 0.05f);
+            TestTrue(TEXT("A real pause recovers stamina"), F->Stamina > Rest);
+            F->SetActorLocation(FVector(Open.X, Open.Y, LakeFish::SurfaceZ - 1));
+            F->Vel = FVector(0, 0, 120);
+            F->MoveHooked(FVector::ZeroVector, 0, 0.02f);
+            TestTrue(TEXT("Surface has no hard position ceiling"), F->GetActorLocation().Z > LakeFish::SurfaceZ - 1);
+            F->LiftOut();
+            for (int32 I = 0; I < 40; ++I)
+            {
+                const FVector Hook = Open + FVector(0, I * 0.1f, 120);
+                F->HangOnLine(Hook, FVector::UpVector, 0.02f);
+                TestTrue(TEXT("Hanging mouth stays on hook while body swings"), FVector::Dist(F->MouthLocation(), Hook) < 0.01f);
+                TestFalse(TEXT("Hanging body remains finite"), F->GetActorLocation().ContainsNaN());
+            }
+        }
+    }
+    TestTrue(TEXT("Fully submerged body is supported"), ALakeRod::FishSupport(LakeFish::SurfaceZ - 1, 30) == 1);
+    TestTrue(TEXT("Head first emergence transfers load gradually"), ALakeRod::FishSupport(LakeFish::SurfaceZ + 8, 30) > 0 && ALakeRod::FishSupport(LakeFish::SurfaceZ + 8, 30) < 1);
+    TestTrue(TEXT("Body clear of water loads full weight"), ALakeRod::FishSupport(LakeFish::SurfaceZ + 30, 30) == 0);
+    auto Load = [](float Distance, float Speed = 0) { return ALakeRod::TetherForce(FVector::ZeroVector, FVector(Distance, 0, 0), FVector(Speed, 0, 0), 600, 0.4f); };
+    TestTrue(TEXT("Slack gives zero force, even with moving endpoints"), Load(590, 100).IsNearlyZero());
+    TestTrue(TEXT("Fish moving out takes up slack"), Load(620).X < 0);
+    const FVector PlayerPull = ALakeRod::TetherForce(FVector(-20,0,0), FVector(600,0,0), FVector::ZeroVector, 600, 0.4f);
+    TestTrue(TEXT("Player moving away produces the same stretch force"), (PlayerPull - Load(620)).IsNearlyZero());
+    TestTrue(TEXT("Damping opposes outward motion"), Load(620, 100).Size() > Load(620).Size());
+    ALakeFish* F = SpawnFish(World, EFishSpecies::Perch, 0.4f, Open);
+    auto Holding = [&](float Reach)
+    {
+        F->State = ALakeFish::EState::Holding; F->TargetAngler = Angler; F->BiteNow.Hook = 1;
+        Angler->FishingState = EFishingState::Bite; Angler->BaitFish = F; Angler->BiteMotion = EBiteMotion::Hold;
+        F->SetActorRotation(FRotator::ZeroRotator);
+        F->SetActorLocation(Angler->RodTip() + FVector(Reach,0,0) - F->MouthOffset());
+        Angler->BaitPoint = F->MouthLocation();
+    };
+    Holding(400); Angler->Strike(); Angler->ResolveHook(0.1f);
+    TestFalse(TEXT("Strike on slack cannot magically set hook"), F->IsHooked());
+    Holding(620); Angler->BaitPoint += FVector(0,30,0); Angler->Strike(); Angler->ResolveHook(0.1f);
+    TestFalse(TEXT("Remote contact cannot set hook under load"), F->IsHooked());
+    Holding(620); Angler->Strike(); Angler->ResolveHook(0.1f);
+    TestTrue(TEXT("Contact and a transmitted strike set hook"), F->IsHooked());
+    Holding(620); Angler->StrikeUntil = -1; Angler->HookImpulse = 0; Angler->ResolveHook(0.1f);
+    TestTrue(TEXT("Fish can hook itself by loading the held bait"), F->IsHooked());
+    F->HookGrip = 0.001f; F->ApplyLineForce(FVector(-10000,0,0));
+    F->MoveHooked(FVector(100,0,0),100,0.1f);
+    TestFalse(TEXT("An unreliable hook can give under severe opposing load"), F->IsHooked());
     World->DestroyWorld(false);
     return true;
 }

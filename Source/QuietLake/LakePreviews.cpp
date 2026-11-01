@@ -304,10 +304,12 @@ void ALakeCharacter::RunPreviews()
             const FVector Bait = BaitLocation();
             ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(Bait, FRotator(0, GetActorRotation().Yaw + 90, 0));
             Fish->Setup(EFishSpecies::Perch, 0.32f, Bait, -1);
-            OnFishTake(Fish);
-            NextActionTime = 0;
-            ServerCancel_Implementation();   // RMB: the strike
-            ServerFish_Implementation();     // LMB held: draw the fish
+            Fish->SetActorLocation(Bait - Fish->GetActorQuat().RotateVector(Fish->MouthOffset()));
+            Fish->Hook(this); // preview fixture, not the gameplay strike path
+            HookedFish = Fish; LineFish = Fish; FishingState = EFishingState::Fight;
+            Tension = 0; FightTime = 0; bReeling = false;
+            FTimerHandle Draw;
+            GetWorldTimerManager().SetTimer(Draw, [this] { bReeling = true; }, 2.0f, false);
         });
         At(10.4f, [this, LookFrom]
         {
@@ -406,10 +408,12 @@ void ALakeCharacter::RunPreviews()
             const FVector Bait = BaitLocation();
             ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(Bait, FRotator(0, GetActorRotation().Yaw + 90, 0));
             Fish->Setup(EFishSpecies::Crucian, 0.8f, Bait, -1);
-            OnFishTake(Fish);
-            NextActionTime = 0;
-            ServerCancel_Implementation();   // RMB: the strike
-            ServerFish_Implementation();     // LMB held: draw the fish
+            Fish->SetActorLocation(Bait - Fish->GetActorQuat().RotateVector(Fish->MouthOffset()));
+            Fish->Hook(this); // preview fixture, not the gameplay strike path
+            HookedFish = Fish; LineFish = Fish; FishingState = EFishingState::Fight;
+            Tension = 0; FightTime = 0; bReeling = false;
+            FTimerHandle Draw;
+            GetWorldTimerManager().SetTimer(Draw, [this] { bReeling = true; }, 2.0f, false);
         });
         {
             auto Play = MakeShared<FTimerHandle>();
@@ -428,7 +432,12 @@ void ALakeCharacter::RunPreviews()
                 if (!Fish) return;
                 const FVector P = Fish->GetActorLocation();
                 // Under the surface beside the fish: the murk is thick, so stay close.
-                LookFrom(P + GetActorRightVector() * 200 + FVector(0, 0, 45), P, 48);
+                if (FParse::Param(FCommandLine::Get(), TEXT("ContactPreview")))
+                {
+                    const FVector Mouth = Fish->MouthLocation();
+                    LookFrom(Mouth + GetActorRightVector() * 65 + FVector(0, 0, 5), Mouth, 42);
+                }
+                else LookFrom(P + GetActorRightVector() * 200 + FVector(0, 0, 45), P, 48);
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FIGHT %s depth %.0f cm, speed %.0f, stamina %.2f, tension %.2f, awake %d, body yaw rate %.0f, on the line %d, mouth to hook %.0f cm"),
                     Name, P.Z - LakeFish::SurfaceZ, Fish->SpeedNow(), Fish->StaminaFraction(), Tension,
                     Fish->IsFightAwake() ? 1 : 0, Fish->ShownYawRate(), LineFish ? 1 : 0,
@@ -903,10 +912,12 @@ void ALakeCharacter::RunPreviews()
             const FVector Bait = BaitLocation();
             ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(Bait, FRotator(0, GetActorRotation().Yaw + 90, 0));
             Fish->Setup(EFishSpecies::Perch, 0.6f, Bait, -1);
-            OnFishTake(Fish);
-            NextActionTime = 0;
-            ServerCancel_Implementation();   // RMB: the strike
-            ServerFish_Implementation();     // LMB held: draw the fish
+            Fish->SetActorLocation(Bait - Fish->GetActorQuat().RotateVector(Fish->MouthOffset()));
+            Fish->Hook(this); // preview fixture, not the gameplay strike path
+            HookedFish = Fish; LineFish = Fish; FishingState = EFishingState::Fight;
+            Tension = 0; FightTime = 0; bReeling = false;
+            FTimerHandle Draw;
+            GetWorldTimerManager().SetTimer(Draw, [this] { bReeling = true; }, 2.0f, false);
         });
         At(35.0f, [Shot] { Shot(TEXT("Rod_Fight.png")); });
         At(37.0f, [Shot] { Shot(TEXT("Rod_Fight2.png")); });

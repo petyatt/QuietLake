@@ -112,10 +112,10 @@ length = prim_data(mat, 'MeshLength', 3, 40.0)
 curl = prim_data(mat, 'SwimCurl', 4, 0.0)
 wave = custom(mat, """
     float u = saturate(V.r);
-    float env = 0.12 + pow(u, 1.7);
+    float env = pow(u, 1.7);
     float side = A * Len * env * sin(u * 5.5 - T * R + Ph);
     float d = u - 0.4;
-    side += C * Len * d * d;
+    side += C * Len * (d * d - 0.16);
     return float3(0, side, 0);
     """, [('V', vcol), ('T', time), ('R', rate), ('A', amp), ('Ph', phase), ('Len', length), ('C', curl)])
 to_world = node(mat, unreal.MaterialExpressionTransform,
