@@ -1,4 +1,4 @@
-// Scripted scenes for checking the angler without playing (see CLAUDE.md): -LakePreview films the
+﻿// Scripted scenes for checking the angler without playing (see CLAUDE.md): -LakePreview films the
 // angler after the environment shots, -BitePreview each motion of the float, -LandPreview a fish
 // lifted out of the water. Each one sets the scene, takes screenshots into Saved/, logs what it
 // measured (QUIET_LAKE_* lines) and quits.
@@ -407,6 +407,55 @@ void ALakeCharacter::RunPreviews()
         {
             const FVector Bait = BaitLocation();
             ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(Bait, FRotator(0, GetActorRotation().Yaw + 90, 0));
+            if (FParse::Param(FCommandLine::Get(), TEXT("LiveRigPreview")))
+            {
+                Fish->Setup(EFishSpecies::Perch, FParse::Param(FCommandLine::Get(), TEXT("LiveRigHeavy")) ? 0.8f : 0.18f, Bait, -1);
+                Fish->Random.Initialize(714);
+                Fish->SetActorLocation(Bait - Fish->MouthOffset() + FVector(5, 0, 0));
+                Fish->State = ALakeFish::EState::Investigate; Fish->TargetAngler = this;
+                auto Timer = MakeShared<FTimerHandle>();
+                auto SeenBite = MakeShared<float>(-1);
+                auto Previous = MakeShared<int32>(-1);
+                auto FightStart = MakeShared<float>(-1);
+                auto Released = MakeShared<bool>(false);
+                GetWorldTimerManager().SetTimer(*Timer, FTimerDelegate::CreateLambda([this, Fish, SeenBite, Previous, FightStart, Released]
+                {
+                    const float Now = ServerNow();
+                    if (FishingState == EFishingState::Bite && *SeenBite < 0) *SeenBite = Now;
+                    if (FishingState == EFishingState::Bite && Now - *SeenBite > 0.2f)
+                    {
+                        ServerFish_Implementation();
+                        if (Now - *SeenBite < 0.31f && !FParse::Param(FCommandLine::Get(), TEXT("LiveRigLmbOnly"))) ServerCancel_Implementation();
+                    }
+                    if (FishingState == EFishingState::Fight || FishingState == EFishingState::Landing)
+                    {
+                        if (Tension > 0.65f) ServerRelease_Implementation();
+                        else if (Tension < 0.3f) ServerFish_Implementation();
+                    }
+                    if (FishingState == EFishingState::Fight)
+                    {
+                        if (*FightStart < 0) *FightStart = Now;
+                        if (!*Released && Now - *FightStart > 0.5f)
+                        {
+                            ServerRelease_Implementation(); *Released = true;
+                            UE_LOG(LogTemp, Display, TEXT("LIVE_RIG release lift=%.2f tension=%.3f"), RodLift, Tension);
+                        }
+                        if (*Released && Now - *FightStart < 0.8f) ServerRelease_Implementation();
+                    }
+                    if (*Previous != int32(FishingState) || FishingState == EFishingState::Bite ||
+                        (FishingState == EFishingState::Fight && Now - *FightStart < 2))
+                        UE_LOG(LogTemp, Display, TEXT("LIVE_RIG t=%.2f state=%d fish=%d lift=%.2f elev=%.1f force=%.1f contactOld=%.3f contactNow=%.3f impulse=%.2f grip=%.3f caught=%d status=%s"),
+                            Now, int32(FishingState), int32(Fish->State), RodLift, RodElevation, LoadOnFish(Fish).Size(),
+                            FVector::Dist(Fish->MouthLocation(), BaitPoint), FVector::Dist(Fish->MouthLocation(), RodVisual->HookLocation()), HookImpulse, Fish->HookGrip, CatchCount, *Status);
+                    *Previous = int32(FishingState);
+                    if (CatchCount > 0)
+                    {
+                        UE_LOG(LogTemp, Display, TEXT("LIVE_RIG SUCCESS caught=%d inHand=%d weight=%.2f t=%.2f grip=%.3f"), CatchCount, bFishInHand ? 1 : 0, Fish->WeightKg, Now, Fish->HookGrip);
+                        FPlatformMisc::RequestExit(false);
+                    }
+                }), 0.1f, true);
+                return;
+            }
             Fish->Setup(EFishSpecies::Crucian, 0.8f, Bait, -1);
             Fish->SetActorLocation(Bait - Fish->GetActorQuat().RotateVector(Fish->MouthOffset()));
             Fish->Hook(this); // preview fixture, not the gameplay strike path
@@ -445,12 +494,16 @@ void ALakeCharacter::RunPreviews()
                 Shot(Name);
             });
         };
+        if (!FParse::Param(FCommandLine::Get(), TEXT("LiveRigPreview")))
+        {
         Watch(10.0f, TEXT("Fight_1.png"));
         Watch(11.4f, TEXT("Fight_2.png"));
         Watch(12.8f, TEXT("Fight_3.png"));
         Watch(14.6f, TEXT("Fight_4.png"));
         Watch(17.0f, TEXT("Fight_5.png"));
-        At(24.0f, [] { FPlatformMisc::RequestExit(false); });
+        }
+        else Watch(14.5f, TEXT("LiveRig.png"));
+        At(FParse::Param(FCommandLine::Get(), TEXT("LiveRigPreview")) ? 85.0f : 24.0f, [] { FPlatformMisc::RequestExit(false); });
     }
     // -MouthPreview: the head of every species close up, to see the mouth a hook goes into.
     if (FParse::Param(FCommandLine::Get(), TEXT("MouthPreview")) && GetNetMode() == NM_Standalone)
@@ -1070,7 +1123,7 @@ void ALakeCharacter::RunPreviews()
                 RodVisual->LeaderShape(Bow, Chord, Length);
                 const FVector K = RodVisual->FloatKeel(), S = RodVisual->ShotLocation(), H = RodVisual->HookLocation();
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEADER t=%.2f state=%d fly=%d hand=%d retr=%d prog=%.2f bait=%d out=%.0f bow=%.1f chord=%.1f len=%.1f float=(%.0f,%.0f,%.0f) shot=(%.0f,%.0f,%.0f) hook=(%.0f,%.0f,%.0f)"),
-                    I * 0.05f, (int32)FishingState, bRigFlying, bRigInHand, bRetrieving, RetrieveProgress, HasBaitInWater(), FVector::Dist2D(FloatPosition, GetActorLocation()),
+                    I * 0.05f, (int32)FishingState, bRigFlying, bRigInHand, bRetrieving, RetrieveLift, HasBaitInWater(), FVector::Dist2D(FloatPosition, GetActorLocation()),
                     Bow, Chord, Length, K.X, K.Y, K.Z, S.X, S.Y, S.Z, H.X, H.Y, H.Z);
             });
         At(24.0f, [Shot] { Shot(TEXT("Leader_Final.png")); });
@@ -1200,7 +1253,7 @@ void ALakeCharacter::RunPreviews()
                 const FTransform& T = GetActorTransform();
                 const FVector Tip = T.InverseTransformPosition(RodVisual->Tip()), S = T.InverseTransformPosition(RodVisual->ShotLocation());
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_RETRIEVE t=%.2f state=%d retr=%d held=%d prog=%.2f hand=%d elev=%.0f yaw=%+.0f tip=(%.0f,%.0f,%.0f) shot=(%.0f,%.0f,%.0f) speed=%.0f shoulder=%.0f reach=%.2f float=%.0f view=(%.1f,%.1f) steer=%.1f"),
-                    10.5f + I * 0.05f, (int32)FishingState, bRetrieving, bRetrieveHeld, RetrieveProgress, bRigInHand, RodElevation,
+                    10.5f + I * 0.05f, (int32)FishingState, bRetrieving, bRetrieveHeld, RetrieveLift, bRigInHand, RodElevation,
                     FMath::FindDeltaAngleDegrees(GetActorRotation().Yaw, RodYaw), Tip.X, Tip.Y, Tip.Z, S.X, S.Y, S.Z,
                     (RodVisual->ShotVelocity() - GetVelocity()).Size(), FVector::Dist(RodVisual->ShotLocation(), LeftShoulder()), RigReach(),
                     FVector::Dist2D(RodVisual->FloatKeel(), GetActorLocation()), FRotator::NormalizeAxis(GetControlRotation().Pitch),

@@ -48,33 +48,26 @@ public:
     UPROPERTY(Replicated) float RetrieveServerTime = -100;
     /**
      * How far the rod has been raised, 0..1: it goes up only while LMB is held (bRetrieveHeld); let go,
-     * the rod stops where it is and holds, the next press goes on from there.
+     * the rod stops where it is and holds, the next press goes on from there. Nothing else moves the
+     * rig: it hangs on the line and is drawn in and lifted by the rod tip alone.
      */
-    UPROPERTY(Replicated) float RetrieveProgress = 0;
+    UPROPERTY(Replicated) float RetrieveLift = 0;
     UPROPERTY(Replicated) bool bRetrieveHeld = false;
     /** The rod goes all the way up by itself: the rig landed on the bank. */
     bool bRetrieveAuto = false;
     UPROPERTY(Replicated) float RetrieveFromElevation = 20;
-    /** Shortest time of raising the rod from the water to upright (with LMB held all the way). */
+    /** Seconds of LMB held to raise the rod from the water to upright. */
     static constexpr float RetrieveTime = 2.5f;
-    /** Fastest the rod tip moves lifting the rig out (cm/s): the line slack, taut with the rig in the water, the rig in the air. */
-    static constexpr float RetrieveTipFast = 420;
-    static constexpr float RetrieveTipSlow = 170;
-    static constexpr float RetrieveTipAir = 320;
-    /** The planned lift at progress R: the tip's place over the ground (actor space) and the right hand (OutGrip). */
-    FVector2D RetrieveTipPlan(float R, FVector& OutGrip) const;
-    /** cm the planned tip moves per unit of progress around R. */
-    float RetrieveTipSpeed(float R) const;
-    /** At the top of the lift: the hands up at the chest, the tip over the free hand (actor space, cm). */
+    /** At the top of the lift: the rod almost upright and the hands up at the chest. */
+    static constexpr float RetrieveTopElevation = 84;
+    /** At the top of the lift the tip is turned over the free left hand, so the rig comes to it. */
+    static constexpr float RetrieveHandYaw = -50;
+    /** At the top of the lift: the hands up at the chest (actor space, cm). */
     static constexpr float RetrieveGripX = 14;
     static constexpr float RetrieveGripY = 12;
     static constexpr float RetrieveGripZ = 36;
-    static constexpr float RetrieveTipX = 38;
-    static constexpr float RetrieveTipY = -22;
     UPROPERTY(Replicated) FVector RetrieveFromGrip = FVector::ZeroVector;
     UPROPERTY(Replicated) float RetrieveFromYaw = 7;
-    /** Where the rig lay when the lift began (actor space, cm): the tip first goes up over it. */
-    UPROPERTY(Replicated) FVector2D RetrieveRigLocal = FVector2D(300, 0);
     /**
      * The cast from the hand: holding LMB the angler takes the rig in the left hand and draws it
      * back to the hip, bending the rod tip; let go, the loaded tip swings the rig out in front. Let
@@ -127,7 +120,7 @@ public:
     float RodBase() const
     {
         // (Also while the cast flies: the rod goes down with it, so the line reaches the place picked.)
-        const bool bInWater = !bRetrieving && (FishingState == EFishingState::Waiting || FishingState == EFishingState::Bite);
+        const bool bInWater = !bRetrieving && (FishingState == EFishingState::Waiting || FishingState == EFishingState::Bite || FishingState == EFishingState::Fight);
         return bInWater ? RodWaitAngle : SwingBase;
     }
     /** The free hand holds the rig by the shot (it catches it as the rig swings by, and lets go to cast). */
@@ -306,6 +299,8 @@ private:
     double NextActionTime = 0;
     float FightTime = 0;
     int32 FightHint = -1;
+    /** Seconds of slack line while the fish is awake: too long and it throws the hook. */
+    float SlackTime = 0;
     FVector BaitPoint = FVector::ZeroVector;
     TWeakObjectPtr<ALakeFish> BaitFish;     // fish testing or holding the bait
     TWeakObjectPtr<ALakeFish> HookedFish;

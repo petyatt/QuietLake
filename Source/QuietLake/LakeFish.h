@@ -799,6 +799,7 @@ private:
     friend class FLakeMixedSchoolsTest;
     friend class FLakeFightProfilesTest;
     friend class FLakeContactPhysicsTest;
+    friend class ALakeCharacter; // live rig preview seeds approach only
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
     bool GetConditions(FFishConditions& Out) const;

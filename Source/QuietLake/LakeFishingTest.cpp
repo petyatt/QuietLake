@@ -1,4 +1,4 @@
-#if WITH_DEV_AUTOMATION_TESTS
+﻿#if WITH_DEV_AUTOMATION_TESTS
 #include "LakeGame.h"
 #include "HAL/IConsoleManager.h"
 #include "LakeRod.h"
@@ -73,7 +73,7 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
             Fisher->UpdateLanding();
         }
         if (!Fisher->bRetrieving) return;
-        Fisher->RetrieveProgress = 1;
+        Fisher->RetrieveLift = 1;
         Fisher->UpdateRetrieve(0);
     };
     // LMB after the cast, held to the end: the rig is drawn out of the water.
@@ -182,14 +182,14 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("LMB after the cast starts drawing the rig out"), Fisher->bRetrieving);
     // The rod rises only while LMB is held; let go, it stops where it is; held again, it goes on.
     Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.4f);
-    const float Held = Fisher->RetrieveProgress;
+    const float Held = Fisher->RetrieveLift;
     TestTrue(TEXT("Holding LMB raises the rod"), Held > 0.35f && Held < 0.45f);
     Fisher->ServerRelease_Implementation();
     Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
-    TestTrue(TEXT("Releasing LMB stops the rod where it is"), Fisher->bRetrieving && FMath::IsNearlyEqual(Fisher->RetrieveProgress, Held));
+    TestTrue(TEXT("Releasing LMB stops the rod where it is"), Fisher->bRetrieving && FMath::IsNearlyEqual(Fisher->RetrieveLift, Held));
     Fisher->ServerFish_Implementation();
     Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.1f);
-    TestTrue(TEXT("Holding LMB again goes on from there"), Fisher->bRetrieving && Fisher->RetrieveProgress > Held + 0.05f);
+    TestTrue(TEXT("Holding LMB again goes on from there"), Fisher->bRetrieving && Fisher->RetrieveLift > Held + 0.05f);
     Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
     TestTrue(TEXT("Raised to the top the rig is out"), !Fisher->bRetrieving && Fisher->FishingState == EFishingState::Idle);
 
@@ -732,10 +732,10 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
         Fisher->NextActionTime = 0;
         Fisher->ServerFish_Implementation();
         Run(0.8f);
-        const float Pull = Fisher->RetrieveProgress;
+        const float Pull = Fisher->RetrieveLift;
         Fisher->ServerRelease_Implementation();
         Run(2);
-        TestTrue(TEXT("Release stops an unfinished lift"), Pull > 0.1f && FMath::IsNearlyEqual(Fisher->RetrieveProgress, Pull) && !Fisher->bRigInHand && Fisher->bRetrieving);
+        TestTrue(TEXT("Release stops an unfinished lift"), Pull > 0.1f && FMath::IsNearlyEqual(Fisher->RetrieveLift, Pull) && !Fisher->bRigInHand && Fisher->bRetrieving);
         Fisher->ServerFish_Implementation();
         float Jump = 0, Shoulder = -1000, Nearest = 10000, NearSpeed = 0;
         FVector Prev = Fisher->RodVisual->ShotLocation();
@@ -750,7 +750,7 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
             if (Local.Size2D() < 150 && Local.X < 30) Shoulder = FMath::Max(Shoulder, float(Local.Y));
             Prev = Shot;
         }
-        AddInfo(FString::Printf(TEXT("Physical retrieve %.0f fps: hand=%d progress=%.2f distance=%.0f shot=%s tip=%s jump=%.1f shoulder=%.0f"), Fps, Fisher->bRigInHand, Fisher->RetrieveProgress, FVector::Dist(Prev, Fisher->HandPoint(0)), *Fisher->GetActorTransform().InverseTransformPosition(Prev).ToCompactString(), *Fisher->GetActorTransform().InverseTransformPosition(Fisher->RodVisual->Tip()).ToCompactString(), Jump, Shoulder));
+        AddInfo(FString::Printf(TEXT("Physical retrieve %.0f fps: hand=%d progress=%.2f distance=%.0f shot=%s tip=%s jump=%.1f shoulder=%.0f"), Fps, Fisher->bRigInHand, Fisher->RetrieveLift, FVector::Dist(Prev, Fisher->HandPoint(0)), *Fisher->GetActorTransform().InverseTransformPosition(Prev).ToCompactString(), *Fisher->GetActorTransform().InverseTransformPosition(Fisher->RodVisual->Tip()).ToCompactString(), Jump, Shoulder));
         AddInfo(FString::Printf(TEXT("Nearest hand %.1f cm at %.0f cm/s"), Nearest, NearSpeed));
         TestTrue(TEXT("Held lift reaches the left fingers"), Fisher->bRigInHand && !Fisher->bRetrieving && FVector::Dist(Prev, Fisher->HandPoint(0)) < 2);
         TestTrue(TEXT("No return over right shoulder"), Shoulder < 10);
@@ -854,7 +854,7 @@ bool FLakeWindDriftTest::RunTest(const FString& Parameters)
     auto LiftOut = [&]()
     {
         Fisher->ServerCancel_Implementation();
-        if (Fisher->bRetrieving) { Fisher->RetrieveProgress = 1; Fisher->UpdateRetrieve(0); }
+        if (Fisher->bRetrieving) { Fisher->RetrieveLift = 1; Fisher->UpdateRetrieve(0); }
     };
     // A shallow bait hangs free: the float drifts downwind, and the line holds it within reach.
     Cast(20);
@@ -1642,6 +1642,60 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
     F->HookGrip = 0.001f; F->ApplyLineForce(FVector(-10000,0,0));
     F->MoveHooked(FVector(100,0,0),100,0.1f);
     TestFalse(TEXT("An unreliable hook can give under severe opposing load"), F->IsHooked());
+
+    // Use the physical rod: its continuous aim used to overwrite the bite lift and strike.
+    FVector2D ShoreFacing;
+    const FVector2D Shore = LakeMap::StartSpot(&ShoreFacing) - ShoreFacing * 200;
+    Angler->SetActorLocation(FVector(Shore, ALakeEnvironment::GroundHeight(Shore.X, Shore.Y) + 100));
+    APlayerController* InputController = World->SpawnActor<APlayerController>();
+    InputController->Possess(Angler);
+    Angler->RodVisual = World->SpawnActor<ALakeRod>();
+    FLakeFishingFixture::ImmersedRig(Angler);
+    Angler->ServerFish_Implementation();
+    Angler->UpdateRetrieve(0.5f);
+    TestTrue(TEXT("LMB without a bite starts and advances retrieval"), Angler->bRetrieving && Angler->RetrieveLift > 0);
+    Angler->ServerRelease_Implementation();
+    const float Stopped = Angler->RetrieveLift;
+    Angler->UpdateRetrieve(0.5f);
+    TestEqual(TEXT("Release pauses retrieval without a bite"), Angler->RetrieveLift, Stopped);
+
+    FLakeFishingFixture::ImmersedRig(Angler);
+    Holding(400);
+    F->State = ALakeFish::EState::Nibble; // isolate pose assertions; real loaded takes are tested above and in LiveRigPreview
+    Angler->RodLift = 0; Angler->Tension = 0; Angler->StrikeServerTime = -100;
+    Angler->StrikeUntil = -1; Angler->HookImpulse = 0;
+    F->BiteStepEnd = 10000;
+    auto TargetElevation = [&](float Now)
+    {
+        float Elevation, Stiffness, Yaw; FVector Grip;
+        Angler->RodPoseTarget(0, Now, Elevation, Grip, Stiffness, Yaw);
+        return Elevation;
+    };
+    const float BeforeLift = TargetElevation(Angler->ServerNow());
+    Angler->bRodOnStand = true; Angler->StandBase = Angler->GetActorLocation();
+    Angler->ServerFish_Implementation();
+    TestTrue(TEXT("LMB takes a nearby rod from the stand during a bite"), !Angler->bRodOnStand && Angler->bReeling);
+    TestFalse(TEXT("LMB itself does not hook the fish"), F->IsHooked());
+    Angler->Tick(0.5f);
+    TestTrue(TEXT("Held LMB raises the physical rod target during a bite"),
+        Angler->FishingState == EFishingState::Bite && TargetElevation(Angler->ServerNow()) > BeforeLift + 2);
+    const float Raised = Angler->RodLift;
+    Angler->ServerRelease_Implementation();
+    Angler->Tick(0.1f);
+    TestTrue(TEXT("Release yields the rod during a bite"), !Angler->bReeling && Angler->RodLift < Raised);
+    Angler->ServerFish_Implementation();
+    const float BeforeYield = Angler->RodLift;
+    Angler->MoveRodAxis(-3, true);
+    Angler->Tick(0.05f);
+    TestTrue(TEXT("Mouse down yields while LMB stays held"), Angler->bReeling && Angler->RodLift < BeforeYield);
+    Angler->YieldUntil = -1;
+    Angler->Tension = 0;
+    const float BeforeStrike = TargetElevation(Angler->ServerNow());
+    Angler->ServerCancel_Implementation();
+    TestTrue(TEXT("RMB gives the physical rod a strike stroke during a bite"),
+        TargetElevation(Angler->StrikeServerTime + 0.15f) > BeforeStrike + 14);
+    TestFalse(TEXT("RMB still needs transmitted force to hook"), F->IsHooked());
+
     World->DestroyWorld(false);
     return true;
 }
