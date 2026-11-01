@@ -1246,14 +1246,16 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     }
     // Keeping away from a predator that could eat it: it turns off and keeps its distance; a school
     // closes up round its leader and turns away with it (a member darts off on its own only when the
-    // danger is right on it); a frightened crucian stops rooting.
-    const float Flight = bFollower ? FMath::Max(0.0f, Fear - 0.5f) * 1.2f : Fear * 1.6f;
+    // danger is right on it); a frightened crucian stops rooting. Fear outweighs the roaming: a fish
+    // with a pike a couple of metres off does not amble past it.
+    const float Flight = bFollower ? FMath::Max(0.0f, Fear - 0.5f) * 1.2f : Fear * 2.4f;
     if (Fear > 0.05f)
         if (const ALakeFish* Danger = Threat.Get())
         {
             const FVector Away = (GetActorLocation() - Danger->GetActorLocation()).GetSafeNormal2D();
+            Desired *= 1.0f - 0.5f * FMath::Clamp(Fear * 1.5f, 0.0f, 1.0f);
             Desired += Away * S.CruiseSpeed * Flight;
-            MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed * (1.0f + 0.6f * Fear));
+            MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed * (1.0f + 0.8f * Fear));
             if (bRooting && Fear > 0.4f) { bRooting = false; PhaseUntil = SimTime + 4; }
         }
     // Rushing at the fry with the school.
@@ -1701,7 +1703,19 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     StrikeEnd = -1;
     if (Angler) Angler->AddTickPrerequisiteActor(this);
     RoamTarget = GetActorLocation() + GetActorForwardVector() * 80;
-
+    // The thrashing scares the school mates nearby, and they remember it (of that bait, half as much).
+    if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
+    {
+        Life->Alarm(this, 600);
+        const FFishLearning& L = LakeFish::Info(Species).Learning;
+        const int32 With = Angler ? (int32)Angler->Bait : -1;
+        Life->ForEachFishNear(GetActorLocation(), 600, [&](ALakeFish* Mate)
+        {
+            if (Mate == this || School < 0 || Mate->School != School) return;
+            Mate->Frighten(L.SchoolShare * L.Fright, -1);
+            if (With >= 0) Mate->BaitShy[With] = FMath::Min(1.0f, Mate->BaitShy[With] + 0.5f * L.SchoolShare * L.Fright);
+        });
+    }
 }
 
 void ALakeFish::ApplyLineForce(FVector Force) { PendingLineForce = Force; if (State == EState::Hooked && Force.Size() > 35) WakeOnLine(); }
