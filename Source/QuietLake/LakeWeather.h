@@ -116,6 +116,5 @@ private:
     UPROPERTY() TObjectPtr<class UAudioComponent> RainHeavySound;
     UPROPERTY() TObjectPtr<class UAudioComponent> CricketSound;
     UPROPERTY() TObjectPtr<class UAudioComponent> WindSound;
-    UPROPERTY() TObjectPtr<class UAudioComponent> BirdSound;
     UPROPERTY() TObjectPtr<class APostProcessVolume> Post;
 };

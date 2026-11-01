@@ -1,4 +1,4 @@
-#include "LakeWeather.h"
+﻿#include "LakeWeather.h"
 #include "LakeGame.h"
 #include "LakeMap.h"
 #include "Net/UnrealNetwork.h"
@@ -392,8 +392,7 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
             {
                 const FString Name = A->Sound ? A->Sound->GetName() : FString();
                 if (Name == TEXT("A_Wind")) WindSound = A;
-                if (Name == TEXT("A_Birds")) BirdSound = A;
-            }
+                    }
         }
         // Moonlight: a second, cool directional light. It is deliberately not an atmosphere sun
         // light: as one, it painted the night sky with a daylight-blue gradient (and the sky then
@@ -599,11 +598,10 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
             RainTiles->UpdateInstanceTransform(I, FTransform(FVector(BaseX + (I % 3 - 1) * Tile, BaseY + (I / 3 - 1) * Tile, Camera.Z - 400)), true, I == 8, true);
     }
 
-    // Ambience: rain, wind, birds by day and crickets on warm dry nights.
+    // Ambience: rain, wind and crickets on warm dry nights (no birds: they are not wanted here).
     // Rain: single drops in a drizzle, giving way to the dense hiss of a downpour.
     if (RainLightSound) RainLightSound->SetVolumeMultiplier(FMath::Max(0.001f, 0.7f * S(0.0f, 0.25f, W.Rain) * (1 - 0.6f * S(0.4f, 1.0f, W.Rain))));
     if (RainHeavySound) RainHeavySound->SetVolumeMultiplier(FMath::Max(0.001f, 0.85f * S(0.2f, 1.0f, W.Rain)));
     if (WindSound) WindSound->SetVolumeMultiplier(0.12f + 0.75f * W.Wind);
-    if (BirdSound) BirdSound->SetVolumeMultiplier(FMath::Max(0.001f, 0.3f * Day * (1 - 0.85f * W.Rain)));
     if (CricketSound) CricketSound->SetVolumeMultiplier(FMath::Max(0.001f, 0.45f * Night * (1 - W.Rain) * S(10.0f, 15.0f, TemperatureC())));
 }

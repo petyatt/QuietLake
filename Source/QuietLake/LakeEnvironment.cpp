@@ -1118,7 +1118,8 @@ void ALakeEnvironment::BeginPlay()
             Component->Play();
         };
         Audio(TEXT("A_Wind"),FVector::ZeroVector,0.32f,false);
-        Audio(TEXT("A_Birds"),FVector(LakeMap::StartSpot() + FVector2D(-1800, 1200), 550),0.3f,true);
+        // No bird ambience: it was the wrong sound for this lake and got on the player's nerves.
+        // The flocks themselves (-LakeBirds) still fly over the water.
     }
 #if !UE_BUILD_SHIPPING
     // Direct art review: one selected camera, one screenshot, no lake tour or fishing sequence.

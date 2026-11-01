@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/GameModeBase.h"
@@ -55,19 +55,10 @@ public:
     UPROPERTY(Replicated) bool bRetrieveHeld = false;
     /** The rod goes all the way up by itself: the rig landed on the bank. */
     bool bRetrieveAuto = false;
-    UPROPERTY(Replicated) float RetrieveFromElevation = 20;
-    /** Seconds of LMB held to raise the rod from the water to upright. */
-    static constexpr float RetrieveTime = 2.5f;
-    /** At the top of the lift: the rod almost upright and the hands up at the chest. */
+    /** Seconds of LMB held to raise the rod from the water to upright: slow, the pole is heavy. */
+    static constexpr float RetrieveTime = 3.6f;
+    /** At the top of the lift: the rod almost upright. */
     static constexpr float RetrieveTopElevation = 84;
-    /** At the top of the lift the tip is turned over the free left hand, so the rig comes to it. */
-    static constexpr float RetrieveHandYaw = -50;
-    /** At the top of the lift: the hands up at the chest (actor space, cm). */
-    static constexpr float RetrieveGripX = 14;
-    static constexpr float RetrieveGripY = 12;
-    static constexpr float RetrieveGripZ = 36;
-    UPROPERTY(Replicated) FVector RetrieveFromGrip = FVector::ZeroVector;
-    UPROPERTY(Replicated) float RetrieveFromYaw = 7;
     /**
      * The cast from the hand: holding LMB the angler takes the rig in the left hand and draws it
      * back to the hip, bending the rod tip; let go, the loaded tip swings the rig out in front. Let

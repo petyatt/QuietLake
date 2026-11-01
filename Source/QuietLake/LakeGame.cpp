@@ -1,4 +1,4 @@
-#include "LakeGame.h"
+﻿#include "LakeGame.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
 #include "Camera/CameraComponent.h"
@@ -280,7 +280,7 @@ void ALakeCharacter::ServerRelease_Implementation()
 {
     bReeling = false;
     if (bRetrieving && bRetrieveHeld && !bRigInHand)
-        Status = TEXT("Удилище остановлено. Держите ЛКМ — поднимать дальше.");
+        Status = TEXT("Отпустили ЛКМ — удилище опускается. Снасть остаётся в воде.");
     bRetrieveHeld = false;
     if (bCharging)
     {
@@ -651,13 +651,13 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         const float Lift = bLoadedRig ? RodLift * 55 - Tension * 10 : 0;
         const float SinceStrike = Now - StrikeServerTime;
         const float StrikeLift = SinceStrike >= 0 && SinceStrike < 0.3f ? 15 * FMath::Sin(PI * SinceStrike / 0.3f) : 0;
-        if (!bRetrieving) Elevation = FMath::Lerp(FMath::Clamp(Aim + Lift + StrikeLift, RodLowestAngle, RodHighestAngle),
+        Elevation = FMath::Lerp(FMath::Clamp(Aim + Lift + StrikeLift, RodLowestAngle, RodHighestAngle),
             FMath::Clamp(Elevation + SwingPitch * 0.2f, RodLowestAngle, 100.0f), Assist);
         const float Arm = FMath::DegreesToRadians(-45.0f + 0.75f * (Elevation - SwingBase));
         const FVector AimGrip(4 + 50 * FMath::Cos(Arm), 18, 52 + 50 * FMath::Sin(Arm));
         Grip = FMath::Lerp(FRotator(0, SwingYaw * 0.4f, 0).RotateVector(AimGrip), Grip, Assist);
         // Keep mouse steering available even while the automatic hand-catching assist is active.
-        if (!bRetrieving && !(FishingState == EFishingState::Idle && !bRigInHand)) Yaw = 7 + SwingYaw;
+        if (!(FishingState == EFishingState::Idle && !bRigInHand)) Yaw = 7 + SwingYaw;
         Stiffness = bCharging || bRigFlying ? 10 : 9;
     }
     // Lifting without swinging sideways: the yaw that keeps the tip where it was seen.
@@ -668,39 +668,11 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
     }
     if (bRetrieving && !bRodOnStand)
     {
-        // The lift is the angler's, not a script: LMB raises the rod (the rate is limited so a long
-        // springy pole does not whip the light rig), letting go holds it, the next press goes on.
-        // Nothing is applied to the rig: it hangs on the line and is drawn in and lifted by the tip
-        // alone. While the rig is still in the water the rod is kept pointed at it, so the line lifts
-        // it rather than dragging it sideways; in the air the hands follow the swinging weight and
-        // move the rod against it.
+        // LMB only lifts: the rod rises towards upright while the button is held and comes back down
+        // to wherever the player aims when it is let go. Aiming, lowering, striking — nothing else is
+        // blocked by the lift, so an accidental press just bobs the rod and the rig stays fishing.
         const float Raised = FMath::SmoothStep(0.0f, 1.0f, RetrieveLift);
-        Elevation = FMath::Lerp(RetrieveFromElevation, RetrieveTopElevation, Raised);
-        Grip = FMath::Lerp(RetrieveFromGrip, FVector(RetrieveGripX, RetrieveGripY, RetrieveGripZ), FMath::SmoothStep(0.0f, 0.7f, RetrieveLift));
-        if (RodVisual)
-        {
-            const FVector Shot = RodVisual->ShotLocation();
-            const FVector Local = GetActorTransform().InverseTransformPosition(Shot);
-            const bool bWet = ALakeEnvironment::IsWater(Shot) && Shot.Z < LakeFish::SurfaceZ + 10;
-            if (bWet)
-            {
-                // Point at the float: the line comes up almost straight out of the water.
-                if (FVector2D(Local.X, Local.Y).SizeSquared() > 100.0f)
-                    Yaw = FMath::RadiansToDegrees(FMath::Atan2(Local.Y, Local.X));
-            }
-            else
-            {
-                // A rig out of the water is a pendulum on the line: the hands move the rod against
-                // its swing to calm it (never the rig itself) and turn the tip over the free left
-                // hand, so the rig comes to the fingers instead of past the right shoulder.
-                const FVector Swing = GetActorTransform().InverseTransformVectorNoScale(RodVisual->ShotVelocity() - GetVelocity());
-                Elevation = FMath::Clamp(Elevation - Swing.Z * 0.10f, RodLowestAngle, 88.0f);
-                if (FVector2D(Local.X, Local.Y).SizeSquared() > 100.0f)
-                    Yaw += FMath::FindDeltaAngleDegrees(Yaw, FMath::RadiansToDegrees(FMath::Atan2(Local.Y, Local.X))) * 0.4f;
-                Yaw += FMath::FindDeltaAngleDegrees(Yaw, RetrieveHandYaw) * 0.5f * FMath::SmoothStep(0.5f, 1.0f, RetrieveLift);
-            }
-        }
-        Elevation = FMath::Clamp(Elevation + RigSteerPitch, RodLowestAngle, 88.0f);
+        Elevation = FMath::Lerp(Elevation, RetrieveTopElevation, Raised);
         Stiffness = 9;
     }
     if (RodVisual && !bRodOnStand && !bRigInHand && !bRetrieving &&
@@ -967,8 +939,6 @@ void ALakeCharacter::StartRetrieve(const FString& Message, const FString& EndMes
     // Started by a press of LMB: the rod rises while it is held.
     bRetrieveHeld = !bAuto;
     bRetrieveAuto = bAuto;
-    RetrieveFromElevation = RodElevation;
-    RetrieveFromGrip = RodGrip;
     RetrieveEndMessage = EndMessage;
     Status = Message;
     ForceNetUpdate();
@@ -976,18 +946,25 @@ void ALakeCharacter::StartRetrieve(const FString& Message, const FString& EndMes
 void ALakeCharacter::UpdateRetrieve(float DeltaSeconds)
 {
     if (!bRetrieving) return;
-    // LMB raises the rod: the rig itself is never moved, it hangs on the line and is drawn in and up
-    // by the tip alone. Let go, the rod holds where it is; the next press goes on from there.
-    if (bRetrieveHeld || bRetrieveAuto) RetrieveLift = FMath::Clamp(RetrieveLift + DeltaSeconds / RetrieveTime, 0.0f, 1.0f);
+    // LMB only lifts the rod: held, it goes up; let go, it comes back down to the player's aim. The rig
+    // itself is never moved — it hangs on the line and is drawn in and up by the tip alone.
+    const float Rate = (bRetrieveHeld || bRetrieveAuto) ? 1.0f / RetrieveTime : -2.0f / RetrieveTime;
+    RetrieveLift = FMath::Clamp(RetrieveLift + Rate * DeltaSeconds, 0.0f, 1.0f);
     // The rig taken in the hand: it is out of the water.
     if (bRigInHand && RodVisual && ServerNow() - RigGripTime >= 0.8f)
     { FinishFishing(RetrieveEndMessage); return; }
-    // Nothing pulls the rig in and nothing places it: the raise of the rod does all the work through
-    // the line, and the free hand takes the rig when it swings within reach (see RigReach below).
-    // Without a simulation (automated tests) there is nothing to catch: finish once the rod is up,
-    // and give up if a rig in reach cannot be caught for a long time.
+    // No restrictions: the rod is back down and nothing was taken, so the rig simply fishes again.
+    if (RetrieveLift <= 0.0f && !bRigInHand)
+    {
+        bRetrieving = false;
+        bRetrieveHeld = false;
+        bRetrieveAuto = false;
+        if (FishingState == EFishingState::Waiting) Status = TEXT("Снасть в воде. ЛКМ — приподнять удилище, ПКМ — подсечка.");
+        ForceNetUpdate();
+        return;
+    }
+    // Without a simulation (automated tests) there is nothing to catch: finish once the rod is up.
     if (!RodVisual && RetrieveLift >= 1.0f) FinishFishing(RetrieveEndMessage);
-    else if (RodVisual && RetrieveLift >= 1.0f && ServerNow() - RetrieveServerTime > 25.0f) FinishFishing(RetrieveEndMessage);
 }
 bool ALakeCharacter::TakeRodFromStand()
 {
@@ -1181,7 +1158,7 @@ void ALakeCharacter::ServerCancel_Implementation()
 {
     if (bCharging) { ServerRelease_Implementation(); return; }
     if (FishingState == EFishingState::Bite) { Strike(); return; }
-    if (FishingState != EFishingState::Waiting || bRetrieving || bRigFlying || ServerNow() < BaitActiveTime) return;
+    if (FishingState != EFishingState::Waiting || bRigFlying || ServerNow() < BaitActiveTime) return;
     if (!TakeRodFromStand()) return;
     // A strike with no bite: the rod jerks, the rig stays; a fish only trying the bait is frightened off.
     StrikeServerTime = ServerNow();
@@ -1398,9 +1375,6 @@ void ALakeCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
     DOREPLIFETIME(ALakeCharacter, LandProgress);
     DOREPLIFETIME(ALakeCharacter, bRetrieving);
     DOREPLIFETIME(ALakeCharacter, RetrieveServerTime);
-    DOREPLIFETIME(ALakeCharacter, RetrieveFromElevation);
-    DOREPLIFETIME(ALakeCharacter, RetrieveFromGrip);
-    DOREPLIFETIME(ALakeCharacter, RetrieveFromYaw);
     DOREPLIFETIME(ALakeCharacter, RetrieveLift);
     DOREPLIFETIME(ALakeCharacter, bRetrieveHeld);
     DOREPLIFETIME(ALakeCharacter, CastServerTime);
