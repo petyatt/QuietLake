@@ -140,6 +140,7 @@ public:
     static constexpr float MaxDepth = 500.0f;   // about 17% short of the 6 m rod
     UPROPERTY(Replicated) bool bReeling = false;            // fighting: LMB held = lifting the rod, pulling
     UPROPERTY(Replicated) float RodLift = 0;                // fighting: 0 = rod lowered towards the fish, 1 = raised high
+    float RodLiftShown = 0;   // the lift the pose shows: follows RodLift, then eases out when the fish leaves
     UPROPERTY(Replicated) bool bRodOnStand = false;
     UPROPERTY(Replicated) FVector_NetQuantize10 StandBase;
     UPROPERTY(Replicated) float StandYaw = 0;

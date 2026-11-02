@@ -649,7 +649,7 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         if (bRetrieving) Assist = 1;
         if (FishingState == EFishingState::Landing) Assist = 1;
         const bool bLoadedRig = FishingState == EFishingState::Bite || FishingState == EFishingState::Fight;
-        const float Lift = bLoadedRig ? RodLift * 55 - Tension * 10 : 0;
+        const float Lift = RodLiftShown * 55 - (bLoadedRig ? Tension * 10 : 0);
         const float SinceStrike = Now - StrikeServerTime;
         const float StrikeLift = SinceStrike >= 0 && SinceStrike < 0.3f ? 15 * FMath::Sin(PI * SinceStrike / 0.3f) : 0;
         Elevation = FMath::Lerp(FMath::Clamp(Aim + Lift + StrikeLift, RodLowestAngle, RodHighestAngle),
@@ -717,6 +717,11 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
 }
 void ALakeCharacter::UpdateRodPose(float DeltaSeconds)
 {
+    // The lift shown by the pose: while the rod is loaded (a bite or a fight) it follows RodLift at
+    // once; when the fish lets go the rod settles back to the aim over a fraction of a second
+    // instead of snapping down and cutting the lift short.
+    if (FishingState == EFishingState::Bite || FishingState == EFishingState::Fight) RodLiftShown = RodLift;
+    else RodLiftShown = FMath::FInterpTo(RodLiftShown, 0.0f, DeltaSeconds, 5.0f);
     // Critically damped springs towards the target pose: the rod has weight, so it follows the
     // hands and the body's turns with a little lag, except during the quick casting swing.
     const FRotator View = IsLocallyControlled() && GetController() ? GetControlRotation() : GetBaseAimRotation();
@@ -1325,6 +1330,9 @@ void ALakeCharacter::ServerChangeDepth_Implementation(float Delta)
 void ALakeCharacter::Escape()
 {
     if (FishingState != EFishingState::Bite) return;
+    // The player may have been lifting the rod already (LMB during a bite raises it): that lift must
+    // not be cut short when the fish lets go — it carries on as the usual draw-out.
+    const bool bWasLifting = bReeling;
     // Not struck in time: the fish lets go of the bait and swims off. The rig stays where the fish
     // left it and keeps fishing: the float stands up again, and the angler may wait or draw it out (LMB).
     if (ALakeFish* Holder = BaitFish.Get()) Holder->DropBait();
@@ -1335,6 +1343,9 @@ void ALakeCharacter::Escape()
     PlaceBait();
     Status = TEXT("Рыба выпустила наживку. Поплавок встал на место — не дёргайте снасть: голодная рыба может вернуться.");
     ForceNetUpdate();
+    if (bWasLifting && !bRetrieving)
+        StartRetrieve(TEXT("Рыба выпустила наживку, а удилище уже идёт вверх — держите ЛКМ: снасть выйдет из воды."),
+                      TEXT("Снасть в левой руке. Держите ЛКМ — маятниковый мах."));
 }
 float ALakeCharacter::RigDisturbance() const
 {

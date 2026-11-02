@@ -224,6 +224,26 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
     TestTrue(TEXT("Raised to the top the rig is out"), !Fisher->bRetrieving && Fisher->FishingState == EFishingState::Idle);
 
+    // An early LMB during a bite must not cut the lift short: when the fish lets go, the rod settles
+    // smoothly, and a still held button carries the lift on into drawing the rig out.
+    Cast();
+    ALakeFish* EarlyTaker = SpawnFish(World, EFishSpecies::Perch, 0.35f, Fisher->BaitLocation());
+    Fisher->OnFishTake(EarlyTaker);
+    TestTrue(TEXT("Early lift: a bite starts"), Fisher->FishingState == EFishingState::Bite);
+    Fisher->bReeling = true;   // LMB held during the bite raises the rod
+    for (int32 Step = 0; Step < 20; ++Step) { Fisher->UpdateRodPose(0.05f); Fisher->Tick(0.05f); }
+    TestTrue(TEXT("Holding LMB during a bite raises the rod"), Fisher->RodLift > 0.5f);
+    Fisher->UpdateRodPose(0.01f);
+    const float Raised = Fisher->RodElevation;
+    const float LiftShown = Fisher->RodLiftShown;
+    Fisher->Escape();   // the fish lets go before the strike
+    TestTrue(TEXT("A held LMB carries the lift on into the draw-out"), Fisher->bRetrieving && Fisher->bRetrieveHeld);
+    Fisher->UpdateRodPose(0.05f);
+    TestTrue(TEXT("The rod does not snap down when the fish lets go"), Fisher->RodLiftShown > 0.5f * LiftShown && Fisher->RodElevation > 0.85f * Raised);
+    // Back to a plain waiting cast for the rest of the test.
+    Fisher->ServerRelease_Implementation();
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
+
     // A fixed line breaks beyond its existing stretch limit, regardless of a random fight profile.
     Cast();
     ALakeFish* Pike = SpawnFish(World, EFishSpecies::Pike, 3.2f, Fisher->BaitLocation());
