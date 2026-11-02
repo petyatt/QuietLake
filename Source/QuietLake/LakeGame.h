@@ -197,6 +197,12 @@ private:
     void ToggleRod();
     void ToggleView();
     void ToggleLifePanel();
+    /** 6 (development only): one game hour forward, to look at the light without waiting for the day. */
+    void CycleDevTime() { ServerDevTime(); }
+    UFUNCTION(Server, Reliable) void ServerDevTime();
+    /** 7 (development only): the next weather in a short ring, to look at rain, fog and wind. */
+    void CycleDevWeather() { ServerDevWeather(); }
+    UFUNCTION(Server, Reliable) void ServerDevWeather();
     void NextRod() { ServerNextRod(); }
     /** Q: take the next rod (only with no line out). */
     UFUNCTION(Server, Reliable) void ServerNextRod();

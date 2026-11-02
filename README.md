@@ -24,6 +24,11 @@
 
 Для простого запуска дважды нажать `Play.cmd` или ярлык «Тихое озеро» на рабочем столе (разрешение и режим окна берутся из настроек меню). Для открытия редактора — `OpenEditor.cmd`.
 
+Пока идёт разработка, два ключа не выходят в Shipping:
+- **6** — время вперёд на один игровой час (в строке состояния видно новое время);
+- **7** — следующая погода по кругу: ясно → солнечно с ветром → облачно → пасмурно → дымка → густой туман → морось → дождь → ливень (переход плавный, 5 с).
+Обработчики — `ALakeCharacter::CycleDevTime`/`CycleDevWeather` и их `ServerDevTime`/`ServerDevWeather`, привязки — `Config/DefaultInput.ini`.
+
 Сборка: `powershell -ExecutionPolicy Bypass -File Tools/Build.ps1`.
 
 Одиночный запуск: `powershell -ExecutionPolicy Bypass -File Tools/Play.ps1`.

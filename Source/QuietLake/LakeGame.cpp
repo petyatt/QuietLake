@@ -109,6 +109,11 @@ void ALakeCharacter::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("NextRod", IE_Pressed, this, &ALakeCharacter::NextRod);
     Input->BindAction("ToggleView", IE_Pressed, this, &ALakeCharacter::ToggleView);
     Input->BindAction("LifePanel", IE_Pressed, this, &ALakeCharacter::ToggleLifePanel);
+#if !UE_BUILD_SHIPPING
+    // 6 and 7 (development only): an hour forward, and the weather in turn.
+    Input->BindAction("DevTime", IE_Pressed, this, &ALakeCharacter::CycleDevTime);
+    Input->BindAction("DevWeather", IE_Pressed, this, &ALakeCharacter::CycleDevWeather);
+#endif
 }
 float ALakeCharacter::RodGrams(ERodKind Kind)
 {
@@ -123,6 +128,52 @@ void ALakeCharacter::ServerNextRod_Implementation()
     if (FishingState != EFishingState::Idle || bCharging || bRodOnStand) { Status = TEXT("Сменить удилище можно, когда снасть не в воде и удочка в руках."); return; }
     RodKind = (ERodKind)(((int32)RodKind + 1) % (int32)ERodKind::Count);
     Status = FString::Printf(TEXT("Удилище: %s, 6 м, %.0f г."), RodName(RodKind), RodGrams(RodKind));
+}
+void ALakeCharacter::ServerDevTime_Implementation()
+{
+#if !UE_BUILD_SHIPPING
+    ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
+    if (!Weather) return;
+    // Development only: one game hour forward per press, so the light can be looked at without
+    // waiting for the 48-minute game day.
+    float Hours = Weather->Hours() + 1.0f;
+    if (Hours >= 24.0f) Hours -= 24.0f;
+    Weather->SetHours(Hours);
+    const int32 Hh = FMath::FloorToInt(Hours);
+    const int32 Mm = FMath::RoundToInt((Hours - Hh) * 60.0f);
+    Status = FString::Printf(TEXT("Время: %02d:%02d — демо-ключ 6 (+1 час)"), Hh, Mm);
+#endif
+}
+void ALakeCharacter::ServerDevWeather_Implementation()
+{
+#if !UE_BUILD_SHIPPING
+    ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
+    if (!Weather) return;
+    // Development only: the same set of weathers the visuals are tuned for, in a short ring.
+    struct FDevWeather { const TCHAR* Name; float Cloud, Fog, Rain, Wind, WindYaw; };
+    static const FDevWeather List[] = {
+        { TEXT("ясно"),              0.05f, 0.05f, 0.00f, 0.05f, 60 },
+        { TEXT("солнечно, ветер"),   0.15f, 0.05f, 0.00f, 0.45f, 60 },
+        { TEXT("облачно"),           0.60f, 0.10f, 0.00f, 0.25f, 60 },
+        { TEXT("пасмурно"),          0.95f, 0.20f, 0.00f, 0.35f, 60 },
+        { TEXT("дымка"),             0.50f, 0.55f, 0.00f, 0.10f, 60 },
+        { TEXT("густой туман"),      0.50f, 0.90f, 0.00f, 0.05f, 60 },
+        { TEXT("морось"),            0.90f, 0.25f, 0.25f, 0.15f, 60 },
+        { TEXT("дождь"),             1.00f, 0.30f, 0.60f, 0.50f, 60 },
+        { TEXT("ливень"),            1.00f, 0.35f, 1.00f, 0.85f, 60 },
+    };
+    static int32 Step = 0;
+    const FDevWeather& Next = List[Step];
+    Step = (Step + 1) % UE_ARRAY_COUNT(List);
+    FLakeWeatherState State;
+    State.Cloud = Next.Cloud;
+    State.Fog = Next.Fog;
+    State.Rain = Next.Rain;
+    State.Wind = Next.Wind;
+    State.WindYaw = Next.WindYaw;
+    Weather->SetWeather(State, 5.0f);   // a short blend, so the change is visible as a front
+    Status = FString::Printf(TEXT("Погода: %s — демо-ключ 7"), Next.Name);
+#endif
 }
 void ALakeCharacter::ToggleLifePanel()
 {
