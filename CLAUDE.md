@@ -71,6 +71,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-FishPreview` | плавание: пути рыб сверху, стаи, карась у дна, засада и бросок щуки под водой, разворот стаи от всплеска, размеры, рыба у поверхности; лог `QUIET_LAKE_FISH_MOTION`, `QUIET_LAKE_FISH_SMOOTH` | `LakeLife.cpp` |
 | `-WaterPreview` | вода с берега, с мостков, сверху и из-под воды при солнце, в пасмурно, вечером и ночью, рыбы на 15/40/80 см; `-WaterQuick` — только солнце | `LakeLife.cpp` |
 | `-WeatherPreview` | погода и время суток | `LakeWeather.cpp` |
+| `-NightPreview` | сразу ночь: три кадра — берег, в сторону луны, густой туман; по 10–12 с на кадр (~50 с всего) | `LakeWeather.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
 
 Скрипты ассетов в `Tools/`: `Generate*.py` запускаются Blender (`--background --factory-startup --python …`),

@@ -121,4 +121,8 @@ private:
     UPROPERTY() TObjectPtr<class UAudioComponent> CricketSound;
     UPROPERTY() TObjectPtr<class UAudioComponent> WindSound;
     UPROPERTY() TObjectPtr<class APostProcessVolume> Post;
+    /** The weather's own unbound volume for exposure: the world already has one for the look and
+     *  one for the underwater murk (with weight 0 on land), and writing the exposure into those
+     *  either did nothing or was overridden. Higher priority than the look, lower than the murk. */
+    UPROPERTY() TObjectPtr<class APostProcessVolume> ExposureVolume;
 };

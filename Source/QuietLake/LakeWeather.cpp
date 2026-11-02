@@ -292,9 +292,11 @@ void ALakeWeather::BeginPlay()
     }
 #if !UE_BUILD_SHIPPING
     // -WeatherPreview: a fixed set of times and weathers seen from the start spot, HUD on.
-    if (HasAuthority() && FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")))
+    // -NightPreview: only the night, at once — no waiting for the day to run through.
+    const bool bNightOnly = FParse::Param(FCommandLine::Get(), TEXT("NightPreview"));
+    if (HasAuthority() && (bNightOnly || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview"))))
     {
-        struct FShot { float Hours, Cloud, Fog, Rain, Wind; const TCHAR* File; float Turn = -25, Pitch = -4, Back = 250; };
+        struct FShot { float Hours, Cloud, Fog, Rain, Wind; const TCHAR* File; float Turn = -25, Pitch = -4, Back = 250; bool bMoon = false; };
         TArray<FShot> Shots = {
             { 5.8f,  0.3f, 0.7f, 0.0f, 0.05f, TEXT("Weather_Dawn.png") },
             { 12.5f, 0.15f, 0.0f, 0.0f, 0.3f, TEXT("Weather_Noon.png") },
@@ -305,6 +307,13 @@ void ALakeWeather::BeginPlay()
             { 23.5f, 0.1f, 0.1f, 0.0f, 0.05f, TEXT("Weather_Night.png") },
             { 1.5f,  0.5f, 0.9f, 0.0f, 0.0f, TEXT("Weather_NightFog.png") },
         };
+        if (bNightOnly)
+            Shots = {
+                { 23.5f, 0.08f, 0.05f, 0.0f, 0.05f, TEXT("Night_Clear.png") },
+                // Straight at the moon: the camera turns to the lunar light, stars and the disk around it.
+                { 23.5f, 0.02f, 0.00f, 0.0f, 0.02f, TEXT("Night_Moon.png"), 0, 22, 250, true },
+                { 1.5f,  0.5f,  0.9f,  0.0f, 0.0f,  TEXT("Night_Fog.png") },
+            };
         if (FParse::Param(FCommandLine::Get(), TEXT("GrassLightPreview")))
             Shots = {
                 { 12.5f, 0.15f, 0, 0, 0.1f, TEXT("Grass_NoonAcross.png"), -60, -25, 1000 },
@@ -312,10 +321,17 @@ void ALakeWeather::BeginPlay()
                 { 18.0f, 0.15f, 0, 0, 0.1f, TEXT("Grass_LowSun.png"), 0, -25, 1000 },
                 { 15.0f, 0.95f, 0.15f, 0, 0.1f, TEXT("Grass_Overcast.png"), -60, -25, 1000 },
             };
+        // The night run does not wait for the day: the first pose is set as soon as the world exists.
+        // Ten seconds per night frame, and the camera is already in place ten seconds before the
+        // shot: the auto exposure needs that long to settle, so each frame shows what the player
+        // actually sees rather than a moment mid-adaptation.
+        const float First = bNightOnly ? 12.0f : 18.0f;
+        const float Gap = bNightOnly ? 12.0f : 9.0f;
+        const float PoseLead = bNightOnly ? 10.0f : 7.0f;
         for (int32 I = 0; I < Shots.Num(); ++I)
         {
             const FShot Shot = Shots[I];
-            const float At = 18.0f + I * 9.0f;
+            const float At = First + I * Gap;
             FTimerHandle Pose, Snap;
             GetWorldTimerManager().SetTimer(Pose, [this, Shot]
             {
@@ -332,9 +348,17 @@ void ALakeWeather::BeginPlay()
                         FVector2D Facing;
                         const FVector2D Spot = LakeMap::StartSpot(&Facing) - Facing * Shot.Back;
                         Pawn->SetActorLocation(FVector(Spot, LakeMap::Ground(Spot.X, Spot.Y) + 100));
-                        PC->SetControlRotation(FRotator(Shot.Pitch, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)) + Shot.Turn, 0));
+                        FRotator View(Shot.Pitch, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)) + Shot.Turn, 0);
+                        if (Shot.bMoon && Moon)
+                        {
+                            // The light shines from the moon, so the moon itself is the opposite way.
+                            const FVector ToMoon = -Moon->GetForwardVector();
+                            View = FRotator(FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(ToMoon.Z, -1.0f, 1.0f))),
+                                           FMath::RadiansToDegrees(FMath::Atan2(ToMoon.Y, ToMoon.X)), 0);
+                        }
+                        PC->SetControlRotation(View);
                     }
-            }, At - 7.0f, false);
+            }, At - PoseLead, false);
             GetWorldTimerManager().SetTimer(Snap, [this, Shot]
             {
                 FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Shot.File, true, false);
@@ -345,7 +369,7 @@ void ALakeWeather::BeginPlay()
             }, At, false);
         }
         FTimerHandle Exit;
-        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 18.0f + Shots.Num() * 9.0f + 2, false);
+        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, First + Shots.Num() * Gap + 1.5f, false);
     }
 #endif
 }
@@ -454,12 +478,21 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         RainLightSound = Sound(TEXT("A_RainLight"));
         RainHeavySound = Sound(TEXT("A_RainHeavy"));
         CricketSound = Sound(TEXT("A_Crickets"));
-        // Night needs a darker floor for the auto exposure than the engine default.
-        if (Post)
+        // The exposure needs its own unbound volume: the world already has the look volume and the
+        // underwater murk volume (weight 0 on land), and writing the exposure into those either did
+        // nothing or was overridden — the night lighting changes had no visible effect at all.
+        FActorSpawnParameters PostParams;
+        PostParams.ObjectFlags |= RF_Transient;
+        ExposureVolume = World->SpawnActor<APostProcessVolume>(PostParams);
+        if (ExposureVolume)
         {
-            Post->Settings.bOverride_AutoExposureMinBrightness = true;
-            Post->Settings.bOverride_AutoExposureMaxBrightness = true;
-            Post->Settings.AutoExposureMaxBrightness = 16.0f;
+            ExposureVolume->bUnbound = true;
+            ExposureVolume->BlendWeight = 1.0f;
+            ExposureVolume->Priority = 5.0f;   // above the look volume (0), below the murk (10)
+            ExposureVolume->Settings.bOverride_AutoExposureBias = true;
+            ExposureVolume->Settings.bOverride_AutoExposureMethod = true;
+            ExposureVolume->Settings.bOverride_AutoExposureSpeedUp = true;
+            ExposureVolume->Settings.bOverride_AutoExposureSpeedDown = true;
         }
         bBound = true;
     }
@@ -539,18 +572,27 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         const float ClearEV = FMath::Lerp(-3.3f, -0.1f, S(0.0f, 35.0f, Elevation));
         const float DayEV = ClearEV + 0.3f + 0.5f * FMath::Log2(SunShare) + 1.3f * FogNow;
         // Night: the adaptation is clamped to a dark target, never allowed to lift a near-black sky
-        // to daytime (that showed as a bright blue night with banding and flicker in the sky). The
-        // brightness values here are luminance clamps: a larger value means a darker exposure.
-        const float NightMin = 1.1f, NightMax = 2.1f;
-        Post->Settings.AutoExposureMinBrightness = FMath::Lerp(NightMin, DayEV - 0.25f, Day);
-        Post->Settings.AutoExposureMaxBrightness = FMath::Lerp(NightMax, DayEV + 0.25f, Day);
-        Post->Settings.AutoExposureBias = FMath::Lerp(-0.4f, 0.0f, Day);
+        // to daytime (that showed as a bright blue night with banding and flicker in the sky).
+        // Larger brightness values mean a darker exposure; the night sits several stops below the
+        // old dusk-like target, and the adaptation is fast so the switch to night does not creep up
+        // as a brightening ramp over many seconds.
+        if (ExposureVolume)
+        {
+            FPostProcessSettings& PP = ExposureVolume->Settings;
+            // The engine's own luminance range stays as it is; the night is darkened by exposure
+            // compensation, and adaptation is fast so the change to night does not show as a slow
+            // brightening ramp (the histogram settles within a few frames).
+            PP.AutoExposureMethod = AEM_Histogram;
+            PP.AutoExposureBias = FMath::Lerp(-3.2f, 0.0f, Day);
+            PP.AutoExposureSpeedUp = FMath::Lerp(8.0f, 2.0f, Day);
+            PP.AutoExposureSpeedDown = FMath::Lerp(8.0f, 1.5f, Day);
+        }
 #if !UE_BUILD_SHIPPING
         // -ExposureProbe: free adaptation and the HDR debug view, to read what the eye would choose.
         if (FParse::Param(FCommandLine::Get(), TEXT("ExposureProbe")))
         {
-            Post->Settings.AutoExposureMinBrightness = -6;
-            Post->Settings.AutoExposureMaxBrightness = 16;
+            if (ExposureVolume) ExposureVolume->Settings.AutoExposureMinBrightness = -6;
+            if (ExposureVolume) ExposureVolume->Settings.AutoExposureMaxBrightness = 16;
             static bool bShown = false;
             if (!bShown && GetWorld()->GetFirstPlayerController()) { bShown = true; GetWorld()->GetFirstPlayerController()->ConsoleCommand(TEXT("ShowFlag.VisualizeHDR 1")); }
         }
