@@ -506,7 +506,10 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
         // A free fish keeps off the bank and out of the shallows: at least a metre and a half from
         // the shore makes a target it is allowed to reach at all, and the passport's depth minimum
         // keeps it out of water too shallow for its kind.
-        const float MinShore = 150.0f;
+        // Targets keep a wider margin than the body does: a fish stops within a metre and a half
+        // of its target, and a target right on the bank strip would leave it fighting the shore push
+        // instead of settling down to feed.
+        const float MinShore = 350.0f;
         const float MinDepth = FMath::Max(45.0f, Habitat.MinDepthM * 100.0f);
         if (LakeMap::Depth(P.X, P.Y) < MinDepth || LakeMap::ShoreDistance(P.X, P.Y) < MinShore) continue;
         // Somewhere it can swim to straight: not behind a point of land or the island.

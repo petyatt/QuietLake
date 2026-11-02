@@ -665,6 +665,120 @@ void ALakeEnvironment::BeginPlay()
         }
     }
 
+    // --- bottom decoration: pebbles, sunken wood, shells and crayfish ---
+    // The bed up close would read as bare ground: stones and sunken wood scattered over the shallows
+    // and the deeper bed, with shells and a crayfish or two where the water is clear to the eye.
+    int32 PebbleCount = 0, WoodPieces = 0, BedFinds = 0;
+    {
+        auto BottomGroup = [this](const TCHAR* MeshName, float CullNear, float CullFar, bool bShadows)
+        {
+            auto* Component = NewObject<UHierarchicalInstancedStaticMeshComponent>(this);
+            Component->SetupAttachment(RootComponent);
+            Component->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Bottom/SM_%s.SM_%s"), MeshName, MeshName)));
+            Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Component->SetCullDistances(CullNear, CullFar);
+            Component->SetCastShadow(bShadows);
+            Component->bAffectDistanceFieldLighting = false;
+            Component->bAffectDynamicIndirectLighting = false;
+            Component->bAffectIndirectLightingWhileHidden = false;
+            Component->RegisterComponent();
+            AddInstanceComponent(Component);
+            return Component;
+        };
+        UHierarchicalInstancedStaticMeshComponent* Pebbles[] = {
+            BottomGroup(TEXT("Pebble_Round"), 3500, 4500, false),
+            BottomGroup(TEXT("Pebble_Asymmetric"), 3500, 4500, false),
+            BottomGroup(TEXT("Pebble_Teardrop"), 3500, 4500, false),
+            BottomGroup(TEXT("Pebble_FlatOval"), 3500, 4500, false) };
+        auto* Logs = BottomGroup(TEXT("BottomLog"), 6000, 8000, true);
+        UHierarchicalInstancedStaticMeshComponent* Branches[] = {
+            BottomGroup(TEXT("BottomBranch1"), 4500, 6000, false),
+            BottomGroup(TEXT("BottomBranch2"), 4500, 6000, false),
+            BottomGroup(TEXT("BottomBranch3"), 4500, 6000, false) };
+        auto* Shells = BottomGroup(TEXT("BottomShell"), 2500, 3500, false);
+        auto* Crayfish = BottomGroup(TEXT("BottomCrayfish"), 3000, 4000, false);
+        auto DropPebble = [&](const FVector2D& P, float SizeScale)
+        {
+            if (!LakeMap::IsWater(P.X, P.Y) || LakeMap::Depth(P.X, P.Y) < 18) return;
+            // Sunk a little into the silt: no floating stones.
+            const FVector At(P, Ground(P) - Random.FRandRange(1.0f, 4.0f));
+            const float Scale = SizeScale * Random.FRandRange(0.75f, 1.35f);
+            Add(Pebbles[PebbleCount % 4], At, FVector(Scale),
+                FRotator(Random.FRandRange(-8.0f, 8.0f), Random.FRandRange(0, 360), Random.FRandRange(-8.0f, 8.0f)));
+            ++PebbleCount;
+        };
+        // Pebble fields over the shallows all round the lake, kept clear of the fishing corridors.
+        const FBox2D Bounds = LakeMap::LakeBounds();
+        for (int32 Try = 0; Try < 1600; ++Try)
+        {
+            const FVector2D P(Random.FRandRange(Bounds.Min.X, Bounds.Max.X), Random.FRandRange(Bounds.Min.Y, Bounds.Max.Y));
+            const float D = LakeMap::Depth(P.X, P.Y);
+            if (!LakeMap::IsWater(P.X, P.Y) || D < 20 || D > 160) continue;
+            if (LakeMap::SpotAmount(P) > 0.05f) continue;
+            const int32 Count = Random.RandRange(3, 8);
+            for (int32 K = 0; K < Count; ++K)
+                DropPebble(P + FVector2D(Random.FRandRange(-60.0f, 60.0f), Random.FRandRange(-60.0f, 60.0f)), Random.FRandRange(0.8f, 1.5f));
+        }
+        // And the shallows by the camp and the pier, where the water is clear to the eye.
+        for (const LakeMap::FShorePoint& Bank : LakeMap::Shoreline())
+        {
+            const bool bCamp = FVector2D::Distance(Bank.Location, Start) < 3000;
+            const bool bPier = FVector2D::Distance(Bank.Location, PierEnd) < 2500;
+            if (!bCamp && !bPier) continue;
+            const int32 Clusters = Random.RandRange(1, bCamp ? 3 : 2);
+            for (int32 C = 0; C < Clusters; ++C)
+            {
+                const FVector2D Into = Bank.Location - Bank.Outward * Random.FRandRange(50.0f, 500.0f);
+                const int32 Stones = Random.RandRange(2, 6);
+                for (int32 K = 0; K < Stones; ++K)
+                    DropPebble(Into + FVector2D(Random.FRandRange(-50.0f, 50.0f), Random.FRandRange(-50.0f, 50.0f)), Random.FRandRange(0.8f, 1.6f));
+                if (Random.FRand() < 0.5f)
+                {
+                    const int32 ShellCount = Random.RandRange(1, 3);
+                    for (int32 S = 0; S < ShellCount; ++S)
+                    {
+                        const FVector2D Q = Into + FVector2D(Random.FRandRange(-60.0f, 60.0f), Random.FRandRange(-60.0f, 60.0f));
+                        if (!LakeMap::IsWater(Q.X, Q.Y) || LakeMap::Depth(Q.X, Q.Y) < 8) continue;
+                        Add(Shells, FVector(Q, Ground(Q) - 0.5f), FVector(Random.FRandRange(0.8f, 1.3f)),
+                            FRotator(Random.FRandRange(-10.0f, 10.0f), Random.FRandRange(0, 360), Random.FRandRange(-10.0f, 10.0f)));
+                        ++BedFinds;
+                    }
+                }
+                if (Random.FRand() < 0.10f)
+                {
+                    const FVector2D Q = Into + FVector2D(Random.FRandRange(-70.0f, 70.0f), Random.FRandRange(-70.0f, 70.0f));
+                    if (LakeMap::IsWater(Q.X, Q.Y) && LakeMap::Depth(Q.X, Q.Y) >= 15)
+                    {
+                        Add(Crayfish, FVector(Q, Ground(Q) + 1.0f), FVector(Random.FRandRange(0.9f, 1.4f)),
+                            FRotator(Random.FRandRange(-6.0f, 6.0f), Random.FRandRange(0, 360), 0.0f));
+                        ++BedFinds;
+                    }
+                }
+            }
+        }
+        // Sunken wood: a log or a branch lying along the slant of the deeper bed.
+        auto DropWood = [&](UHierarchicalInstancedStaticMeshComponent* Group, const FVector2D& P, float HalfLen, float Sink)
+        {
+            const float Yaw = Random.FRandRange(0, 360);
+            const FVector Dir = FRotator(0, Yaw, 0).Vector();
+            const float Ahead = LakeMap::Ground(P.X + Dir.X * HalfLen, P.Y + Dir.Y * HalfLen);
+            const float Behind = LakeMap::Ground(P.X - Dir.X * HalfLen, P.Y - Dir.Y * HalfLen);
+            const float Tilt = FMath::RadiansToDegrees(FMath::Atan2(Ahead - Behind, 2 * HalfLen));
+            Add(Group, FVector(P, Ground(P) - Sink), FVector(1.0f), FRotator(Tilt, Yaw, Random.FRandRange(-6.0f, 6.0f)));
+            ++WoodPieces;
+        };
+        for (int32 Try = 0; Try < 1200 && WoodPieces < 90; ++Try)
+        {
+            const FVector2D P(Random.FRandRange(Bounds.Min.X, Bounds.Max.X), Random.FRandRange(Bounds.Min.Y, Bounds.Max.Y));
+            const float D = LakeMap::Depth(P.X, P.Y);
+            if (!LakeMap::IsWater(P.X, P.Y) || D < 70 || D > 300) continue;
+            if (LakeMap::SpotAmount(P) > 0.05f) continue;
+            if (Random.FRand() < 0.30f) DropWood(Logs, P, 110.0f, 18.0f);
+            else DropWood(Branches[Random.RandRange(0, 2)], P, 45.0f, 3.0f);
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BOTTOM pebbles=%d wood=%d finds=%d"), PebbleCount, WoodPieces, BedFinds);
+    }
+
     // Grass (Nanite, swaying in the wind): sedge along the damp bank; dense waist-high grass and
     // meadowsweet in stretches along the open banks and the forest edge; short and tall grass with
     // chamomile and buttercups in the meadows; sparse under the trees; trampled at the camp.

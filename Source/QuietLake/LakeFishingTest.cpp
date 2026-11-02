@@ -2043,6 +2043,13 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
 
     // 5. A crucian in the lilies roots for silt fauna, eats its patch down and moves on.
     {
+        // The weather the earlier tests left behind must not decide this scenario: pin a calm clear
+        // day, so the food the crucian finds is the same in a full-suite run as when run alone.
+        FLakeWeatherState Pinned;
+        Pinned.Cloud = 0.2f;
+        Pinned.Fog = 0.25f;
+        Pinned.Wind = 0.05f;
+        Weather->SetWeatherNow(Pinned);
         constexpr int32 Seed = -646273053; // Decision stream from the failing full-suite run.
         TestTrue(TEXT("Noon found"), SetSun(45, 70) > 0);
         // Fresh food and fixed decisions: unrelated actor allocations must not pick this scenario.
@@ -2503,8 +2510,22 @@ bool FLakeWaterTest::RunTest(const FString& Parameters)
                 if (!LakeMap::IsWater(X, Y)) continue;
                 const float D = LakeMap::Depth(X, Y), W = LakeWater::WeedAt(X, Y);
                 if (D > Most) { Most = D; Deep = FVector2D(X, Y); }
-                if (W > MostWeed && D > 70) { MostWeed = W; Lily = FVector2D(X, Y); }
+                // Free fish keep at least a metre and a half off the bank now, so the weed bed
+                // they are sent to has to lie outside that strip, or the crucian would be pushed
+                // out of it instead of rooting there.
+                if (W > MostWeed && D > 70 && LakeMap::ShoreDistance(X, Y) > 220) { MostWeed = W; Lily = FVector2D(X, Y); }
             }
+        if (MostWeed <= 0)
+        {
+            // No weed bed outside the bank strip: fall back to the densest weeds anywhere.
+            for (float Y = B.Min.Y; Y < B.Max.Y; Y += 500)
+                for (float X = B.Min.X; X < B.Max.X; X += 500)
+                {
+                    if (!LakeMap::IsWater(X, Y)) continue;
+                    const float D = LakeMap::Depth(X, Y), W = LakeWater::WeedAt(X, Y);
+                    if (W > MostWeed && D > 70) { MostWeed = W; Lily = FVector2D(X, Y); }
+                }
+        }
     }
     const float DeepM = LakeMap::Depth(Deep.X, Deep.Y) / 100, LilyM = LakeMap::Depth(Lily.X, Lily.Y) / 100;
     FFishConditions Hot;   // a steady calm hot afternoon
