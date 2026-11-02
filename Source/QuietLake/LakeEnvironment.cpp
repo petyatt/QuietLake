@@ -1298,13 +1298,22 @@ void ALakeEnvironment::BeginPlay()
                 }
         }
         FTimerHandle CameraTimer, CaptureTimer, ExitTimer;
-        GetWorldTimerManager().SetTimer(CameraTimer, [this, Eye, View]
+        GetWorldTimerManager().SetTimer(CameraTimer, [this, Eye, View, SceneView]() mutable
         {
             if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
             {
                 FLakeWeatherState Clear;
                 Clear.Cloud = 0.3f; Clear.Fog = 0; Clear.Rain = 0; Clear.Wind = 0.1f; Clear.WindYaw = 40;
                 Weather->SetWeatherNow(Clear); Weather->SetHours(9.5f);
+                if (SceneView.StartsWith(TEXT("Night")))
+                {
+                    Clear.Cloud = SceneView == TEXT("NightCloudy") ? 1.0f : 0.05f;
+                    Weather->SetWeatherNow(Clear); Weather->SetHours(0.0f);
+                    const FVector SunDir = Weather->SunDirection();
+                    const FVector MoonDir(-SunDir.X, -SunDir.Y, FMath::Max(0.3f, -SunDir.Z * 0.8f + 0.2f));
+                    View = MoonDir.Rotation();
+                    View.Pitch -= 12;
+                }
             }
             if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
             {

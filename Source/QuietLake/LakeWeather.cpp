@@ -15,6 +15,8 @@
 #include "Components/VolumetricCloudComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/AudioComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "Camera/PlayerCameraManager.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/PlayerController.h"
@@ -406,6 +408,21 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         Moon->SetLightColor(FLinearColor(0.62f, 0.72f, 1.0f));
         Moon->SetLightSourceAngle(0.5f);
         Moon->SetCastShadows(true);
+        if (UMaterialInterface* SkyBase = FParse::Param(FCommandLine::Get(), TEXT("NoNightSky")) ? nullptr : LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Weather/M_NightSky.M_NightSky")))
+        {
+            NightSky = NewObject<UStaticMeshComponent>(this);
+            NightSky->SetupAttachment(RootComponent);
+            NightSky->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")));
+            NightSky->SetWorldScale3D(FVector(9000));
+            NightSky->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            NightSky->SetCastShadow(false);
+            NightSky->SetAffectDynamicIndirectLighting(false);
+            NightSky->SetAffectDistanceFieldLighting(false);
+            NightSky->bVisibleInRayTracing = false;
+            NightSkyMaterial = UMaterialInstanceDynamic::Create(SkyBase, this);
+            NightSky->SetMaterial(0, NightSkyMaterial);
+            NightSky->RegisterComponent();
+        }
         if (Clouds)
         {
             if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst")))
@@ -454,6 +471,15 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
     const float Day = S(-6.0f, 4.0f, Elevation);
     const float Night = 1 - S(-12.0f, -2.0f, Elevation);
     const float Overcast = FMath::Max(W.Cloud, W.Rain);
+    if (NightSkyMaterial && NightSky)
+    {
+        const FVector ToMoon = FVector(-ToSun.X, -ToSun.Y, FMath::Max(0.3f, -ToSun.Z * 0.8f + 0.2f)).GetSafeNormal();
+        NightSkyMaterial->SetVectorParameterValue(TEXT("MoonDirection"), FLinearColor(ToMoon.X, ToMoon.Y, ToMoon.Z));
+        NightSkyMaterial->SetScalarParameterValue(TEXT("Visibility"), Night * (1 - S(0.35f, 0.95f, Overcast)) * (1 - S(0.2f, 0.85f, FogNow)));
+        NightSky->SetVisibility(Night > 0.001f);
+        if (APlayerController* PC = World->GetFirstPlayerController(); PC && PC->PlayerCameraManager)
+            NightSky->SetWorldLocation(PC->PlayerCameraManager->GetCameraLocation());
+    }
 
     // Changes are applied in small steps only: every update of a light, the sky or the fog throws
     // away cached shadow pages and sky captures, which is expensive. The sun moves 0.125 degrees a

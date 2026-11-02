@@ -107,6 +107,8 @@ private:
     float Wetness = 0;
     UPROPERTY() TObjectPtr<class UDirectionalLightComponent> Sun;
     UPROPERTY() TObjectPtr<class UDirectionalLightComponent> Moon;
+    UPROPERTY() TObjectPtr<class UStaticMeshComponent> NightSky;
+    UPROPERTY() TObjectPtr<class UMaterialInstanceDynamic> NightSkyMaterial;
     UPROPERTY() TObjectPtr<class USkyAtmosphereComponent> Atmosphere;
     UPROPERTY() TObjectPtr<class USkyLightComponent> SkyLight;
     UPROPERTY() TObjectPtr<class UExponentialHeightFogComponent> Fog;
