@@ -52,6 +52,63 @@ void ALakeCharacter::RunRodDiagnostics(float DeltaSeconds)
 
 void ALakeCharacter::RunPreviews()
 {
+    // -FisherPreview: the angler's clothes from the front, the side and the back, close up.
+    if (FParse::Param(FCommandLine::Get(), TEXT("FisherPreview")) && GetNetMode() == NM_Standalone)
+    {
+        struct FShot { float YawOffset, Distance, Height; const TCHAR* File; };
+        static const FShot Shots[] = {
+            { 0.0f, 520.0f, 25.0f, TEXT("Fisher_Front.png") },
+            { 90.0f, 520.0f, 25.0f, TEXT("Fisher_Side.png") },
+            { 180.0f, 520.0f, 25.0f, TEXT("Fisher_Back.png") },
+        };
+        TWeakObjectPtr<ACameraActor> Cam;
+        APlayerController* PC = Cast<APlayerController>(GetController());
+        if (PC && PC->MyHUD) PC->MyHUD->bShowHUD = false;
+        // A third-person body: the head and the cap are hidden only in the first person.
+        bThirdPerson = true;
+        // Neutral light for judging the colours: clear noon instead of the dawn the game starts in.
+        if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+        {
+            FLakeWeatherState Clear;
+            Clear.Cloud = 0.15f;
+            Clear.Fog = 0.10f;
+            Clear.Rain = 0.0f;
+            Clear.Wind = 0.10f;
+            Weather->SetWeatherNow(Clear);
+            Weather->SetHours(13.0f);
+        }
+        for (int32 I = 0; I < UE_ARRAY_COUNT(Shots); ++I)
+        {
+            const FShot Shot = Shots[I];
+            const float At = 14.0f + I * 2.5f;
+            FTimerHandle Pose, Snap;
+            GetWorldTimerManager().SetTimer(Pose, [this, Shot, &Cam, PC]
+            {
+                const FVector Target = GetActorLocation() + FVector(0, 0, 35);
+                const FVector Dir = FRotator(0, GetActorRotation().Yaw + Shot.YawOffset, 0).Vector();
+                const FVector From = Target + Dir * Shot.Distance + FVector(0, 0, Shot.Height);
+                ACameraActor* Camera = Cam.Get();
+                if (!Camera)
+                {
+                    Camera = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+                    Cam = Camera;
+                }
+                if (Camera)
+                {
+                    Camera->SetActorLocationAndRotation(From, (Target - From).Rotation());
+                    Camera->GetCameraComponent()->SetFieldOfView(42);
+                    if (PC) PC->SetViewTarget(Camera);
+                }
+            }, At - 1.0f, false);
+            GetWorldTimerManager().SetTimer(Snap, [Shot]
+            {
+                FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Shot.File, true, false);
+            }, At, false);
+        }
+        FTimerHandle Exit;
+        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 14.0f + UE_ARRAY_COUNT(Shots) * 2.5f + 1.0f, false);
+        return;
+    }
     // -LakePreview: after the environment shots, film the angler: idle, bait close-up,
     // backswing, the cast, the float on the water and the rod on its stand.
     if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) && GetNetMode() == NM_Standalone)

@@ -197,6 +197,11 @@ private:
     void ToggleRod();
     void ToggleView();
     void ToggleLifePanel();
+    /** M: the whole lake over the screen (the minimap is always in the top-right corner). */
+    void ToggleMap();
+    /** The angler's own clothes over the hidden mannequin: boots, trousers, sweater, jacket, hands,
+     *  head and cap. The mannequin keeps animating (it drives the bones the parts hang on). */
+    void CreateFisherOutfit();
     /** 6 (development only): one game hour forward, to look at the light without waiting for the day. */
     void CycleDevTime() { ServerDevTime(); }
     UFUNCTION(Server, Reliable) void ServerDevTime();
@@ -303,6 +308,9 @@ private:
     TWeakObjectPtr<ALakeFish> BaitFish;     // fish testing or holding the bait
     TWeakObjectPtr<ALakeFish> HookedFish;
     UPROPERTY() TObjectPtr<class UCameraComponent> FishingCamera;
+    /** The clothes and body parts, and the ones hidden in the first person (head, cap, neck). */
+    UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> OutfitParts;
+    UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> OutfitHead;
 };
 
 UCLASS()

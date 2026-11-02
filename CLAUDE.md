@@ -72,6 +72,8 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-WaterPreview` | вода с берега, с мостков, сверху и из-под воды при солнце, в пасмурно, вечером и ночью, рыбы на 15/40/80 см; `-WaterQuick` — только солнце | `LakeLife.cpp` |
 | `-WeatherPreview` | погода и время суток | `LakeWeather.cpp` |
 | `-NightPreview` | сразу ночь: три кадра — берег, в сторону луны, густой туман; по 10–12 с на кадр (~50 с всего) | `LakeWeather.cpp` |
+| `-MapPreview` | миникарта и большая карта озера (M): `Saved/Map_Minimap.png`, `Saved/Map_Full.png` | `LakeHUD.cpp` |
+| `-FisherPreview` | рыбак в своей одежде: вид спереди, сбоку и сзади (`Saved/Fisher_*.png`) | `LakePreviews.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
 
 Скрипты ассетов в `Tools/`: `Generate*.py` запускаются Blender (`--background --factory-startup --python …`),
@@ -81,6 +83,9 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 ## Код (`Source/QuietLake`)
 
 - `LakeGame.h/.cpp` — рыбак `ALakeCharacter` (заброс, поклёвка, подсечка, вываживание, вынимание рыбы,
+  и его одежда: `CreateFisherOutfit` ставит сапоги, штаны, кофту, куртку, руки и голову частями на кости
+  манекена, сам манекен скрыт; материалы — `Content/Characters/Fisher`, `Tools/CreateFisherMaterials.py`,
+  проверка — `-FisherPreview`;
   поза удилища), `ALakeEnvironment` (объявление), `ALakeGameMode`.
 - `LakePreviews.cpp` — сценарии `-LakePreview`, `-BitePreview`, `-LandPreview`.
 - `LakeHUD.h/.cpp` — экран: карточка статуса, полосы натяжения и заброса, погода, панель F3.

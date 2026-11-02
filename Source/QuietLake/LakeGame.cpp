@@ -38,6 +38,8 @@ static TAutoConsoleVariable<float> CVarCastCameraMax(TEXT("lake.CastCameraMax"),
 #include "GameFramework/GameStateBase.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/StaticMesh.h"
+#include "ReferenceSkeleton.h"
 #include "Camera/CameraActor.h"
 #include "Misc/CommandLine.h"
 #include "UnrealClient.h"
@@ -72,9 +74,105 @@ ALakeCharacter::ALakeCharacter()
     Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     Body->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 }
+void ALakeCharacter::CreateFisherOutfit()
+{
+    // The mannequin stays as the animated skeleton: its bones carry the angler's own boots, trousers,
+    // sweater, jacket, hands and head as static-mesh parts, so the C++ fisher animation and the hand
+    // IK keep working while the body itself is hidden.
+    USkeletalMeshComponent* Body = GetMesh();
+    USkeletalMesh* BodyMesh = Body ? Body->GetSkeletalMeshAsset() : nullptr;
+    if (!BodyMesh || !BodyMesh->GetSkeleton()) return;
+    const FReferenceSkeleton& Ref = BodyMesh->GetSkeleton()->GetReferenceSkeleton();
+    UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+    UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+    UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+    auto Material = [](const TCHAR* Name)
+    {
+        return LoadObject<UMaterialInterface>(nullptr, *FString::Printf(TEXT("/Game/Characters/Fisher/%s.%s"), Name, Name));
+    };
+    UMaterialInterface* Boots = Material(TEXT("M_Fisher_Boots"));
+    UMaterialInterface* Pants = Material(TEXT("M_Fisher_Pants"));
+    UMaterialInterface* Sweater = Material(TEXT("M_Fisher_Sweater"));
+    UMaterialInterface* Jacket = Material(TEXT("M_Fisher_Jacket"));
+    UMaterialInterface* Skin = Material(TEXT("M_Fisher_Skin"));
+    UMaterialInterface* Hat = Material(TEXT("M_Fisher_Hat"));
+    if (!Cube) return;
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISHER_MATERIALS boots=%s pants=%s sweater=%s jacket=%s skin=%s hat=%s"),
+        *GetNameSafe(Boots), *GetNameSafe(Pants), *GetNameSafe(Sweater), *GetNameSafe(Jacket), *GetNameSafe(Skin), *GetNameSafe(Hat));
+
+    // A part hangs on a bone: Centre and Size are in the bone's own space, in centimetres
+    // (the engine basic shapes are 100 cm, hence the /100 scale).
+    auto Add = [&](FName Bone, const FVector& Centre, const FVector& Size, UStaticMesh* Shape,
+                   UMaterialInterface* Mat, bool bHead, const FQuat& Rot = FQuat::Identity) -> UStaticMeshComponent*
+    {
+        if (Ref.FindBoneIndex(Bone) < 0 || !Shape) return nullptr;
+        auto* Part = NewObject<UStaticMeshComponent>(this);
+        Part->SetupAttachment(Body, Bone);
+        Part->SetStaticMesh(Shape);
+        Part->SetMaterial(0, Mat);
+        Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        Part->SetCastShadow(true);
+        Part->SetRelativeLocation(Centre);
+        Part->SetRelativeRotation(Rot);
+        Part->SetRelativeScale3D(Size / 100.0f);
+        Part->RegisterComponent();
+        OutfitParts.Add(Part);
+        if (bHead) OutfitHead.Add(Part);
+        return Part;
+    };
+    // A cylinder along a bone segment: from bone head (From) to the child joint (To), both as a
+    // fraction of the segment, so boots can cover the lower half of the calf.
+    auto Segment = [&](FName Bone, FName Child, float From, float To, float Radius, UMaterialInterface* Mat, bool bHead = false)
+    {
+        const int32 ChildIndex = Ref.FindBoneIndex(Child);
+        if (Ref.FindBoneIndex(Bone) < 0 || ChildIndex < 0 || !Cylinder) return;
+        const FVector Col = Ref.GetRefBonePose()[ChildIndex].GetLocation();
+        const float Len = Col.Size();
+        if (Len < 1.0f) return;
+        const FVector Dir = Col / Len;
+        Add(Bone, Dir * (Len * (From + To) * 0.5f), FVector(Radius * 2.0f, Radius * 2.0f, Len * FMath::Max(To - From, 0.02f)),
+            Cylinder, Mat, bHead, FRotationMatrix::MakeFromZ(Dir).ToQuat());
+    };
+    // Along the bone's X axis (in the mannequin the bones point along X): for the head and the cap.
+    const FQuat AlongX = FRotationMatrix::MakeFromZ(FVector(1, 0, 0)).ToQuat();
+
+    // Legs: canvas trousers, rubber boots over the lower calf, a flat foot.
+    Segment(TEXT("thigh_l"), TEXT("calf_l"), 0.0f, 1.0f, 9.0f, Pants);
+    Segment(TEXT("thigh_r"), TEXT("calf_r"), 0.0f, 1.0f, 9.0f, Pants);
+    Segment(TEXT("calf_l"), TEXT("foot_l"), 0.0f, 0.58f, 7.6f, Pants);
+    Segment(TEXT("calf_r"), TEXT("foot_r"), 0.0f, 0.58f, 7.6f, Pants);
+    Segment(TEXT("calf_l"), TEXT("foot_l"), 0.42f, 1.06f, 8.4f, Boots);
+    Segment(TEXT("calf_r"), TEXT("foot_r"), 0.42f, 1.06f, 8.4f, Boots);
+    Add(TEXT("foot_l"), FVector(7, 0, -1), FVector(9, 9, 24), Cube, Boots, false, AlongX);
+    Add(TEXT("foot_r"), FVector(7, 0, -1), FVector(9, 9, 24), Cube, Boots, false, AlongX);
+
+    // Hips and torso: sweater under an open canvass jacket.
+    Add(TEXT("pelvis"), FVector(7, 0, 0), FVector(24, 32, 24), Cube, Pants, false);
+    Add(TEXT("spine_03"), FVector(2, 0, 0), FVector(30, 30, 25), Cube, Sweater, false);
+    Add(TEXT("spine_03"), FVector(13, 0, 0), FVector(26, 34, 29), Cube, Jacket, false);
+    Add(TEXT("spine_05"), FVector(6, 0, 0), FVector(14, 26, 24), Cube, Jacket, false);   // collar of the jacket
+    // Sleeves: jacket over the sweater.
+    Segment(TEXT("upperarm_l"), TEXT("lowerarm_l"), 0.0f, 1.0f, 6.6f, Jacket);
+    Segment(TEXT("upperarm_r"), TEXT("lowerarm_r"), 0.0f, 1.0f, 6.6f, Jacket);
+    Segment(TEXT("lowerarm_l"), TEXT("hand_l"), 0.0f, 1.0f, 5.4f, Jacket);
+    Segment(TEXT("lowerarm_r"), TEXT("hand_r"), 0.0f, 1.0f, 5.4f, Jacket);
+
+    // Hands, neck and head with a cloth cap: hidden in the first person, where the camera is the eyes.
+    Add(TEXT("hand_l"), FVector(5, 0, 0), FVector(9, 9, 9), Sphere, Skin, false);
+    Add(TEXT("hand_r"), FVector(5, 0, 0), FVector(9, 9, 9), Sphere, Skin, false);
+    Segment(TEXT("neck_01"), TEXT("head"), 0.0f, 0.95f, 5.0f, Skin, true);
+    Add(TEXT("head"), FVector(9, 0, 0), FVector(21, 19, 21), Sphere, Skin, true);
+    Add(TEXT("head"), FVector(17, 0, 0), FVector(20, 20, 7), Cylinder, Hat, true, AlongX);
+    Add(TEXT("head"), FVector(13.5f, 0, 0), FVector(27, 27, 2.0f), Cylinder, Hat, true, AlongX);   // cap brim
+
+    // The mannequin itself only drives the bones now.
+    Body->SetVisibility(false, false);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISHER outfit parts %d"), OutfitParts.Num());
+}
 void ALakeCharacter::BeginPlay()
 {
     Super::BeginPlay();
+    CreateFisherOutfit();
     // The rod is simulated on every machine, a dedicated server included: the server takes where a
     // cast lands and when the hand catches the rig from its own run of it.
     RodVisual = GetWorld()->SpawnActor<ALakeRod>();
@@ -109,6 +207,7 @@ void ALakeCharacter::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("NextRod", IE_Pressed, this, &ALakeCharacter::NextRod);
     Input->BindAction("ToggleView", IE_Pressed, this, &ALakeCharacter::ToggleView);
     Input->BindAction("LifePanel", IE_Pressed, this, &ALakeCharacter::ToggleLifePanel);
+    Input->BindAction("Map", IE_Pressed, this, &ALakeCharacter::ToggleMap);
 #if !UE_BUILD_SHIPPING
     // 6 and 7 (development only): an hour forward, and the weather in turn.
     Input->BindAction("DevTime", IE_Pressed, this, &ALakeCharacter::CycleDevTime);
@@ -179,6 +278,11 @@ void ALakeCharacter::ToggleLifePanel()
 {
     if (const APlayerController* PC = Cast<APlayerController>(GetController()))
         if (ALakeHUD* HUD = Cast<ALakeHUD>(PC->GetHUD())) HUD->bShowLife = !HUD->bShowLife;
+}
+void ALakeCharacter::ToggleMap()
+{
+    if (const APlayerController* PC = Cast<APlayerController>(GetController()))
+        if (ALakeHUD* HUD = Cast<ALakeHUD>(PC->GetHUD())) HUD->bShowMap = !HUD->bShowMap;
 }
 // CharacterMovement keeps normal walking and network prediction in every fishing phase.
 void ALakeCharacter::Forward(float Value) { AddMovementInput(GetActorForwardVector(), Value); }
@@ -938,6 +1042,9 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     {
         if (bThirdPerson) GetMesh()->UnHideBoneByName(TEXT("neck_01"));
         else GetMesh()->HideBoneByName(TEXT("neck_01"), PBO_None);
+    // The angler's own head and cap are hidden in the first person as well: the camera is the eyes.
+    for (UStaticMeshComponent* Part : OutfitHead)
+        if (Part) Part->SetVisibility(bThirdPerson);
     }
 }
 void ALakeCharacter::FinishFishing(const FString& Message)
