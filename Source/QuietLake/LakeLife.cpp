@@ -882,7 +882,8 @@ void ALakeLife::LogFood()
         double Depth = 0, Column = 0, Bank = 0, Water = 0;
         double AllDepth = 0, AllColumn = 0;
         double NearShore = 1e9, Shallowest = 1e9, AllFear = 0;
-        double NearPike = 1e9, NearPikeFear = 0;
+        double NearPike = 1e9, NearPikeFear = 0, CalmNear = 1e9;
+        const bool bFryHunter = LakeFish::Info((EFishSpecies)Sp).Feeding.bHuntsFry;
         for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
         {
             const ALakeFish* Fish = Weak.Get();
@@ -899,6 +900,9 @@ void ALakeLife::LogFood()
                 if (ToPike < NearPike) { NearPike = ToPike; NearPikeFear = Fish->FearNow(); }
             }
             Shallowest = FMath::Min(Shallowest, LakeMap::Depth(P.X, P.Y) / 100);
+            // For a fry hunter the panel also shows how close it comes when it is NOT chasing fry.
+            if (bFryHunter && Fish->PreyFry < 0 && Fish->FeedOn != EFishFood::Fry && Fish->StrikeEnd <= 0.0f)
+                CalmNear = FMath::Min(CalmNear, LakeMap::ShoreDistance(P.X, P.Y) / 100);
             AllDepth += (LakeFish::SurfaceZ - P.Z) / 100;
             AllColumn += FMath::Clamp((LakeFish::SurfaceZ - P.Z) / FMath::Max(1.0f, LakeFish::SurfaceZ - ALakeFish::BottomZ(P.X, P.Y)), 0.0f, 1.0f);
             if (Fish->GetGoal() != EFishGoal::Feed) continue;
@@ -914,6 +918,7 @@ void ALakeLife::LogFood()
         if (Feeding) Line += FString::Printf(TEXT(", at %.1f m (%.2f of the depth)"), Depth / Feeding, Column / Feeding);
         Line += FString::Printf(TEXT("; all %d: %.1f m from the bank over %.1f m of water (closest %.1f m, shallowest %.1f m), at %.2f m (%.2f of the depth), fear %.2f; nearest pike %.1f m, its fear %.2f"),
             All, Bank / All, Water / All, NearShore, Shallowest, AllDepth / All, AllColumn / All, AllFear / All, NearPike, NearPikeFear);
+        if (bFryHunter) Line += FString::Printf(TEXT("; without a fry chase closest %.1f m"), CalmNear);
     }
     // Fishing pressure and the fish that have learnt the hook.
     if (!Pressure.IsEmpty())

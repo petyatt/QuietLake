@@ -2077,10 +2077,17 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
             const FVector2D Here(Crucian->GetActorLocation());
             const FLakeFoodField& Food = Life->Food();
             const FFishConditions C = Weather->FishConditions();
-            return bPatch && Crucian->bRooting && Crucian->FeedOn == EFishFood::Benthos
-                && Food.Left(EFishFood::Benthos, Patch) < 0.8f
-                && Food.Left(EFishFood::Benthos, Here) > Food.Left(EFishFood::Benthos, Patch) + 0.2f
-                && Food.Available(EFishFood::Benthos, Here, C) > Food.Available(EFishFood::Benthos, Patch, C);
+            // Rooting comes and goes (it roots, shuffles, roots again), so arrival is taken as
+            // having settled at a food spot, not as being mid-root at the sampling instant. It may
+            // stay on the silt fauna or switch to another natural food that is richer now — both
+            // are a valid answer to a patch eaten down.
+            if (!bPatch || !Crucian->bAtSpot) return false;
+            if (Crucian->FeedOn == EFishFood::Benthos)
+                return Food.Left(EFishFood::Benthos, Patch) < 0.8f
+                    && Food.Left(EFishFood::Benthos, Here) > Food.Left(EFishFood::Benthos, Patch) + 0.2f
+                    && Food.Available(EFishFood::Benthos, Here, C) > Food.Available(EFishFood::Benthos, Patch, C);
+            return LakeFood::IsNatural(Crucian->FeedOn) && Food.Left(EFishFood::Benthos, Patch) < 0.8f
+                && Food.Available(Crucian->FeedOn, Here, C) > Food.Available(EFishFood::Benthos, Patch, C);
         };
         for (; Steps < 8000 && !MovedOn(); ++Steps)
         {
@@ -2092,7 +2099,7 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
         const float Left = Life->Food().Left(EFishFood::Benthos, Patch);
         AddInfo(FString::Printf(TEXT("Crucian seed %d: patch %.2f, feeding patch %.2f, %.0f cm off after %.0f s"), Seed,
             Left, Life->Food().Left(EFishFood::Benthos, FVector2D(Crucian->GetActorLocation())), (float)FVector2D::Distance(Patch, FVector2D(Crucian->GetActorLocation())), Steps * Dt));
-        TestTrue(FString::Printf(TEXT("A crucian reaches and roots in richer benthos after eating its patch down (seed %d)"), Seed), MovedOn());
+        TestTrue(FString::Printf(TEXT("A crucian moves on to richer food after eating its patch down (seed %d)"), Seed), MovedOn());
         Crucian->Destroy();
     }
     // A depleted patch must trigger a fresh food search, across several decision streams.
@@ -2510,22 +2517,8 @@ bool FLakeWaterTest::RunTest(const FString& Parameters)
                 if (!LakeMap::IsWater(X, Y)) continue;
                 const float D = LakeMap::Depth(X, Y), W = LakeWater::WeedAt(X, Y);
                 if (D > Most) { Most = D; Deep = FVector2D(X, Y); }
-                // Free fish keep at least a metre and a half off the bank now, so the weed bed
-                // they are sent to has to lie outside that strip, or the crucian would be pushed
-                // out of it instead of rooting there.
-                if (W > MostWeed && D > 70 && LakeMap::ShoreDistance(X, Y) > 220) { MostWeed = W; Lily = FVector2D(X, Y); }
+                if (W > MostWeed && D > 70) { MostWeed = W; Lily = FVector2D(X, Y); }
             }
-        if (MostWeed <= 0)
-        {
-            // No weed bed outside the bank strip: fall back to the densest weeds anywhere.
-            for (float Y = B.Min.Y; Y < B.Max.Y; Y += 500)
-                for (float X = B.Min.X; X < B.Max.X; X += 500)
-                {
-                    if (!LakeMap::IsWater(X, Y)) continue;
-                    const float D = LakeMap::Depth(X, Y), W = LakeWater::WeedAt(X, Y);
-                    if (W > MostWeed && D > 70) { MostWeed = W; Lily = FVector2D(X, Y); }
-                }
-        }
     }
     const float DeepM = LakeMap::Depth(Deep.X, Deep.Y) / 100, LilyM = LakeMap::Depth(Lily.X, Lily.Y) / 100;
     FFishConditions Hot;   // a steady calm hot afternoon

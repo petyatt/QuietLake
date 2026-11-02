@@ -503,15 +503,21 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
     {
         const FVector2D P = Range > 0 ? Near + FVector2D(Random.FRandRange(-Range, Range), Random.FRandRange(-Range, Range))
                                       : FVector2D(Random.FRandRange(Lake.Min.X, Lake.Max.X), Random.FRandRange(Lake.Min.Y, Lake.Max.Y));
-        // A free fish keeps off the bank and out of the shallows: at least a metre and a half from
-        // the shore makes a target it is allowed to reach at all, and the passport's depth minimum
-        // keeps it out of water too shallow for its kind.
-        // Targets keep a wider margin than the body does: a fish stops within a metre and a half
-        // of its target, and a target right on the bank strip would leave it fighting the shore push
-        // instead of settling down to feed.
-        const float MinShore = 350.0f;
-        const float MinDepth = FMath::Max(45.0f, Habitat.MinDepthM * 100.0f);
-        if (LakeMap::Depth(P.X, P.Y) < MinDepth || LakeMap::ShoreDistance(P.X, P.Y) < MinShore) continue;
+        // Fish dislike the shallows: a target in nearly dry water is not worth swimming to, and the
+        // shallower the water the less it is drawn there (an ambusher still takes the weed edge, and
+        // a feeding one will risk a shallow patch). The fry shoals are not ALakeFish and keep to the
+        // shallows by design.
+        const float Depth = LakeMap::Depth(P.X, P.Y);
+        if (Depth < 25.0f) continue;
+        const float MinDepth = FMath::Max(20.0f, Habitat.MinDepthM * 100.0f);
+        float Comfort = FMath::Clamp(0.35f + 0.65f * Depth / MinDepth, 0.35f, 1.0f);
+        const float ShoreSpan = Info(Species).Feeding.bHuntsFry ? 260.0f : 150.0f;
+        Comfort *= FMath::Clamp(LakeMap::ShoreDistance(P.X, P.Y) / ShoreSpan, 0.3f, 1.0f);
+        if (Habitat.bAmbush) Comfort = FMath::Max(Comfort, 0.8f);
+        // A feeding fish will still go for a rich patch in the shallows — reluctantly, and only
+        // partly: food outweighs comfort. A fry hunter (a perch) keeps its distance even then.
+        if (Goal == EFishGoal::Feed && !Info(Species).Feeding.bHuntsFry)
+            Comfort = FMath::Lerp(1.0f, Comfort, 0.15f);
         // Somewhere it can swim to straight: not behind a point of land or the island.
         if (Range > 0)
         {
@@ -524,15 +530,13 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
             }
             if (!bOpen) continue;
         }
-        const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions) * Random.FRandRange(0.6f, 1.0f) * (Weigh ? Weigh(P) : 1.0f);
+        const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions) * Comfort * Random.FRandRange(0.6f, 1.0f) * (Weigh ? Weigh(P) : 1.0f);
         if (Score > BestScore) { BestScore = Score; Best = P; }
     }
     if (BestScore < 0)
     {
-        // No allowed spot nearby (a school pressed against the bank): head for the open water.
-        const float MinShore = 150.0f;
-        const float MinDepth = FMath::Max(45.0f, Habitat.MinDepthM * 100.0f);
-        if (LakeMap::Depth(Best.X, Best.Y) < MinDepth || LakeMap::ShoreDistance(Best.X, Best.Y) < MinShore)
+        // No candidate passed at all: a spot in nearly dry water is no target, head for open water.
+        if (!LakeMap::IsWater(Best.X, Best.Y) || LakeMap::Depth(Best.X, Best.Y) < 25.0f)
             Best = LakeMap::Centre;
     }
     const float Bottom = ALakeFish::BottomZ(Best.X, Best.Y);
@@ -1025,22 +1029,37 @@ FVector ALakeFish::SteerBounds() const
     if (State == EState::Hooked)
     {
         // A hooked fish is at the end of the line: the angler may lead it into the shallows.
-        if (Shore < 120 || Depth < 25)
-            Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 40 * FMath::Max(1.0f, (120 - Shore) / 60);
+        if (Shore < 60 || Depth < 20)
+            Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 30 * FMath::Max(1.0f, (60 - Shore) / 60);
     }
     else
     {
-        // A free fish keeps off the bank: its body stays at least a metre and a half from the shore,
-        // and it does not go into water shallower than its passport asks for (the fry shoals are a
-        // separate thing and stay in the shallows by design).
-        const float MinShore = 150.0f;
-        const float MinDepth = FMath::Max(30.0f, S.Habitat.MinDepthM * 100.0f);
-        if (Shore < MinShore || Depth < MinDepth)
+        // Fish are reluctant to go into the shallows rather than barred from them: the shallower the
+        // water for its kind, the stronger the pull back to deeper water. The reluctance is halved
+        // while feeding (a rich patch just off the reeds still draws a fish in for a while), and an
+        // ambush predator has its lie at the weed edge. The fry shoals are a separate thing and keep
+        // to the shallows by design. Only the very edge is a hard turn: a fish does not dry out.
+        const float MinDepth = FMath::Max(25.0f, S.Habitat.MinDepthM * 100.0f);
+        const float Shallow = FMath::Clamp((MinDepth - Depth) / FMath::Max(40.0f, MinDepth), 0.0f, 1.0f);
+        const float Edge = FMath::Clamp((50.0f - Shore) / 50.0f, 0.0f, 1.0f);
+        float Reluctance = FMath::Max(0.8f * Shallow, Edge);
+        if (Goal == EFishGoal::Feed) Reluctance *= 0.5f;
+        if (S.Habitat.bAmbush) Reluctance *= 0.35f;
+        // A fry hunter (a perch) keeps away from the bank altogether; only a chase after the fry
+        // takes it in there, and a meal on the angler's hook is worth a detour too.
+        if (S.Feeding.bHuntsFry)
         {
-            const float Close = FMath::Max(1.0f, (MinShore - Shore) / 60.0f);
-            const float Shallow = FMath::Max(1.0f, (MinDepth - Depth) / 60.0f);
-            Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 60.0f * FMath::Max(Close, Shallow);
+            const bool bChasing = PreyFry >= 0 || FeedOn == EFishFood::Fry || StrikeEnd > 0.0f;
+            if (bChasing) Reluctance *= 0.2f;
+            else
+            {
+                const float Bank = FMath::Clamp((180.0f - Shore) / 180.0f, 0.0f, 1.0f);
+                Reluctance = FMath::Max(Reluctance, Bank);
+            }
         }
+        if (TargetAngler.IsValid() && (State == EState::Investigate || State == EState::Nibble)) Reluctance *= 0.25f;
+        if (Reluctance > 0.0f)
+            Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 70.0f * Reluctance;
     }
     if (P.Z > LakeFish::SurfaceZ - 8) Push.Z -= 25;
     if (P.Z < BottomZ(P.X, P.Y) + 6) Push.Z += 25;
@@ -1150,7 +1169,7 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
                 {
                     // Somewhere that really has more of it (not the patch it has just eaten down).
                     const float Enough = FMath::Max(0.08f, 0.45f * FeedFound);
-                    for (int32 Try = 0; Try < 4; ++Try)
+                    for (int32 Try = 0; Try < 8; ++Try)
                     {
                         ChooseRoamTarget();
                         if (!LakeFood::IsNatural(FeedOn) || Field->Available(FeedOn, FVector2D(RoamTarget), Seen) >= Enough) break;
