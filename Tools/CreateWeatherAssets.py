@@ -3,7 +3,8 @@ and ImportPlants.py, which read MPC_Weather).
 
 MPC_Weather - parameters the game sets every frame (ALakeWeather): Rain 0..1, Wind 0..1, WindDirX/Y
               (unit vector the wind blows towards), Wetness 0..1 (ground and wood after rain),
-              Daylight 0..1 (for unlit effects such as rain at night).
+              Daylight 0..1 (for unlit effects such as rain at night), Sunshine 0..1 (direct sun: day, no
+              cloud, fog or rain; the caustics on the lake bed).
 M_Rain      - translucent streaks; falls, slants with the wind and thins out with the rain intensity.
 SM_RainTile - the 12 m rain tile from GenerateWeatherModels.py.
 """
@@ -14,7 +15,7 @@ lib = unreal.MaterialEditingLibrary
 assets = unreal.AssetToolsHelpers.get_asset_tools()
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FOLDER = '/Game/Weather'
-PARAMS = [('Rain', 0.0), ('Wind', 0.2), ('WindDirX', 1.0), ('WindDirY', 0.0), ('Wetness', 0.0), ('Daylight', 1.0)]
+PARAMS = [('Rain', 0.0), ('Wind', 0.2), ('WindDirX', 1.0), ('WindDirY', 0.0), ('Wetness', 0.0), ('Daylight', 1.0), ('Sunshine', 1.0)]
 
 path = FOLDER + '/MPC_Weather'
 mpc = unreal.load_asset(path) if unreal.EditorAssetLibrary.does_asset_exist(path) else None

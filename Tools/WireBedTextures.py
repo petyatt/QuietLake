@@ -148,21 +148,46 @@ p_in = unreal.CustomInput()
 p_in.set_editor_property('input_name', 'P')
 t_in = unreal.CustomInput()
 t_in.set_editor_property('input_name', 'T')
-caustics.set_editor_property('inputs', [p_in, t_in])
+s_in = unreal.CustomInput()
+s_in.set_editor_property('input_name', 'S')
+caustics.set_editor_property('inputs', [p_in, t_in, s_in])
 caustics.set_editor_property('output_type', unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+# Caustics as on a real shallow bed: thin, wavy, interlaced lines of light forming uneven cells (the
+# edges of two drifting Voronoi patterns of different size, warped by a slow ripple), only in direct
+# sun (MPC_Weather.Sunshine), fading out by about a metre of water. Kept soft: at most ~20% brighter.
 caustics.set_editor_property('code', '''
 float under = 1 - smoothstep(-32.0, -26.0, P.z);
 float depth = max(0.0, -(P.z + 25.0));
-float shallow = 1 - saturate(depth / 260.0);
-float2 w = P.xy * 0.070;
-float t = T * 0.45;
-float a = sin(w.x * 1.7 + sin(w.y * 1.3 + t) * 1.6 + t);
-float b = sin(w.y * 1.5 + sin(w.x * 1.1 - t * 0.8) * 1.4 - t * 0.7);
-float caustic = pow(1.0 - saturate(abs(a * b) * 1.35), 3.0) * under * shallow;
-return float3(1.0 + caustic * 0.85, 1.0 + caustic * 0.90, 1.0 + caustic * 0.72);
+float fade = (1 - smoothstep(15.0, 110.0, depth)) * under * saturate(S);
+if (fade <= 0.001) return float3(1, 1, 1);
+float glow = 0.0;
+for (int layer = 0; layer < 2; layer++)
+{
+    float size = layer == 0 ? 38.0 : 23.0;
+    float speed = layer == 0 ? 0.35 : -0.27;
+    float2 q = P.xy / size;
+    q += 0.35 * float2(sin(q.y * 1.3 + T * 0.4 + layer * 2.1), sin(q.x * 1.1 - T * 0.35 + layer));
+    float2 i = floor(q), f = frac(q);
+    float d1 = 8.0, d2 = 8.0;
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++)
+        {
+            float2 g = float2(x, y);
+            float2 h = frac(sin(float2(dot(i + g, float2(127.1, 311.7)), dot(i + g, float2(269.5, 183.3)))) * 43758.5453);
+            h = 0.5 + 0.42 * sin(T * speed + 6.2831 * h);
+            float d = length(g + h - f);
+            if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+        }
+    float edge = d2 - d1;                                   // small near the cell borders
+    glow = max(glow, 1.0 - smoothstep(0.0, 0.14, edge));      // a thin bright line along the borders
+}
+float caustic = glow * glow * fade;
+return float3(1.0 + caustic * 0.22, 1.0 + caustic * 0.23, 1.0 + caustic * 0.19);
 ''')
 connect(world, '', caustics, 'P')
 connect(time, '', caustics, 'T')
+sunshine = node(mat, unreal.MaterialExpressionCollectionParameter, collection=unreal.load_asset('/Game/Weather/MPC_Weather'), parameter_name='Sunshine')
+connect(sunshine, '', caustics, 'S')
 
 lighted = node(mat, unreal.MaterialExpressionMultiply)
 connect(mixed, '', lighted, 'A')

@@ -12,3 +12,6 @@ Content/Megaplant_Library/
 
 # UE5 mannequins from the engine templates (~126 MB): restore with Tools/CopyMannequin.ps1
 Content/Characters/Mannequins/
+
+# Intermediate tree meshes and textures: rebuilt by Tools/PrepareTrees.py and Tools/PrepareTreeFoliage.py from the bought archives
+Tools/GeneratedTrees/

@@ -662,6 +662,8 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
             MPC->SetScalarParameterValue(TEXT("WindDirY"), WindDir.Y);
             MPC->SetScalarParameterValue(TEXT("Wetness"), Wetness);
             MPC->SetScalarParameterValue(TEXT("Daylight"), FMath::Max(Day, 0.05f));
+            // Direct sunshine: light patterns (caustics) on the bed only show in sun, not under cloud or in fog.
+            MPC->SetScalarParameterValue(TEXT("Sunshine"), Day * (1 - S(0.35f, 0.9f, W.Cloud)) * (1 - S(0.3f, 0.8f, EffectiveFog())) * (1 - W.Rain));
         }
 
     // Rain: nine identical 12 m tiles on a world grid around the camera, so the streaks stay put
