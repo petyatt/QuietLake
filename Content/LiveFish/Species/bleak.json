@@ -1,0 +1,61 @@
+{
+  "order": 6,
+  "name": "Уклейка",
+  "noun": "уклейка",
+  "description": "Мелкая серебристая рыбка открытой воды. Большими стаями держится у самой поверхности, ест планктон и насекомых, днём в солнце бойкая. Хватает наживку мгновенно и часто обрывает её. Корм для окуня и щуки. Ходит вместе с плотвой.",
+  "mesh": "/Game/Fish/SM_Fish_Meshy_Bleak.SM_Fish_Meshy_Bleak",
+  "meshLength": 21.6308,
+  "condition": 0.85,
+  "minWeight": 0.01,
+  "maxWeight": 0.05,
+  "girthGrowth": 0.08,
+
+  "habitat":     { "shallows": 0.2, "reedEdge": 0.4, "dropOff": 0.3, "cover": 0.0, "deep": 0.2, "open": 1.0, "minDepthM": 0.8, "maxDepthM": 6.0 },
+  "feedHabitat": { "shallows": 0.2, "reedEdge": 0.6, "dropOff": 0.3, "cover": 0.0, "deep": 0.1, "open": 1.0, "minDepthM": 0.6, "maxDepthM": 6.0 },
+  "restHabitat": { "shallows": 0.1, "reedEdge": 0.4, "dropOff": 0.4, "cover": 0.1, "deep": 0.3, "open": 0.8, "minDepthM": 1.0, "maxDepthM": 6.0 },
+  "depthMin": 0.0,
+  "depthMax": 0.25,
+
+  "cruiseSpeed": 30,
+  "burstSpeed": 150,
+  "turnRate": 260,
+  "acceleration": 420,
+  "tailBeat": 13,
+  "gait": { "hoverTurn": 70, "turnRadius": 0.45, "turnAccel": 600, "response": 0.2, "wanderDeg": 24, "wanderHz": 0.14, "kick": 1.0, "kickPeriod": 1.0, "spacing": 1.3 },
+
+  "senseRadius": 350,
+  "baits": { "worm": 0.2, "maggot": 1.0, "bread": 0.7 },
+  "bite": {
+    "minTries": 0, "maxTries": 3, "takeChance": 0.6,
+    "pauseMin": 0.2, "pauseMax": 0.6,
+    "tries": [
+      { "motion": "Peck", "seconds": 0.12, "secondsMax": 0.22, "amount": 0.6, "amountMax": 1.2, "bTake": false }
+    ],
+    "take": [
+      { "motion": "Drift", "seconds": 0.5, "secondsMax": 1.0, "amount": 4, "amountMax": 8, "felt": 0.3 },
+      { "motion": "Sink", "seconds": 0.4, "secondsMax": 0.8, "amount": 15, "amountMax": 25 }
+    ],
+    "sensitive": 0.4,
+    "comeback": 0.9, "maxVisits": 4, "returnMin": 2, "returnMax": 6,
+    "directHold": 1.5,
+    "earlyStrikeText": "Пусто: уклейка сорвала опарыша. Подсекайте сразу, как поплавок поведёт."
+  },
+  "feeding": {
+    "lightShy": 0.2,
+    "wariness": 1.0, "dominance": 0.4,
+    "sipAtDusk": 0.8, "restColumn": 0.2, "feedColumnMin": 0.0, "feedColumnMax": 0.25,
+    "browseStep": 600, "browseSpeed": 0.7, "fillRate": 0.008, "hungerRate": 2.5,
+    "bask": 0.3, "bJumps": true
+  },
+  "diet":    { "plankton": 0.9, "insects": 1.0, "benthos": 0.1, "plants": 0.1, "groundbait": 0.6 },
+  "learning": { "fright": 0.3, "forgetHours": 3, "schoolShare": 0.4 },
+  "oxygenMin": 4.0,
+  "mood": { "dawn": 0.8, "day": 1.0, "dusk": 0.9, "night": 0.1, "tempLow": 10, "tempBest": 22, "tempHigh": 28, "overcast": -0.3,
+            "lightRain": 0.9, "heavyRain": 0.4, "ripple": 1.0, "strongWind": 0.5, "fog": 0.8, "front": 0.5 },
+
+  "strength": 0.6,
+  "stamina": 3,
+  "runBurst": 0.3,
+  "stock": { "count": 120, "schoolSize": 20, "schoolsWith": [ "roach" ] },
+  "signs": { "rise": "Уклейка хватает с поверхности — мелкие круги", "jump": "Из воды выскочила уклейка" }
+}

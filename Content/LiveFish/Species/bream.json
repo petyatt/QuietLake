@@ -1,0 +1,49 @@
+{
+  "order": 4,
+  "name": "Лещ",
+  "noun": "лещ",
+  "description": "Стайная донная рыба глубоких мест: кормится на свалах и в русле, роется в иле, к берегу подходит на зорьках и ночью. Молодь ест планктон, крупный лещ — мотыль и личинки. Берёт осторожно: поднимает и кладёт поплавок, медленно ведёт. На крючке тянет тяжело и подолгу, иногда делает отдельный сильный рывок.",
+  "mesh": "/Game/Fish/SM_Fish_Meshy_Bream.SM_Fish_Meshy_Bream",
+  "meshLength": 37.38701, "condition": 1.45, "minWeight": 0.3, "maxWeight": 2.5, "girthGrowth": 0.16,
+  "habitat":     { "dropOff": 0.8, "deep": 1.0, "open": 0.5, "minDepthM": 2.0, "maxDepthM": 6.0 },
+  "feedHabitat": { "shallows": 0.2, "dropOff": 1.0, "deep": 0.6, "minDepthM": 1.2, "maxDepthM": 4.5 },
+  "restHabitat": { "deep": 1.0, "open": 0.6, "minDepthM": 2.5, "maxDepthM": 7.0 },
+  "depthMin": 0.7, "depthMax": 1.0,
+  "cruiseSpeed": 16, "burstSpeed": 90, "turnRate": 120, "acceleration": 180, "tailBeat": 7,
+  "gait": { "hoverTurn": 30, "turnRadius": 0.7, "turnAccel": 220, "response": 0.55, "wanderDeg": 14, "wanderHz": 0.06, "spacing": 1.6 },
+  "senseRadius": 500,
+  "baits": { "worm": 0.8, "maggot": 0.9, "bread": 0.7 },
+  "bite": {
+    "minTries": 1, "maxTries": 6, "takeChance": 0.3, "pauseMin": 1.0, "pauseMax": 3.0,
+    "tries": [ { "motion": "Tremble", "seconds": 0.8, "secondsMax": 1.6, "amount": 0.3, "amountMax": 0.6, "bTake": false } ],
+    "take": [
+      { "motion": "Drift", "seconds": 1.5, "secondsMax": 3.0, "amount": 3, "amountMax": 6, "hook": 0.8 },
+      { "motion": "Sink", "seconds": 2.5, "secondsMax": 4.0, "amount": 5, "amountMax": 10, "bPaced": true }
+    ],
+    "fromBottomChance": 0.85,
+    "takeFromBottom": [
+      { "motion": "Lift", "seconds": 1.5, "secondsMax": 3.0, "amount": 2.0, "amountMax": 4.0, "hook": 0.8 },
+      { "motion": "Drift", "seconds": 2.5, "secondsMax": 4.0, "amount": 3, "amountMax": 7, "bPaced": true }
+    ],
+    "sensitive": 0.7, "comeback": 0.7, "maxVisits": 3, "returnMin": 6, "returnMax": 20, "directHold": 6.0
+  },
+  "feeding": {
+    "wariness": 0.7, "dominance": 1.1, "lightShy": 0.4,
+    "bRootsInSilt": true, "restColumn": 0.85, "browseStep": 300, "browseSpeed": 0.5, "fillRate": 0.01,
+    "nightShallows": 0.5
+  },
+  "diet":    { "plankton": 0.35, "benthos": 0.8, "plants": 0.2, "groundbait": 1.0 },
+  "dietBig": { "plankton": 0.1, "benthos": 1.0, "plants": 0.2, "groundbait": 1.0 },
+  "learning": { "fright": 0.8, "forgetHours": 12, "schoolShare": 0.5 },
+  "oxygenMin": 2.5,
+  "mood": { "dawn": 1.0, "day": 0.4, "dusk": 1.0, "night": 0.8, "tempLow": 10, "tempBest": 20, "tempHigh": 27, "overcast": 0.3, "front": 0.9 },
+  "strength": 1.1, "stamina": 14, "runBurst": 0.6,
+  "fight": {
+    "alongWeight": 0.22, "awayWeight": 0.25, "diveWeight": 0.53, "surfaceWeight": 0,
+    "pullMin": 2.2, "pullMax": 4, "pullSpeed": 0.7, "pauseMin": 0.9,
+    "pauseMax": 1.7, "burstChance": 0.22, "burstMin": 0.65, "burstMax": 1.1,
+    "seriesMin": 1, "seriesMax": 1, "recovery": 0.16, "effortCost": 1.8
+  },
+  "stock": { "count": 40, "schoolSize": 10, "schoolsWith": [ "roach" ] },
+  "signs": { "bubbles": "Лещ роется в иле — крупные пузыри", "jump": "Из воды показался лещ" }
+}

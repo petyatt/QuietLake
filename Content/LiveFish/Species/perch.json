@@ -1,0 +1,68 @@
+{
+  "order": 0,
+  "name": "Окунь",
+  "noun": "окунь",
+  "description": "Стайный хищник свалов, коряг и свай. Смелый, берёт почти сразу: тычок-другой, резко топит и уводит, потом стоит и заглатывает червя. Гоняет малька стаей. На крючке часто сопротивляется сериями коротких толчков.",
+  "mesh": "/Game/Fish/SM_Fish_Meshy_Perch.SM_Fish_Meshy_Perch",
+  "mouthPoint": { "x": 0.0000567, "y": 0.0017069, "z": -0.0321237 },
+  "mouthRadius": 0.018,
+  "meshLength": 29.36509,
+  "condition": 1.25,
+  "minWeight": 0.08,
+  "maxWeight": 0.8,
+  "girthGrowth": 0.14,
+
+  "habitat":     { "shallows": 0.1, "reedEdge": 0.3, "dropOff": 1.0, "cover": 0.9, "deep": 0.5, "open": 0.3, "minDepthM": 1.2, "maxDepthM": 4.8 },
+  "feedHabitat": { "shallows": 0.4, "reedEdge": 1.0, "dropOff": 0.8, "cover": 0.4, "deep": 0.1, "open": 0.2, "minDepthM": 0.6, "maxDepthM": 3.5 },
+  "restHabitat": { "shallows": 0.0, "reedEdge": 0.1, "dropOff": 0.5, "cover": 1.0, "deep": 0.6, "open": 0.0, "minDepthM": 1.5, "maxDepthM": 5.0 },
+  "depthMin": 0.55,
+  "depthMax": 0.92,
+
+  "cruiseSpeed": 28,
+  "burstSpeed": 160,
+  "turnRate": 220,
+  "acceleration": 380,
+  "tailBeat": 9,
+  "gait": { "hoverTurn": 45, "turnRadius": 0.6, "turnAccel": 420, "response": 0.3, "wanderDeg": 22, "wanderHz": 0.12, "kick": 0.45, "kickPeriod": 1.6, "spacing": 1.4 },
+
+  "senseRadius": 650,
+  "baits": { "worm": 1.0, "maggot": 0.55, "bread": 0.08 },
+  "bite": {
+    "minTries": 0, "maxTries": 3, "takeChance": 0.6,
+    "pauseMin": 0.4, "pauseMax": 1.5,
+    "tries": [ { "motion": "Peck", "seconds": 0.2, "amount": 1.5, "amountMax": 3.0, "bTake": false } ],
+    "take": [
+      { "motion": "Sink", "seconds": 1.5, "secondsMax": 2.5, "amount": 45, "amountMax": 70, "hook": 0.9, "bPaced": true, "minPace": 0.85 },
+      { "motion": "Hold", "seconds": 2.5, "secondsMax": 5.0, "hook": 1.0, "bPaced": true, "minPace": 0.85 }
+    ],
+    "sensitive": 1.4,
+    "comeback": 0.8, "maxVisits": 3, "returnMin": 2, "returnMax": 8,
+    "directHold": 6.0
+  },
+  "feeding": {
+    "lightShy": 0.3,
+    "wariness": 0.6, "camouflage": 0.2, "dominance": 1.3, "preyMaxWeight": 0.12, "strikeChance": 0.2,
+    "bPredator": true, "bHuntsFry": true,
+    "feedColumnMin": 0.6, "feedColumnMax": 0.95, "restColumn": 0.8,
+    "browseStep": 500, "browseSpeed": 1.0, "fillRate": 0.005
+  },
+  "diet":    { "plankton": 0.6, "insects": 0.35, "benthos": 0.7, "fry": 0.4, "groundbait": 0.15 },
+  "dietBig": { "plankton": 0.05, "insects": 0.1, "benthos": 0.35, "fry": 1.0, "fish": 1.0, "groundbait": 0.05 },
+  "learning": { "fright": 0.35, "forgetHours": 3, "schoolShare": 0.3 },
+  "oxygenMin": 4.0,
+  "mood": { "dawn": 1.0, "day": 0.75, "dusk": 0.9, "night": 0.15, "tempLow": 6, "tempBest": 18, "tempHigh": 27, "overcast": 0.1,
+            "lightRain": 1.0, "heavyRain": 0.5, "ripple": 1.15, "strongWind": 0.6, "fog": 0.85, "front": 0.8 },
+
+  "strength": 1.0,
+  "stamina": 9,
+  "runBurst": 0.5,
+  "fight": {
+    "alongWeight": 0.5, "awayWeight": 0.25, "diveWeight": 0.25, "surfaceWeight": 0,
+    "pullMin": 0.6, "pullMax": 1.2, "pullSpeed": 0.5, "pauseMin": 0.7,
+    "pauseMax": 1.3, "burstChance": 0.85, "burstMin": 0.18, "burstMax": 0.32,
+    "seriesMin": 3, "seriesMax": 5, "seriesGap": 0.18, "recovery": 0.16,
+    "effortCost": 1.7
+  },
+  "stock": { "count": 144, "schoolSize": 6 },
+  "signs": { "splash": "Окунь бьёт малька", "scatter": "Окуни гоняют малька — «котёл»", "jump": "Из воды выпрыгнул окунь" }
+}
