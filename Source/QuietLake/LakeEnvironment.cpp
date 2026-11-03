@@ -119,7 +119,6 @@ void ALakeEnvironment::BeginPlay()
     const LakeMap::FPier& Pier = LakeMap::Pier();
     const FVector2D PierEnd = Pier.Root + Pier.Dir * Pier.Length;
     const LakeMap::FShorePoint Landing = LakeMap::Landing();
-    const FVector2D Island = LakeMap::IslandCentre();
     LakeMap::LilyBeds();
     LakeMap::Snags();
     const FBox2D LakeBox = LakeMap::LakeBounds();
@@ -344,8 +343,8 @@ void ALakeEnvironment::BeginPlay()
     };
 
     // Forest: dense along the wooded banks (birch and alder by the water, pine and spruce behind,
-    // pines on the bluff), thinner further off; groves and lone trees in the meadow; the island
-    // wooded. The camp, the village plateau and the spots stay open.
+    // pines on the bluff), thinner further off; groves and lone trees in the meadow. The camp, the
+    // village and the spots stay open.
     int32 TreeCount = 0;
     TArray<FTransform> TrunkTransforms;
     const bool PCGForest = ALakeForest::HasGraph();
@@ -359,12 +358,11 @@ void ALakeEnvironment::BeginPlay()
                 const FVector2D P(CX + Random.FRandRange(0, TreeCell), CY + Random.FRandRange(0, TreeCell));
                 const float L = -LakeMap::ShoreDistance(P.X, P.Y) / 100;
                 if (L < 3) continue;
-                const bool bIsland = FVector2D::Distance(P, Island) < 3600;
-                const float Forest = bIsland ? 1.0f : LakeMap::ForestAmount(P);
-                const float FS = bIsland ? 2.0f : ForestStart(P);
+                const float Forest = LakeMap::ForestAmount(P);
+                const float FS = ForestStart(P);
                 const bool bForest = Forest > 0.5f && L > FS + Random.FRandRange(-4, 4);
                 // Trees per cell: one in two by the water, fewer deep in the woods.
-                const float Chance = bForest ? (bIsland ? 0.7f : L < 70 ? 0.5f : L < 180 ? 0.24f : 0.13f) : 0.012f;
+                const float Chance = bForest ? (L < 70 ? 0.5f : L < 180 ? 0.24f : 0.13f) : 0.012f;
                 if (Random.FRand() > Chance) continue;
                 if (FVector2D::Distance(P, Village) < 9000 || FVector2D::Distance(P, Start) < 1600) continue;
                 if (LakeMap::SpotAmount(P) > 0.05f || SegmentDistance2D(P, Pier.Root - Pier.Dir * 800, Pier.Root) < 600) continue;
@@ -384,7 +382,7 @@ void ALakeEnvironment::BeginPlay()
                     const TArray<UInstancedSkinnedMeshComponent*>* Species;
                     if (!bForest) Species = Pick < 0.6f ? &Birches : &Alders;
                     else if (bBluffTop) Species = bSway ? &Pines : &StillPines;
-                    else if (L < FS + 20 || bIsland) Species = Pick < 0.5f ? (bSway ? &Birches : &StillBirches) : Pick < 0.85f ? (bSway ? &Alders : &StillAlders) : (bSway ? &Pines : &StillPines);
+                    else if (L < FS + 20) Species = Pick < 0.5f ? (bSway ? &Birches : &StillBirches) : Pick < 0.85f ? (bSway ? &Alders : &StillAlders) : (bSway ? &Pines : &StillPines);
                     else Species = Pick < 0.5f ? (bSway ? &Pines : &StillPines) : (bSway ? &Spruces : &StillSpruces);
                     Place(*Species, Upright(Base, Random.FRandRange(0.7f, 1.1f)));
                     TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, Base + FVector(0, 0, 250), FVector(0.45f, 0.45f, 5.0f)));
@@ -472,10 +470,9 @@ void ALakeEnvironment::BeginPlay()
                 const FVector2D P(CX + Random.FRandRange(0, ShrubCell), CY + Random.FRandRange(0, ShrubCell));
                 const float L = -LakeMap::ShoreDistance(P.X, P.Y) / 100;
                 if (L < 3 || L > 160) continue;
-                const bool bIsland = FVector2D::Distance(P, Island) < 3600;
-                const float Forest = bIsland ? 1.0f : LakeMap::ForestAmount(P);
+                const float Forest = LakeMap::ForestAmount(P);
                 if (Forest < 0.3f) continue;
-                const float FS = bIsland ? 2.0f : ForestStart(P);
+                const float FS = ForestStart(P);
                 // Edge: from a few metres before the first trees to ten metres in; then sparse.
                 const float Edge = 1 - FMath::SmoothStep(4.0f, 14.0f, FMath::Abs(L - FS - 4));
                 if (Random.FRand() > 0.06f * Forest + 0.4f * Edge * Forest) continue;
@@ -655,13 +652,15 @@ void ALakeEnvironment::BeginPlay()
             const float A = Random.FRandRange(0, 2 * PI), R = Bed.Radius * FMath::Pow(Random.FRand(), 0.7f);
             const FVector2D P = Bed.Centre + FVector2D(FMath::Cos(A), FMath::Sin(A)) * R;
             const float D = LakeMap::Depth(P.X, P.Y);
-            if (!LakeMap::IsWater(P.X, P.Y) || D < 20 || D > 190) continue;
+            if (!LakeMap::IsWater(P.X, P.Y) || D < 20 || D > Bed.MaxDepth + 10 || !LakeMap::LilyAllowed(P)) continue;
             const float Pick = Random.FRand();
             const FRotator Rot(Random.FRandRange(-2, 2), Random.FRandRange(0, 360), Random.FRandRange(-2, 2));
             Add(Pads[Pick < 0.5f ? 0 : Pick < 0.82f ? 1 : 2], FVector(P, LakeMap::SurfaceZ + 0.3f), FVector(Random.FRandRange(0.75f, 1.35f)), Rot);
             ++LilyCount;
-            if (Random.FRand() < 0.035f) Add(Flowers, FVector(P + FVector2D(12, 5), LakeMap::SurfaceZ + 0.6f), FVector(Random.FRandRange(0.8f, 1.2f)), FRotator(0, Random.FRandRange(0, 360), 0));
-            else if (Random.FRand() < 0.02f) Add(Yellow, FVector(P + FVector2D(-8, 10), LakeMap::SurfaceZ), FVector(Random.FRandRange(0.9f, 1.2f)), FRotator(0, Random.FRandRange(0, 360), 0));
+            // White water lilies in most beds; the yellow brandy-bottle in the backwater and the upper end.
+            const float Bloom = Random.FRand();
+            if (Bed.bYellow ? Bloom < 0.01f : Bloom < 0.035f) Add(Flowers, FVector(P + FVector2D(12, 5), LakeMap::SurfaceZ + 0.6f), FVector(Random.FRandRange(0.8f, 1.2f)), FRotator(0, Random.FRandRange(0, 360), 0));
+            else if (Bed.bYellow ? Bloom < 0.05f : Bloom < 0.042f) Add(Yellow, FVector(P + FVector2D(-8, 10), LakeMap::SurfaceZ), FVector(Random.FRandRange(0.9f, 1.2f)), FRotator(0, Random.FRandRange(0, 360), 0));
         }
     }
 
@@ -931,10 +930,11 @@ void ALakeEnvironment::BeginPlay()
             const float Pitch = FMath::RadiansToDegrees(FMath::Atan2(Ground(P + Dir * 190) - Ground(P - Dir * 190), 380));
             Prop(TEXT("Boat_B"), FVector(P, Ground(P) - 4), FRotator(Pitch, YawOf(Dir) + 6, 4), true);
         }
-        // An old boat half sunk among the reeds along the bay.
+        // An old boat half sunk beside the pier; the fish use it as cover (LakeMap::ZonesAt).
         {
-            const FVector2D P = Landing.Location - Landing.Outward * 300 - Along * 1500;
-            if (LakeMap::IsWater(P.X, P.Y)) Prop(TEXT("Boat_A"), FVector(P, LakeMap::SurfaceZ - 34), FRotator(-3, YawOf(Along) + 20, 8), false);
+            float Yaw = 0;
+            const FVector2D P = LakeMap::OldBoat(&Yaw);
+            if (LakeMap::IsWater(P.X, P.Y)) Prop(TEXT("Boat_A"), FVector(P, LakeMap::SurfaceZ - 34), FRotator(-3, Yaw, 8), false);
         }
         // One moored at the pier's landing stage.
         {
@@ -1035,7 +1035,8 @@ void ALakeEnvironment::BeginPlay()
         if (!Spot.bBoards) continue;
         // Timber belongs at the used, soft-bank landings; wild banks stay natural.
         if (FCString::Strcmp(Spot.Name, TEXT("Лагерь")) != 0 && FCString::Strcmp(Spot.Name, TEXT("Заводь")) != 0
-            && FCString::Strcmp(Spot.Name, TEXT("Коряжник")) != 0 && FCString::Strcmp(Spot.Name, TEXT("Верховье")) != 0) continue;
+            && FCString::Strcmp(Spot.Name, TEXT("Коряжник")) != 0 && FCString::Strcmp(Spot.Name, TEXT("Верховье")) != 0
+            && FCString::Strcmp(Spot.Name, TEXT("Отмель")) != 0 && FCString::Strcmp(Spot.Name, TEXT("Луговая бровка")) != 0) continue;
         const FVector2D Along(-Spot.Outward.Y, Spot.Outward.X);
         const float Yaw = YawOf(Spot.Outward);
         for (int32 K = 0; K < 3; ++K)
@@ -1098,15 +1099,15 @@ void ALakeEnvironment::BeginPlay()
         UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEPTH pier end: under it %.0f, 2 m beyond %.0f, 4 m %.0f, 6 m %.0f cm"),
             Out(PierEnd, -Pier.Dir, 0), Out(PierEnd, -Pier.Dir, 2), Out(PierEnd, -Pier.Dir, 4), Out(PierEnd, -Pier.Dir, 6));
         const float Marks[] = { 1, 2, 4, 6 };
-        for (int32 Kind = 0; Kind < 3; ++Kind)
+        for (int32 Kind = 0; Kind < 2; ++Kind)
         {
-            // 0: the main banks, 1: the weedy shallows (backwater, bay, upper end), 2: the island.
+            // 0: the main banks, 1: the weedy shallows (backwater, bay, upper end, the crucian shallow).
             int32 Count = 0, Good[4] = {}, AllGood = 0;
             TArray<float> At[4];
             for (const LakeMap::FShorePoint& S : LakeMap::Shoreline())
             {
                 const float Back = LakeMap::BackwaterAmount(S.Location.X, S.Location.Y);
-                const int32 Own = S.bIsland ? 2 : Back > 0.5f ? 1 : 0;
+                const int32 Own = Back > 0.5f ? 1 : 0;
                 if (Own != Kind || (Kind == 0 && Back > 0.2f)) continue;
                 ++Count;
                 bool bAll = true;
@@ -1128,7 +1129,7 @@ void ALakeEnvironment::BeginPlay()
                 Line += FString::Printf(TEXT(", %.0f m: %.0f/%.0f/%.0f cm %d%%"), Marks[M], At[M][Count / 10], At[M][Count / 2], At[M][Count * 9 / 10], Good[M] * 100 / Count);
             }
             UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEPTH banks %s: %d points (10th/50th/90th percentile, share 0.8-2 m)%s; 0.8-2 m at all of 2-6 m: %d%%"),
-                Kind == 0 ? TEXT("main") : Kind == 1 ? TEXT("shallows") : TEXT("island"), Count, *Line, AllGood * 100 / Count);
+                Kind == 0 ? TEXT("main") : TEXT("shallows"), Count, *Line, AllGood * 100 / Count);
         }
     }
 
@@ -1371,7 +1372,7 @@ void ALakeEnvironment::BeginPlay()
             const LakeMap::FShorePoint BayBack = LakeMap::NearestShore(LakeMap::WestBay());
             const FVector BayEye(BayBack.Location - BayBack.Outward * 2600, LakeMap::SurfaceZ + 220);
             Shots.Add({ BayEye, (FVector(BayBack.Location - BayBack.Outward * 500, LakeMap::SurfaceZ + 60) - BayEye).Rotation(), TEXT("WorldPreview_WestBay.png"), true });
-            SpotView(TEXT("Остров"), 0, TEXT("WorldPreview_Island.png"));
+            SpotView(TEXT("Отмель"), 0, TEXT("WorldPreview_Hump.png"));     // the crucian shallow, the hump beyond
             SpotView(TEXT("Коряжник"), -30, TEXT("WorldPreview_Snags.png"));   // its own fallen tree on the left
             SpotView(TEXT("Верховье"), 40, TEXT("WorldPreview_Upper.png"));
             // A low wooded bank near the camp: the shrubs and the grown spruce, from the water and

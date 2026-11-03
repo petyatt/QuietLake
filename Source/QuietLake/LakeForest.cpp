@@ -54,8 +54,7 @@ bool ULakeForestPointsSettings::AllowsTree(const FVector2D& P) const
         || FVector2D::Distance(P, LakeMap::StartSpot()) < 1600 || LakeMap::SpotAmount(P) > 0.03f) return false;
     const auto& Pier = LakeMap::Pier();
     if (SegmentDistance(P, Pier.Root - Pier.Dir * 1700, Pier.Root + Pier.Dir * Pier.Length) < 650) return false;
-    const bool Island = FVector2D::Distance(P, LakeMap::IslandCentre()) < 3600;
-    if (!Island && LakeMap::ForestAmount(P) < 0.55f) return false;
+    if (LakeMap::ForestAmount(P) < 0.55f) return false;
     const float DX = LakeMap::Ground(P.X + 100, P.Y) - LakeMap::Ground(P.X - 100, P.Y);
     const float DY = LakeMap::Ground(P.X, P.Y + 100) - LakeMap::Ground(P.X, P.Y - 100);
     return FVector2D(DX, DY).Size() / 200 < 0.75f;
@@ -74,16 +73,15 @@ void ULakeForestPointsSettings::BuildTrees(TArray<FLakeForestTree>& Out) const
             const FVector2D P(X + Random.FRandRange(0, Cell), Y + Random.FRandRange(0, Cell));
             if (!AllowsTree(P)) continue;
             const float Land = -LakeMap::ShoreDistance(P.X, P.Y) / 100;
-            const bool Island = FVector2D::Distance(P, LakeMap::IslandCentre()) < 3600;
-            const float Edge = Island ? 2 : EdgeStart(P);
+            const float Edge = EdgeStart(P);
             const float EdgeDensity = FMath::SmoothStep(Edge - 3, Edge + 8, Land);
             // Broad gaps and denser groves break the uniform wall of trees along the lake.
             const float Groves = 0.78f + 0.32f * FMath::PerlinNoise2D(P / 2100);
-            const float Chance = (Island ? 0.7f : Land < 70 ? 0.5f : Land < 180 ? 0.24f : 0.13f)
+            const float Chance = (Land < 70 ? 0.5f : Land < 180 ? 0.24f : 0.13f)
                 * EdgeDensity * Groves * FMath::Clamp(Density, 0.0f, 1.5f);
             if (Random.FRand() > Chance) continue;
             const float Pick = Random.FRand();
-            const auto& Species = LakeMap::BluffHeight(P) > 2.5f ? Pines : Land < Edge + 20 || Island
+            const auto& Species = LakeMap::BluffHeight(P) > 2.5f ? Pines : Land < Edge + 20
                 ? (Pick < 0.5f ? Birches : Pick < 0.85f ? Alders : Pines) : (Pick < 0.5f ? Pines : Spruces);
             if (Species.IsEmpty()) continue;
             FLakeForestTree& Tree = Out.AddDefaulted_GetRef();

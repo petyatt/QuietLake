@@ -5,15 +5,9 @@ namespace
 {
     using namespace LakeMap;
     constexpr float Cell = 100.0f;                   // 1 m grids for the shore distance and the ground
-    // The lake's layout below is written at 4/3 of its size and scaled down by Lay(): positions and
-    // widths of the water, the island, the bays, bluffs, ravines and holes. Depths, heights and the
-    // widths of banks and reed belts stay in real units.
-    constexpr float LakeScale = 0.75f;
-    constexpr float Lay(float V) { return V * LakeScale; }
-    const FVector2D GIsland(Lay(11000.0f), Lay(-2500.0f));
-    const FVector2D GIslandAxes(Lay(2800.0f), Lay(1700.0f));
-    constexpr float GIslandYaw = 25.0f;
-    const FVector2D GVillage(Lay(-17000.0f), Lay(31000.0f));
+    // The layout below is written in metres (X east, Y south) and converted to cm here.
+    constexpr float Mt = 100.0f;
+    FVector2D At(float X, float Y) { return FVector2D(X * Mt, Y * Mt); }
 
     float S(float E0, float E1, float X) { return FMath::SmoothStep(E0, E1, X); }
     float Noise(const FVector2D& P, float Scale) { return FMath::PerlinNoise2D(P / Scale); }
@@ -21,7 +15,6 @@ namespace
     {
         return 0.6f * Noise(P, Scale) + 0.3f * Noise(P + FVector2D(1730, -910), Scale / 2.1f) + 0.1f * Noise(P + FVector2D(-4100, 2600), Scale / 4.3f);
     }
-    float Gauss(const FVector2D& P, const FVector2D& C, float R) { return FMath::Exp(-FVector2D::DistSquared(P, C) / (R * R)); }
     float SegmentDistance(const FVector2D& P, const FVector2D& A, const FVector2D& B, float* OutT = nullptr)
     {
         const FVector2D AB = B - A;
@@ -45,12 +38,13 @@ namespace
         float Length = 0;
         float Seed = 0;
 
-        /** A control point: X, Y, half-width to the north (-Y side), half-width to the south. */
+        /** A control point in metres: X, Y, half-width to the north (-Y side), half-width to the south. */
         struct FControl { float X, Y, Z, W; };
         FSpine(std::initializer_list<FControl> Control, float InSeed) : Seed(InSeed)
         {
             // Catmull-Rom through the points, resampled about every 8 m, widths eased between control points.
             TArray<FControl> C(Control);
+            for (FControl& K : C) { K.X *= Mt; K.Y *= Mt; K.Z *= Mt; K.W *= Mt; }
             for (int32 I = 0; I + 1 < C.Num(); ++I)
             {
                 const FVector2D P0(C[FMath::Max(I - 1, 0)].X, C[FMath::Max(I - 1, 0)].Y), P1(C[I].X, C[I].Y), P2(C[I + 1].X, C[I + 1].Y);
@@ -93,7 +87,7 @@ namespace
             Hit.bSouth = AB.X * Off.Y - AB.Y * Off.X > 0;
             const float W = Hit.bSouth ? FMath::Lerp(South[Best], South[Best + 1], BestT) : FMath::Lerp(North[Best], North[Best + 1], BestT);
             // The banks wander in and out a little.
-            Hit.Width = W * (1 + 0.12f * FMath::PerlinNoise1D(Hit.Along / Lay(6500) + (Hit.bSouth ? 13.7f : 3.1f) + Seed));
+            Hit.Width = W * (1 + 0.12f * FMath::PerlinNoise1D(Hit.Along / 4875 + (Hit.bSouth ? 13.7f : 3.1f) + Seed));
             return Hit;
         }
         float Inside(const FVector2D& Q) const { const FHit H = Query(Q); return H.Width - H.Dist; }
@@ -101,28 +95,28 @@ namespace
 
     const FSpine& MainSpine()
     {
-        // West (a rounded end with a little bay) to east (the brook). Widths: north, south.
+        // West (the outflow) to east (the brook). Widths: north, south (metres).
         static const FSpine Spine({
-            { Lay(-31500), Lay(1800), Lay(6800), Lay(7600) },     // the west end: the spine's round cap is the bank
-            { Lay(-27000), Lay(3000), Lay(9500), Lay(10000) },
-            { Lay(-15000), Lay(1500), Lay(8000), Lay(11000) },
-            { Lay(-3000), Lay(-3000), Lay(6000), Lay(6500) },     // the narrows
-            { Lay(10000), Lay(-5000), Lay(11000), Lay(9000) },    // the wide middle reach with the island
-            { Lay(22000), Lay(-2500), Lay(8500), Lay(7000) },
-            { Lay(32000), Lay(2500), Lay(5500), Lay(6000) },
-            { Lay(41000), Lay(5500), Lay(3500), Lay(3800) },
-            { Lay(48500), Lay(6500), Lay(900), Lay(900) },        // where the brook comes in
+            { -236.25f, 13.5f, 51, 57 },          // the rounded west end: the spine's cap is the bank
+            { -202.5f, 22.5f, 71.25f, 75 },
+            { -112.5f, 11.25f, 60, 82.5f },
+            { -22.5f, -22.5f, 45, 48.75f },       // the narrows
+            { 75, -37.5f, 82.5f, 67.5f },          // the wide middle reach
+            { 165, -18.75f, 63.75f, 52.5f },
+            { 240, 18.75f, 41.25f, 45 },
+            { 307.5f, 41.25f, 26.25f, 28.5f },
+            { 363.75f, 48.75f, 6.75f, 6.75f },     // where the brook comes in
         }, 0.0f);
         return Spine;
     }
+    /** The short weedy backwater running north into the forest; a spring at its head. */
     const FSpine& BackwaterSpine()
     {
         static const FSpine Spine({
-            { Lay(13000), Lay(-12500), Lay(3800), Lay(3800) },
-            { Lay(11500), Lay(-19000), Lay(3000), Lay(3000) },
-            { Lay(8000), Lay(-25000), Lay(2600), Lay(2600) },
-            { Lay(3500), Lay(-29500), Lay(2000), Lay(2000) },
-            { Lay(-500), Lay(-31500), Lay(800), Lay(800) },
+            { 97.5f, -93.75f, 28.5f, 28.5f },
+            { 86.25f, -142.5f, 22.5f, 22.5f },
+            { 68, -176, 15, 15 },
+            { 57, -190, 6, 6 },
         }, 7.0f);
         return Spine;
     }
@@ -139,29 +133,38 @@ namespace
             return K0 * (1 + 0.09f * FMath::PerlinNoise1D(FMath::Atan2(L.Y, L.X) * 1.6f + Seed));
         }
         float Inside(const FVector2D& P) const { return (1 - K(P)) * FMath::Min(Axes.X, Axes.Y); }
+        /** Elongated gaussian over the ellipse (no wave). */
+        float Gauss(const FVector2D& P) const
+        {
+            const FVector2D L = (P - C).GetRotated(-Yaw);
+            return FMath::Exp(-(FMath::Square(L.X / Axes.X) + FMath::Square(L.Y / Axes.Y)));
+        }
     };
-    const FEllipse GSouthBay{ { Lay(-15500), Lay(13500) }, { Lay(6500), Lay(4500) }, 15, 2.0f };
-    const FEllipse GSnagCove{ { Lay(25500), Lay(8500) }, { Lay(3200), Lay(2600) }, -20, 5.0f };
-    const FEllipse GRavineCove{ { Lay(-6500), Lay(-9800) }, { Lay(2400), Lay(1800) }, 70, 9.0f };
-    const FEllipse GWestBay{ { Lay(-33500), Lay(-2500) }, { Lay(3200), Lay(2600) }, 35, 11.0f };   // the little bay at the west end
-    const FEllipse GIslandShape{ GIsland, GIslandAxes, GIslandYaw, 4.0f };
+    /** An ellipse written in metres. */
+    FEllipse E(float X, float Y, float AX, float AY, float Yaw = 0, float Seed = 0) { return FEllipse{ At(X, Y), At(AX, AY), Yaw, Seed }; }
+
+    const FEllipse GSouthBay = E(-116.25f, 101.25f, 48.75f, 33.75f, 15, 2.0f);
+    const FEllipse GSnagCove = E(191.25f, 63.75f, 24, 19.5f, -20, 5.0f);
+    const FEllipse GRavineCove = E(-48.75f, -73.5f, 18, 13.5f, 70, 9.0f);
+    const FEllipse GWestBay = E(-251.25f, -18.75f, 24, 19.5f, 35, 11.0f);   // the little bay at the west end
+    const FVector2D GVillage = At(70, 160);
+    constexpr float GVillageRadius = 6800.0f;
 
     /** Rough inside-distance of the water (cm, positive in the water); the exact distance is built from its zero line. */
     float WaterField(const FVector2D& P)
     {
         float F = MainSpine().Inside(P);
         F = SmoothMax(F, BackwaterSpine().Inside(P), 1500);
-        for (const FEllipse* E : { &GSouthBay, &GSnagCove, &GRavineCove, &GWestBay }) F = SmoothMax(F, E->Inside(P), 1500);
-        F = FMath::Min(F, -GIslandShape.Inside(P));        // the island
+        for (const FEllipse* Bay : { &GSouthBay, &GSnagCove, &GRavineCove, &GWestBay }) F = SmoothMax(F, Bay->Inside(P), 1500);
         return F;
     }
 
-    /** Signed distance to the waterline on a 1 m grid, and the waterline itself. */
+    /** Signed distance to the waterline on a 1 m grid, a blurred copy for the hills, and the waterline itself. */
     struct FShoreField
     {
         FVector2D Min;
         int32 NX = 0, NY = 0;
-        TArray<float> D;
+        TArray<float> D, Blurred;
         TArray<FShorePoint> Shore;
         FBox2D Water = FBox2D(ForceInit);
 
@@ -228,6 +231,39 @@ namespace
             }
             D.SetNumUninitialized(NX * NY);
             for (int32 I = 0; I < NX * NY; ++I) D[I] = FMath::Sqrt(Dist2[I]) * (F[I] > 0 ? 1 : -1);
+            // The exact distance creases where two banks are equally far; the hills follow a blurred copy
+            // (box blur 25 m wide, three passes).
+            Blurred = D;
+            {
+                constexpr int32 R = 12;
+                TArray<float> Row;
+                Row.SetNumUninitialized(FMath::Max(NX, NY));
+                for (int32 Pass = 0; Pass < 3; ++Pass)
+                {
+                    for (int32 Y = 0; Y < NY; ++Y)
+                    {
+                        double Acc = 0; int32 Count = 0;
+                        for (int32 X = -R; X < NX + R; ++X)
+                        {
+                            if (X + R < NX) { Acc += Blurred[Y * NX + X + R]; ++Count; }
+                            if (X - R - 1 >= 0) { Acc -= Blurred[Y * NX + X - R - 1]; --Count; }
+                            if (X >= 0 && X < NX) Row[X] = Acc / Count;
+                        }
+                        for (int32 X = 0; X < NX; ++X) Blurred[Y * NX + X] = Row[X];
+                    }
+                    for (int32 X = 0; X < NX; ++X)
+                    {
+                        double Acc = 0; int32 Count = 0;
+                        for (int32 Y = -R; Y < NY + R; ++Y)
+                        {
+                            if (Y + R < NY) { Acc += Blurred[(Y + R) * NX + X]; ++Count; }
+                            if (Y - R - 1 >= 0) { Acc -= Blurred[(Y - R - 1) * NX + X]; --Count; }
+                            if (Y >= 0 && Y < NY) Row[Y] = Acc / Count;
+                        }
+                        for (int32 Y = 0; Y < NY; ++Y) Blurred[Y * NX + X] = Row[Y];
+                    }
+                }
+            }
             // The waterline points, with the normal onto the land from the distance gradient.
             Shore.Reserve(Crossings.Num());
             for (const FVector2D& P : Crossings)
@@ -236,20 +272,19 @@ namespace
                 Point.Location = P;
                 FVector2D G(0, 0);
                 float A, B, C, E;
-                if (Sample(P.X + 100, P.Y, A) && Sample(P.X - 100, P.Y, B) && Sample(P.X, P.Y + 100, C) && Sample(P.X, P.Y - 100, E)) G = FVector2D(A - B, C - E);
+                if (Sample(D, P.X + 100, P.Y, A) && Sample(D, P.X - 100, P.Y, B) && Sample(D, P.X, P.Y + 100, C) && Sample(D, P.X, P.Y - 100, E)) G = FVector2D(A - B, C - E);
                 Point.Outward = (-G).GetSafeNormal();
-                Point.bIsland = FVector2D::Distance(P, GIsland) < Lay(4500);
                 Shore.Add(Point);
                 Water += P;
             }
         }
-        bool Sample(float X, float Y, float& Out) const
+        bool Sample(const TArray<float>& Grid, float X, float Y, float& Out) const
         {
             const float FX = (X - Min.X) / Cell, FY = (Y - Min.Y) / Cell;
             if (FX < 0 || FY < 0 || FX >= NX - 1 || FY >= NY - 1) return false;
             const int32 IX = (int32)FX, IY = (int32)FY;
             const float TX = FX - IX, TY = FY - IY;
-            const float* Row = &D[IY * NX + IX];
+            const float* Row = &Grid[IY * NX + IX];
             Out = FMath::Lerp(FMath::Lerp(Row[0], Row[1], TX), FMath::Lerp(Row[NX], Row[NX + 1], TX), TY);
             return true;
         }
@@ -258,21 +293,25 @@ namespace
 
     // --- places --------------------------------------------------------------------------------
 
-    struct FSpotSeed { const TCHAR* Name; FVector2D Near; float HalfWidth; bool bBoards; };
+    struct FSpotSeed { const TCHAR* Name; float X, Y, HalfWidth; bool bBoards, bLilies; };
     const FSpotSeed GSpotSeeds[] = {
-        { TEXT("Лагерь"),            { Lay(-24000), Lay(13300) }, 900, true },     // the start: camp on the meadow bank
-        { TEXT("Мостки"),            { Lay(-11000), Lay(16500) }, 700, false },    // the pier in the south bay
-        { TEXT("Омут"),              { Lay(-31000), Lay(-6000) }, 800, true },     // by the little bay at the west end
-        { TEXT("Берёзовая гряда"),   { Lay(-20000), Lay(-6600) }, 800, true },
-        { TEXT("Овраг"),             { Lay(-6500), Lay(-11600) }, 700, true },
-        { TEXT("Горло"),             { Lay(-1000), Lay(3700) },   800, true },
-        { TEXT("Под яром"),          { Lay(9800), Lay(-16200) },  700, true },
-        { TEXT("Устье заводи"),      { Lay(9800), Lay(-18500) },  700, true },
-        { TEXT("Заводь"),            { Lay(10200), Lay(-26000) }, 700, true },
-        { TEXT("Остров"),            { Lay(11500), Lay(4300) },   800, true },
-        { TEXT("Плёс"),              { Lay(27000), Lay(-7100) },  800, true },
-        { TEXT("Коряжник"),          { Lay(28300), Lay(9500) },   700, true },
-        { TEXT("Верховье"),          { Lay(41000), Lay(9300) },   700, true },
+        { TEXT("Лагерь"),          -180, 99.75f,   9, true, true },     // the start: camp on the meadow bank
+        { TEXT("Мостки"),          30, 30,         7, false, false },   // the pier below the village
+        { TEXT("Ольхи"),           -258, 68,       7, true, false },
+        { TEXT("Исток"),           -291, -6,       7, true, false },    // by the outflow
+        { TEXT("Омут"),            -232.5f, -45,   8, true, false },
+        { TEXT("Берёзовая гряда"), -150, -49.5f,   8, true, false },
+        { TEXT("Овраг"),           -48.75f, -87,   7, true, false },
+        { TEXT("Под яром"),        73.5f, -121.5f, 7, true, false },
+        { TEXT("Устье заводи"),    73.5f, -138.75f, 7, true, false },
+        { TEXT("Заводь"),          70, -178,       7, true, false },
+        { TEXT("Отмель"),          110, 34,        8, true, true },     // the crucian shallow
+        { TEXT("Плёс"),            202.5f, -53.25f, 8, true, false },
+        { TEXT("Сосновый яр"),     150, -96,       7, true, false },
+        { TEXT("Коряжник"),        212.25f, 71.25f, 7, true, false },
+        { TEXT("Верховье"),        307.5f, 69.75f, 7, true, true },
+        { TEXT("Залив"),           -140, 128,      7, true, true },
+        { TEXT("Луговая бровка"),  -47, 68,        7, true, true },
     };
     const TArray<FSpot>& SpotList()
     {
@@ -281,40 +320,115 @@ namespace
             TArray<FSpot> Out;
             for (const FSpotSeed& Seed : GSpotSeeds)
             {
-                const FShorePoint Shore = NearestShore(Seed.Near);
-                Out.Add({ Seed.Name, Shore.Location, Shore.Outward, Seed.HalfWidth, Seed.bBoards });
+                const FShorePoint Shore = NearestShore(At(Seed.X, Seed.Y));
+                Out.Add({ Seed.Name, Shore.Location, Shore.Outward, Seed.HalfWidth * Mt, Seed.bBoards });
             }
             return Out;
         }();
         return Instance;
     }
 
-    /** Clay bluffs: a point on the bank, how far along the bank (cm) and how high (m). */
-    struct FBluff { FVector2D C; float Reach, Height; };
+    /** The banks: bluffs and cliffs (centre, reach along the bank in m, height in m), low earth steps, flat banks, paths down. */
+    struct FBluff { float X, Y, Reach, Height; bool bCliff; };
     const FBluff GBluffs[] = {
-        { { Lay(3800), Lay(-12500) }, Lay(5500), 6.0f },      // the high bluff of the north bank, pines on top
-        { { Lay(31000), Lay(8200) }, Lay(3500), 3.5f },       // past the snag cove
-        { { Lay(-27000), Lay(-6500) }, Lay(3000), 2.2f },     // a low one near the west end
+        { -128, -54, 60, 6, false },          // the north bluff over the trough
+        { 58, -110, 30, 5, true },            // a cliff at the mouth of the backwater
+        { -232, -48, 30, 2.2f, true },        // the high bank at "Омут", a path down
+        { 202, -56, 34, 2.2f, true },         // the high bank at "Плёс", a path down
+        { 300, 12, 30, 4, true },             // a cliff over the upper end
+        { 152, -97, 34, 4, false },           // "Сосновый яр"
+    };
+    struct FStep { float X, Y, Reach, Height; };
+    const FStep GSteps[] = {
+        { -200, 96, 50, 0.5f }, { 200, 76, 30, 0.5f }, { -48, -80, 22, 0.4f }, { -258, 68, 26, 0.45f }, { -47, 68, 24, 0.5f },
+    };
+    struct FFlat { float X, Y, Reach; };
+    const FFlat GFlats[] = { { 50, 40, 45 }, { -116, 136, 40 }, { 340, 55, 30 }, { -292, 6, 22 } };
+    struct FDescent { float X, Y, Width; };
+    const FDescent GDescents[] = { { -232.5f, -45, 8 }, { 202.5f, -53, 8 } };
+
+    /** Valleys running to the lake (metres): the outflow, the brook, the spring's run and a dry ravine. */
+    struct FValley { TArray<FVector2D> Points; float HalfWidth; };
+    const TArray<FValley>& Valleys()
+    {
+        static const TArray<FValley> Instance = []
+        {
+            auto V = [](std::initializer_list<FVector2D> Metres, float HalfWidth)
+            {
+                FValley Out;
+                for (const FVector2D& P : Metres) Out.Points.Add(P * Mt);
+                Out.HalfWidth = HalfWidth * Mt;
+                return Out;
+            };
+            return TArray<FValley>{
+                V({ { -286, 14 }, { -322, 24 }, { -365, 16 }, { -420, 30 } }, 12),         // the outflow
+                V({ { 362, 49 }, { 392, 60 }, { 420, 64 }, { 525, 71 } }, 13),             // the brook
+                V({ { 57, -190 }, { 44, -222 }, { 30, -262 }, { 24, -300 } }, 10),         // the spring's run
+                V({ { -48.75f, -84 }, { -56.25f, -202.5f } }, 16),                         // the ravine above "Овраг"
+            };
+        }();
+        return Instance;
+    }
+
+    /** The bank at the waterline nearest to P. */
+    struct FBank { float Bluff = 0, Step = 0, Flat = 0; bool bCliff = false; };
+    FBank BankAt(const FVector2D& P)
+    {
+        FBank Out;
+        const float SD = ShoreDistance(P.X, P.Y);
+        const FVector2D Bank = FMath::Abs(SD) < 12000 ? NearestShore(P).Location : P;
+        const float Wander = Noise(Bank, 2000);
+        auto Near = [&](float X, float Y, float Reach)
+        {
+            const float R = Reach * Mt;
+            return 1 - S(R * 0.6f, R, FVector2D::Distance(Bank, At(X, Y)) + 0.12f * R * Wander);
+        };
+        for (const FBluff& B : GBluffs) { const float H = B.Height * Near(B.X, B.Y, B.Reach); if (H > Out.Bluff) { Out.Bluff = H; Out.bCliff = B.bCliff; } }
+        for (const FStep& B : GSteps) Out.Step = FMath::Max(Out.Step, B.Height * Near(B.X, B.Y, B.Reach));
+        for (const FFlat& B : GFlats) Out.Flat = FMath::Max(Out.Flat, Near(B.X, B.Y, B.Reach));
+        // A path down cuts the high bank at the water, not far into the hill.
+        float Ramp = 0;
+        for (const FDescent& Dsc : GDescents) Ramp = FMath::Max(Ramp, 1 - S(Dsc.Width * 50, Dsc.Width * Mt, FVector2D::Distance(Bank, At(Dsc.X, Dsc.Y))));
+        Ramp *= 1 - S(1000, 2500, FMath::Max(0.0f, -SD));
+        Out.Bluff *= 1 - Ramp;
+        Out.Step *= 1 - Ramp;
+        Out.Step *= 1 - S(0.5f, 1.5f, Out.Bluff);
+        Out.Flat *= 1 - S(0.2f, 1.0f, Out.Bluff + Out.Step);
+        return Out;
+    }
+
+    /** Warm weedy shallows: the south bay, the upper end, the crucian shallow and the backwater. */
+    struct FShallow { FEllipse Shape; float Weight; };
+    const FShallow GShallows[] = {
+        { GSouthBay, 0.85f },
+        { E(322, 45, 62, 30, 15), 1.0f },       // the upper end
+        { E(108, 22, 34, 17, 8), 1.0f },        // "Отмель", the crucian shallow
     };
 
-    /** Ravines running down to the lake: mouth (at the water), head, half-width (cm). */
-    struct FRavine { FVector2D Mouth, Head; float HalfWidth; };
-    const FRavine GRavines[] = {
-        { { Lay(-6500), Lay(-11200) }, { Lay(-7500), Lay(-27000) }, 1600 },
-        { { Lay(19500), Lay(-10500) }, { Lay(21500), Lay(-29000) }, 1500 },
-        { { Lay(38500), Lay(1000) },   { Lay(40500), Lay(-16000) }, 1300 },
-        { { Lay(48500), Lay(6500) },   { Lay(70000), Lay(9500) },   1400 },     // the brook valley above the lake
-    };
-
-    /** The main spine's channel depth (m) along the lake: deepest at the west end, shallow at the brook. */
+    /** The main spine's channel depth (m) along the lake: deepest in the west, shallow at the brook. */
     float ChannelDepth(float Fraction)
     {
-        static const float Table[][2] = { { 0.0f, 6.8f }, { 0.15f, 5.6f }, { 0.4f, 4.3f }, { 0.62f, 3.9f }, { 0.8f, 2.6f }, { 0.92f, 1.6f }, { 1.0f, 0.9f } };
+        static const float Table[][2] = { { 0.0f, 6.5f }, { 0.15f, 6.0f }, { 0.4f, 5.0f }, { 0.62f, 4.4f }, { 0.8f, 2.8f }, { 0.92f, 1.5f }, { 1.0f, 0.8f } };
         for (int32 I = 0; I + 1 < UE_ARRAY_COUNT(Table); ++I)
             if (Fraction <= Table[I + 1][0])
                 return FMath::Lerp(Table[I][1], Table[I + 1][1], FMath::SmoothStep(0.0f, 1.0f, (Fraction - Table[I][0]) / (Table[I + 1][0] - Table[I][0])));
         return Table[UE_ARRAY_COUNT(Table) - 1][1];
     }
+
+    /** Holes in the bed (+m), one level patch where the island stood, weed beds. */
+    struct FHole { FEllipse Shape; float Amp; bool bAnyBed; };
+    const FHole GHoles[] = {
+        { E(-88, -14, 115, 28, 12), 1.8f, false },     // the trough under the north bluff
+        { E(142, -72, 60, 13, 25), 2.8f, false },      // the trough under "Сосновый яр"
+        { E(-236, 0, 36, 28), 4.4f, false },            // the west hole
+        { E(-116, 104, 17, 12, 15), 2.4f, true },      // the hole in the south bay
+        { E(106, -12, 17, 12, 20), 3.6f, false },      // the hole beside the hump
+        { E(-68, 50, 15, 10, -140), 2.4f, false },     // in front of "Луговая бровка"
+        { E(222, -36, 34, 16, 30), 2.6f, false },      // the east hole in front of "Плёс"
+    };
+    struct FLevel { FEllipse Shape; float Depth, Flat; };
+    const FLevel GLevels[] = { { E(70, -8, 16, 11, 25), 1.8f, 1.0f } };    // the hump where the island stood
+    const FEllipse GWeeds[] = { E(108, 4, 26, 8, 8, 3), E(70, -8, 15, 10, 25, 6) };
 
     /** Along the bank and across it (positive inland) relative to a spot. */
     FVector2D SpotFrame(const FSpot& Spot, const FVector2D& P)
@@ -353,14 +467,14 @@ namespace
     {
         const FVector2D P(X, Y);
         const float SD = ShoreDistance(X, Y) / 100;     // metres, positive in the water
-        const float Bluff = BluffHeight(P);
         if (SD > 0)
         {
             // Lake bed: along most banks the bed drops off within a few metres of the waterline to
-            // about 1.5 m (in reach of a 6 m pole), steeper in front of the fishing spots, more gently
-            // here and there; a nearly flat foot, then the old river channel, deepest towards the
-            // west end. The backwater, the bay and the upper end keep a wide shallow shelf (reeds,
-            // lilies) and are no deeper than about 1.3 m, with a pocket in front of their spots.
+            // about 1.5 m (in reach of a 6 m pole), steeper in front of the fishing spots; a nearly flat
+            // foot, then the old river channel, deepest in the west. The weedy shallows keep a wide shelf
+            // no deeper than about 1.3 m. Under bluffs the bed falls to a broad scour pool; low undercut
+            // banks are deeper right at the edge; flat banks shelve out gently. Holes, the hump where
+            // the island stood and a little noise finish it.
             const FSpine::FHit Hit = MainSpine().Query(P);
             const float Channel = ChannelDepth(Hit.Along / MainSpine().Length);
             const float Lane = SD < 15 ? SpotLane(P) : 0.0f;
@@ -371,42 +485,74 @@ namespace
             float D = FMath::Lerp(BankBed(SD, Width, Foot), FMath::Min(ShelfBed(SD), 1.25f), Back * (1 - Lane));
             D = FMath::Lerp(D, FMath::Min(D, 1.35f), Back);
             D = FMath::Min(D, Channel);
-            D += Bluff * 0.45f * S(0, 5, SD);                                   // steep under the bluffs
-            D += 1.6f * Gauss(P, { Lay(-29500), Lay(1800) }, Lay(2600));          // the deep pool at the west end
-            D += 1.8f * Gauss(P, { Lay(16500), Lay(-7000) }, Lay(1600));          // the hole beyond the island
-            D += 1.1f * Gauss(P, { Lay(28500), Lay(300) }, Lay(1300));
-            D = FMath::Max(D - 2.4f * Gauss(P, { Lay(1500), Lay(-2500) }, Lay(1700)), FMath::Min(D, 1.0f));   // an underwater hump
-            D += 0.16f * Noise(P, 1500) * S(1, 4, SD);
+            const FBank Bank = SD < 60 ? BankAt(P) : FBank();
+            float Pool = 0, PoolHeight = 0;
+            bool bPoolCliff = false;
+            for (const FBluff& B : GBluffs)
+            {
+                const float W = (1 - S(B.Reach * 50, B.Reach * 110, FVector2D::Distance(P, At(B.X, B.Y)))) * FMath::Clamp((B.Height - 2) / 3, 0.0f, 1.0f);
+                if (W > Pool) { Pool = W; PoolHeight = B.Height; bPoolCliff = B.bCliff; }
+            }
+            Pool *= S(0, bPoolCliff ? 4 : 14, SD);
+            D = FMath::Lerp(D, FMath::Max(D, FMath::Min(Channel + 1, 3 + 0.65f * PoolHeight)), Pool);
+            D += Bank.Step * 0.5f * S(0, 1.2f, SD) * (1 - S(3, 9, SD));
+            D = FMath::Lerp(D, FMath::Min(D, 0.05f + 0.09f * SD), Bank.Flat * (1 - Lane));
+            for (const FHole& H : GHoles) D += H.Amp * H.Shape.Gauss(P) * S(2, 10, SD) * (H.bAnyBed ? 1 : 1 - Back);
+            // Level patches lie in open water only: the shallows and the banks keep their own bed.
+            float Level = 0;
+            for (const FLevel& L : GLevels)
+            {
+                const float W = FMath::Min(1.0f, L.Flat * L.Shape.Gauss(P)) * S(10, 26, SD) * (1 - Back);
+                D = FMath::Lerp(D, L.Depth, W);
+                Level = FMath::Max(Level, W);
+            }
+            D += 0.16f * Noise(P, 1500) * S(1, 4, SD) * (1 - 0.9f * Level);
             return SurfaceZ - FMath::Max(D, 0.05f) * 100;
         }
         const float L = -SD;                              // metres inland
+        float Blurred = SD * 100;
+        Field().Sample(Field().Blurred, X, Y, Blurred);
+        const float LH = FMath::Lerp(L, FMath::Max(-Blurred / 100, 0.0f), S(6, 20, L));   // for the hills, away from the water
         const float Forest = ForestAmount(P);
-        // The valley side: a low bank rising gently, bluffs where they are, then hills, higher and
-        // rounder in the forest, lower and terraced in the meadow.
-        float H = 0.35f * S(0, 4, L) + 0.035f * FMath::Min(L, 120.0f);
-        if (Bluff > 0)
+        const FBank Bank = L < 120 ? BankAt(P) : FBank();
+        // The valley side: a low bank rising gently (flatter on flat banks), a low earth step where
+        // there is one, bluffs and cliffs, then hills, higher in the forest, rolling in between.
+        float H = FMath::Lerp(0.35f * S(0, 4, L), 0.3f * S(0, 16, L), Bank.Flat * (1 - S(12, 24, L))) + 0.035f * FMath::Min(LH, 120.0f);
+        H += Bank.Step * S(0.1f, 0.7f, L + 0.25f * Noise(P, 300)) * (1 - S(6, 18, L));
+        if (Bank.Bluff > 0)
         {
-            const float Height = Bluff * (0.7f + 0.45f * Noise(P + FVector2D(123, 77), 1500));
-            const float Face = 3.5f + 2.5f * (0.5f + 0.5f * Noise(P + FVector2D(-500, 900), 1800));
-            // Gullies washed into the edge, and smaller ribs between them.
-            const float Ragged = 2.0f * Noise(P + FVector2D(911, -377), 700) + 0.8f * Noise(P + FVector2D(37, 5), 400) + 0.3f * Noise(P, 150);
-            H += Height * S(1.2f, 1.2f + Face, L + Ragged);
+            const float Height = Bank.Bluff * (0.7f + 0.45f * Noise(P + FVector2D(123, 77), 1500));
+            const float Spread = 0.5f + 0.5f * Noise(P + FVector2D(-500, 900), 1800);
+            // A cliff is a steep clay wall 1.5-3 m across, a bluff a slope 3.5-6 m across.
+            const float Face = Bank.bCliff ? 1.5f + 1.5f * Spread : 3.5f + 2.5f * Spread;
+            const float Toe = Bank.bCliff ? 0.5f : 1.2f;
+            // Gullies washed into the edge, and smaller ribs between them; a cliff is torn by deeper ones.
+            const float Ragged = (Bank.bCliff ? 1.8f : 2.0f) * Noise(P + FVector2D(911, -377), 700) + (Bank.bCliff ? 1.2f : 0.8f) * Noise(P + FVector2D(37, 5), 400)
+                + (Bank.bCliff ? 0.5f * Noise(P + FVector2D(-260, 140), 180) : 0.0f);
+            H += Height * S(Toe, Toe + Face, L + Ragged) * (1 - S(25, 70, L));    // the top merges into the hills
         }
-        H += FMath::Lerp(7.0f, 16.0f, Forest) * (0.5f + 0.5f * Fbm(P, 22000)) * S(8, 90, L);
-        H += 2.2f * Fbm(P + FVector2D(300, 900), 5000) * S(5, 30, L) + 0.25f * Noise(P + FVector2D(-77, 31), 500);
-        // The island: a low wooded hump.
-        H += 1.8f * (1 - S(0, Lay(2600), FVector2D::Distance(P, GIsland))) * S(1.5f, 6, L);
-        // Ravines cut down through the hills to the lake, their floors rising gently inland.
-        for (const FRavine& R : GRavines)
+        H += FMath::Lerp(12.0f, 24.0f, Forest) * (0.5f + 0.5f * Fbm(P, 22000)) * S(8, 90, LH);
+        H += 5.0f * Fbm(P + FVector2D(4000, -7000), 9000) * S(10, 50, LH);                 // rolling hills between the big ones
+        H += 2.2f * Fbm(P + FVector2D(300, 900), 5000) * S(5, 30, LH) + 0.25f * Noise(P + FVector2D(-77, 31), 500);
+        // Valleys cut down through the hills to the lake, their floors rising gently inland.
+        for (const FValley& V : Valleys())
         {
-            float T;
-            const float Dist = SegmentDistance(P, R.Mouth, R.Head, &T);
-            if (Dist > R.HalfWidth * 1.8f) continue;
-            const float Floor = 0.3f + 0.045f * T * FVector2D::Distance(R.Mouth, R.Head) / 100;
-            H = FMath::Min(H, FMath::Lerp(Floor, H, S(0, R.HalfWidth * 1.8f, Dist + 0.3f * R.HalfWidth * Noise(P, 1200))));
+            float Acc = 0;
+            for (int32 K = 0; K + 1 < V.Points.Num(); ++K)
+            {
+                float T;
+                const float Dist = SegmentDistance(P, V.Points[K], V.Points[K + 1], &T);
+                const float Segment = FVector2D::Distance(V.Points[K], V.Points[K + 1]);
+                if (Dist < V.HalfWidth * 1.8f)
+                {
+                    const float Floor = 0.3f + 0.045f * (Acc + T * Segment) / 100;
+                    H = FMath::Min(H, FMath::Lerp(Floor, H, S(0, V.HalfWidth * 1.8f, Dist + 0.3f * V.HalfWidth * Noise(P, 1200))));
+                }
+                Acc += Segment;
+            }
         }
-        // The village plateau and the camp: level ground.
-        const float Village = 1 - S(6000, 9500, FVector2D::Distance(P, GVillage));
+        // The village stands on a hill: the ground is eased, not levelled.
+        const float Village = 0.45f * (1 - S(GVillageRadius * 0.75f, GVillageRadius * 1.15f, FVector2D::Distance(P, GVillage)));
         H = FMath::Lerp(H, 3.0f + 0.12f * Noise(P, 900), Village * S(4, 12, L));
         const float Camp = (1 - S(700, 1600, FVector2D::Distance(P, StartSpot()))) * S(0.5f, 4, L);
         H = FMath::Lerp(H, 0.4f * S(0, 5, L) + 0.04f, Camp);
@@ -429,6 +575,9 @@ namespace
             // Everything the ground depends on is made first, so the parallel loop only reads.
             Field();
             SpotList();
+            Valleys();
+            MainSpine();
+            BackwaterSpine();
             Min = TerrainBounds.Min;
             NX = FMath::CeilToInt((TerrainBounds.Max.X - Min.X) / Cell) + 1;
             NY = FMath::CeilToInt((TerrainBounds.Max.Y - Min.Y) / Cell) + 1;
@@ -450,6 +599,32 @@ namespace
         }
     };
     const FGroundGrid& GroundGrid() { static const FGroundGrid Instance; return Instance; }
+
+    /** Weed beds under water (1 inside), between 0.6 and 3.8 m deep. */
+    float WeedAt(const FVector2D& P)
+    {
+        float W = 0;
+        for (const FEllipse& Bed : GWeeds) W = FMath::Max(W, 1 - S(0.75f, 1.05f, Bed.K(P) + 0.15f * Noise(P, 600)));
+        if (W <= 0) return 0;
+        const float D = Depth(P.X, P.Y) / 100;
+        return W * S(0.6f, 1.0f, D) * (1 - S(3.2f, 3.8f, D));
+    }
+    /** An old half-sunk boat by the pier and a row of old stakes in the south bay: cover, like the snags. */
+    struct FCover { FVector2D A, B; };
+    const TArray<FCover>& CoverObjects()
+    {
+        static const TArray<FCover> Instance = []
+        {
+            TArray<FCover> Out;
+            float Yaw = 0;
+            const FVector2D Boat = OldBoat(&Yaw), Keel = FVector2D(1, 0).GetRotated(Yaw) * 220;
+            Out.Add({ Boat - Keel, Boat + Keel });
+            const FVector2D First = At(-122, 98), Last = At(-100, 92);
+            for (int32 K = 0; K < 7; ++K) { const FVector2D Stake = First + (Last - First) * (K / 6.0); Out.Add({ Stake, Stake + FVector2D(10, 10) }); }
+            return Out;
+        }();
+        return Instance;
+    }
 }
 
 // --- the water --------------------------------------------------------------------------------
@@ -457,7 +632,7 @@ namespace
 float LakeMap::ShoreDistance(float X, float Y)
 {
     float D;
-    if (Field().Sample(X, Y, D)) return D;
+    if (Field().Sample(Field().D, X, Y, D)) return D;
     return -50000.0f;    // far outside the terrain: deep inland
 }
 FShorePoint LakeMap::NearestShore(const FVector2D& P)
@@ -468,7 +643,6 @@ FShorePoint LakeMap::NearestShore(const FVector2D& P)
     Out.Outward = (-G).GetSafeNormal();
     if (Out.Outward.IsNearlyZero()) Out.Outward = FVector2D(0, 1);
     Out.Location = P + Out.Outward * D;
-    Out.bIsland = FVector2D::Distance(Out.Location, GIsland) < Lay(4500);
     return Out;
 }
 const TArray<FShorePoint>& LakeMap::Shoreline() { return Field().Shore; }
@@ -512,36 +686,25 @@ const FSpot* LakeMap::SpotAt(const FVector2D& P)
     }
     return nullptr;
 }
-float LakeMap::BluffHeight(const FVector2D& P)
-{
-    // Find the bank first, so the bluff's height carries inland and out over the water.
-    const FVector2D Bank = FMath::Abs(ShoreDistance(P.X, P.Y)) < 3000 ? NearestShore(P).Location : P;
-    float H = 0;
-    for (const FBluff& B : GBluffs) H = FMath::Max(H, B.Height * (1 - S(B.Reach * 0.6f, B.Reach, FVector2D::Distance(Bank, B.C))));
-    return H;
-}
+float LakeMap::BluffHeight(const FVector2D& P) { return BankAt(P).Bluff; }
 float LakeMap::BackwaterAmount(float X, float Y)
 {
     const FVector2D P(X, Y);
+    float Amount = 0;
+    for (const FShallow& Shallow : GShallows) Amount = FMath::Max(Amount, (1 - S(0.7f, 1.1f, Shallow.Shape.K(P))) * Shallow.Weight);
     const FSpine::FHit Arm = BackwaterSpine().Query(P);
-    const float Backwater = S(-600.0f, 600.0f, Arm.Width - Arm.Dist) * S(Lay(2000), Lay(5000), Arm.Along);
-    const float Bay = 1 - S(0.7f, 1.1f, GSouthBay.K(P));
-    const FSpine::FHit Main = MainSpine().Query(P);
-    const float Upper = S(0.8f, 0.9f, Main.Along / MainSpine().Length);
-    return FMath::Max3(Backwater, Bay * 0.85f, Upper);
+    return FMath::Max(Amount, S(-600.0f, 600.0f, Arm.Width - Arm.Dist) * S(1200.0f, 4000.0f, Arm.Along));
 }
 float LakeMap::ForestAmount(const FVector2D& P)
 {
-    // Open meadow on the south bank west of the narrows, round the west end and on the village plateau;
-    // forest everywhere else. The edges wander.
-    const FSpine::FHit Main = MainSpine().Query(P);
-    const float Edge = 2500.0f * Noise(P, 6000);
-    const float SouthMeadow = (Main.bSouth && P.Y > Lay(-14000)) ? 1 - S(Lay(1500), Lay(9000), P.X + Edge) : 0.0f;
-    const float WestMeadow = 1 - S(Lay(-36000), Lay(-29000), P.X + Edge);
-    const float Village = 1 - S(8000, 13000, FVector2D::Distance(P, GVillage));
-    // Far away on the meadow side the forest closes in again on the horizon.
-    const float Far = S(Lay(25000), Lay(34000), P.Y + Edge);
-    return 1 - FMath::Max(FMath::Max(SouthMeadow, WestMeadow) * (1 - Far), Village);
+    // Hilly meadow along the south bank from the camp past the bay to the village; forest everywhere
+    // else. The edges wander.
+    static const FEllipse Meadows[] = { E(60, 108, 125, 85, 0, 3), E(-82, 126, 160, 82, 4, 4) };
+    float Open = 0;
+    for (const FEllipse& M : Meadows) Open = FMath::Max(Open, 1 - S(0.8f, 1.05f, M.K(P) + 0.12f * Noise(P, 4500)));
+    const float Edge = 1200 * Noise(P + FVector2D(5000, 0), 4000);
+    Open = FMath::Max(Open, 1 - S(GVillageRadius * 1.05f, GVillageRadius * 1.5f, FVector2D::Distance(P, GVillage) + Edge));
+    return 1 - Open;
 }
 
 FVector2D LakeMap::StartSpot(FVector2D* OutFacing)
@@ -571,89 +734,156 @@ bool LakeMap::OnPier(const FVector& P)
     // A wider landing stage at the far end.
     return Across <= (Along > Pr.Length - 300 ? 230.0f : Pr.Width * 0.5f + 30);
 }
-FShorePoint LakeMap::Landing() { static const FShorePoint Instance = NearestShore({ Lay(-14500), Lay(18200) }); return Instance; }
+FShorePoint LakeMap::Landing()
+{
+    // The boats lie on the bank a dozen metres west of the pier.
+    static const FShorePoint Instance = []
+    {
+        const FSpot& Spot = SpotList()[1];
+        return NearestShore(Spot.Location - FVector2D(-Spot.Outward.Y, Spot.Outward.X) * 1200);
+    }();
+    return Instance;
+}
+FVector2D LakeMap::OldBoat(float* OutYaw)
+{
+    if (OutYaw) *OutYaw = 60;
+    return At(46, 14);
+}
 FVector2D LakeMap::VillageCentre() { return GVillage; }
-FVector2D LakeMap::IslandCentre() { return GIsland; }
 FVector2D LakeMap::WestBay() { return GWestBay.C - FVector2D(1, 0).GetRotated(GWestBay.Yaw) * GWestBay.Axes.X; }
-FVector2D LakeMap::WestEnd() { return FVector2D(Lay(-40000), Lay(1800)); }
+FVector2D LakeMap::WestEnd() { return At(-300, 13.5f); }
 
 const TArray<FSnag>& LakeMap::Snags()
 {
     static const TArray<FSnag> Instance = []
     {
-        // Fallen trees along the wooded banks: thickest in the snag cove and under the bluff, a
-        // couple off the island, none in front of the fishing spots or the pier.
+        // Fallen trees along the wooded banks: thickest in the snag zones and under the bluffs, none in
+        // front of the fishing spots or the pier; and a few trees sunk in open water by the hump.
         TArray<FSnag> Out;
-        FRandomStream Random(9113);
+        FRandomStream Random(2203);
         const TArray<FShorePoint>& Shore = Shoreline();
-        auto TryAdd = [&](const FShorePoint& S, float MinSpacing)
+        const FPier& Pr = Pier();
+        const FEllipse Zones[] = { E(-274, 50, 16, 12, -40), GSnagCove, E(100, -110, 24, 14) };
+        for (int32 Try = 0; Try < 20000 && Out.Num() < 30; ++Try)
         {
-            if (SpotAmount(S.Location - S.Outward * 600) > 0.05f) return false;
-            for (const FSnag& Other : Out) if (FVector2D::Distance(FVector2D(Other.Root), S.Location) < MinSpacing) return false;
-            const FVector2D Dir = (-S.Outward).GetRotated(Random.FRandRange(-28, 28));
-            const FVector2D Root2 = S.Location + S.Outward * 120;
+            const FShorePoint& Sh = Shore[Random.RandRange(0, Shore.Num() - 1)];
+            bool bZone = false;
+            for (const FEllipse& Z : Zones) bZone |= Z.K(Sh.Location) < 1.2f;
+            const bool bBluff = BluffHeight(Sh.Location) > 1.5f;
+            const float Chance = bZone ? 1.0f : bBluff ? 0.35f : 0.05f * ForestAmount(Sh.Location + Sh.Outward * 600);
+            if (Random.FRand() > Chance) continue;
+            if (SpotAmount(Sh.Location - Sh.Outward * 600) > 0.05f) continue;
+            bool bCrowded = false;
+            for (const FSnag& Other : Out) bCrowded |= !Other.bSunken && FVector2D::Distance(FVector2D(Other.Root), Sh.Location) < (bZone ? 900.0f : 3500.0f);
+            if (bCrowded) continue;
+            const FVector2D Dir = (-Sh.Outward).GetRotated(Random.FRandRange(-28, 28));
+            const FVector2D Root2 = Sh.Location + Sh.Outward * 120;
             const FVector2D Tip2 = Root2 + Dir * Random.FRandRange(900, 1500);
-            if (!IsWater(Tip2.X, Tip2.Y)) return false;
-            for (const FSpot& Spot : SpotList()) if (SegmentDistance(Spot.Location, Root2, Tip2) < 1500) return false;
+            if (ShoreDistance(Tip2.X, Tip2.Y) < 20) continue;
+            bool bInLane = SegmentDistance(Pr.Root, Root2, Tip2) < 2000;
+            for (const FSpot& Spot : SpotList()) bInLane |= SegmentDistance(Spot.Location, Root2, Tip2) < 1500;
+            if (bInLane) continue;
             FSnag Snag;
             Snag.Root = FVector(Root2, Ground(Root2.X, Root2.Y) + 20);
             Snag.Tip = FVector(Tip2, FMath::Min(Ground(Tip2.X, Tip2.Y) + 25, SurfaceZ - 30));
             Snag.Radius = Random.FRandRange(16, 28);
             Out.Add(Snag);
-            return true;
-        };
-        for (int32 Try = 0; Try < 30000 && Out.Num() < 40; ++Try)
-        {
-            const FShorePoint& S = Shore[Random.RandRange(0, Shore.Num() - 1)];
-            const bool bCove = GSnagCove.K(S.Location) < 1.3f;
-            const bool bBluff = BluffHeight(S.Location) > 1.5f;
-            const float Chance = bCove ? 1.0f : bBluff ? 0.4f : S.bIsland ? 0.15f : 0.05f * ForestAmount(S.Location);
-            if (Random.FRand() > Chance) continue;
-            TryAdd(S, bCove ? 900.0f : 3500.0f);
         }
-        // The fishing spot in the snag cove has a fallen tree of its own, 4-5 m along the bank and
-        // leaning away from its casting lane: the perch and pike holding by it are in reach of a pole.
-        for (const FSpot& Spot : SpotList())
+        // Trees sunk in open water: by the hump and its hole, on the hump's slope, and off "Луговая бровка".
+        const float Sunken[][5] = {
+            { 94, -2, 100, -13, 30 }, { 116, -4, 123, -14, 25 }, { 101, -25, 111, -29, 22 }, { 57, 4, 64, -6, 25 }, { -57, 54, -60, 45, 24 },
+        };
+        for (const auto& T : Sunken)
         {
-            if (!Spot.bBoards || GSnagCove.K(Spot.Location) > 1.3f) continue;
-            const FVector2D Along(-Spot.Outward.Y, Spot.Outward.X);
-            const FVector2D Root2 = Spot.Location + Along * 450 + Spot.Outward * 120;
-            const FVector2D Tip2 = Root2 + (-Spot.Outward).GetRotated(-18) * 1150;
-            if (!IsWater(Tip2.X, Tip2.Y)) continue;
+            const FVector2D A = At(T[0], T[1]), B = At(T[2], T[3]);
             FSnag Snag;
-            Snag.Root = FVector(Root2, Ground(Root2.X, Root2.Y) + 20);
-            Snag.Tip = FVector(Tip2, FMath::Min(Ground(Tip2.X, Tip2.Y) + 25, SurfaceZ - 30));
-            Snag.Radius = 24;
+            Snag.Root = FVector(A, Ground(A.X, A.Y) + T[4]);
+            Snag.Tip = FVector(B, Ground(B.X, B.Y) + T[4]);
+            Snag.Radius = T[4];
+            Snag.bSunken = true;
             Out.Add(Snag);
         }
         return Out;
     }();
     return Instance;
 }
+
+namespace
+{
+    /** Spots that keep only a narrow window in the lilies for the float (the rest keep a casting lane). */
+    bool SpotHasLilyWindow(int32 Index) { return Index < UE_ARRAY_COUNT(GSpotSeeds) && GSpotSeeds[Index].bLilies; }
+    /** True where no lily may grow: casting lanes and windows in front of the spots, along the pier. BedCentre widens the window for bed centres. */
+    bool LilyBlocked(const FVector2D& P, bool bBedCentre)
+    {
+        const TArray<FSpot>& List = SpotList();
+        for (int32 I = 0; I < List.Num(); ++I)
+        {
+            const FVector2D F = SpotFrame(List[I], P);
+            if (F.Y >= 0) continue;
+            if (SpotHasLilyWindow(I) ? FMath::Abs(F.X) < 350 + (bBedCentre ? 200 : 0) && F.Y > -1600
+                                     : FMath::Abs(F.X) < List[I].HalfWidth + 300 && F.Y > -3000) return true;
+        }
+        const FPier& Pr = Pier();
+        return SegmentDistance(P, Pr.Root, Pr.Root + Pr.Dir * Pr.Length) < 700;
+    }
+}
+
 const TArray<FLilyBed>& LakeMap::LilyBeds()
 {
     static const TArray<FLilyBed> Instance = []
     {
         TArray<FLilyBed> Out;
-        FRandomStream Random(4242);
+        FRandomStream Random(2203 * 7 + 4242);
+        const FEllipse Yellow[] = { E(72, -165, 26, 32), E(318, 44, 80, 46, 15) };     // brandy-bottle in the backwater and the upper end
+        auto Add = [&](const FVector2D& C, float Radius, float MaxDepth)
+        {
+            bool bYellow = false;
+            for (const FEllipse& Y : Yellow) bYellow |= Y.K(C) < 1;
+            Out.Add({ C, Radius, MaxDepth, bYellow });
+        };
+        // Tidy clumps along the reed edge at the upper end, either side of the window at "Верховье".
+        const float Placed[][3] = { { 293, 54, 3.8f }, { 320, 53, 3.8f }, { 279, 54, 3.4f }, { 329, 44, 4.4f }, { 325, 33, 4 }, { 318, 23, 3.2f } };
+        for (const auto& B : Placed) Add(At(B[0], B[1]), B[2] * Mt, 180.0f);
+        // A belt of clumps along the meadow bank, 4-13 m out, up to 2.3 m deep; windows stay open.
+        const TArray<FShorePoint>& Shore = Shoreline();
+        const float Banks[][4] = { { -160, 105, 58, 7 }, { -80, 95, 48, 7 }, { -35, 52, 48, 7 }, { 8, 30, 22, 8 } };
+        for (const auto& Z : Banks)
+        {
+            TArray<const FShorePoint*> Points;
+            for (const FShorePoint& Sh : Shore) if (FVector2D::Distance(Sh.Location, At(Z[0], Z[1])) < Z[2] * Mt) Points.Add(&Sh);
+            TArray<FVector2D> Used;
+            for (int32 K = 0; K < Points.Num(); ++K)
+            {
+                const FShorePoint& Sh = *Points[Random.RandRange(0, Points.Num() - 1)];
+                bool bNear = false;
+                for (const FVector2D& U : Used) bNear |= FVector2D::Distance(U, Sh.Location) < Z[3] * Mt;
+                if (bNear) continue;
+                Used.Add(Sh.Location);
+                const FVector2D C = Sh.Location - Sh.Outward * Random.FRandRange(400, 1300);
+                bool bOverlap = false;
+                for (const FLilyBed& B : Out) bOverlap |= FVector2D::Distance(B.Centre, C) < B.Radius + 150;
+                if (bOverlap || LilyBlocked(C, true)) continue;
+                Add(C, Random.FRandRange(300, 580), 230.0f);
+            }
+        }
+        // Beds scattered through the shallows; the upper end keeps only its tidy clumps.
+        const FEllipse Free = E(318, 44, 78, 44, 15);
         const FBox2D Box = LakeBounds();
-        const FPier& Pr = Pier();
-        for (int32 Try = 0; Try < 40000 && Out.Num() < 380; ++Try)
+        for (int32 Try = 0; Try < 40000 && Out.Num() < 200; ++Try)
         {
             const FVector2D P(Random.FRandRange(Box.Min.X, Box.Max.X), Random.FRandRange(Box.Min.Y, Box.Max.Y));
             const float SD = ShoreDistance(P.X, P.Y) / 100, D = Depth(P.X, P.Y) / 100;
-            if (SD < 1.5f || SD > 24 || D < 0.35f || D > 1.7f) continue;
+            if (SD < 2.5f || SD > 26 || D < 0.45f || D > 1.6f) continue;
             const float Back = BackwaterAmount(P.X, P.Y);
-            if (Back < 0.5f && Random.FRand() > 0.45f) continue;
-            // Keep casting lanes clear in front of every spot and along the pier.
-            bool bLane = false;
-            for (const FSpot& Spot : SpotList())
-            {
-                const FVector2D F = SpotFrame(Spot, P);
-                bLane |= FMath::Abs(F.X) < Spot.HalfWidth + 500 && F.Y < 0 && F.Y > -3500;
-            }
-            if (bLane || SegmentDistance(P, Pr.Root, Pr.Root + Pr.Dir * Pr.Length) < 700) continue;
-            Out.Add({ P, (float)(Back > 0.5f ? Random.FRandRange(350.0f, 800.0f) : Random.FRandRange(180.0f, 500.0f)) });
+            bool bNearWindow = false;
+            const TArray<FSpot>& List = SpotList();
+            for (int32 I = 0; I < List.Num(); ++I) bNearWindow |= SpotHasLilyWindow(I) && FVector2D::Distance(List[I].Location, P) < 2200;
+            if (!bNearWindow && Back < 0.5f && Random.FRand() > 0.3f) continue;
+            if (LilyBlocked(P, true) || Free.K(P) < 1) continue;
+            bool bOverlap = false;
+            for (const FLilyBed& B : Out) bOverlap |= FVector2D::Distance(B.Centre, P) < B.Radius + 200;
+            if (bOverlap) continue;
+            Add(P, Back > 0.5f || bNearWindow ? Random.FRandRange(300, 800) : Random.FRandRange(160, 420), 180.0f);
         }
         return Out;
     }();
@@ -670,6 +900,7 @@ float LakeMap::LilyAmount(float X, float Y)
     }
     return Amount;
 }
+bool LakeMap::LilyAllowed(const FVector2D& P) { return !LilyBlocked(P, false); }
 
 LakeMap::FZones LakeMap::ZonesAt(float X, float Y)
 {
@@ -678,7 +909,7 @@ LakeMap::FZones LakeMap::ZonesAt(float X, float Y)
     if (SD <= 0.2f) return Z;
     const FVector2D P(X, Y);
     const float D = Depth(X, Y) / 100;
-    // Warm weedy shallows: the backwater, the bay, the upper end and the lily beds.
+    // Warm weedy shallows: the backwater, the bay, the upper end, the crucian shallow and the lily beds.
     Z.Shallows = FMath::Max(BackwaterAmount(X, Y), LilyAmount(X, Y)) * S(0.25f, 0.45f, D) * (1 - S(1.8f, 2.4f, D));
     // Just outside the reed belt (none under the bluffs; at a spot the clearing is only a gap that
     // fish swimming along the weed edge pass through).
@@ -690,13 +921,14 @@ LakeMap::FZones LakeMap::ZonesAt(float X, float Y)
     const FVector2D Bankward = P + NearestShore(P).Outward * 300;
     const float Rise = (D - Depth(Bankward.X, Bankward.Y) / 100) / 3;
     Z.DropOff = FMath::Max(S(0.08f, 0.2f, Slope), 0.8f * S(0.12f, 0.25f, Rise)) * S(0.8f, 1.5f, D);
-    // Snags, the pier piles and the island's fringe.
+    // Snags and sunken trees, the pier piles, the old boat and stakes, the weed beds.
     float Cover = 0;
     for (const FSnag& Snag : Snags())
         Cover = FMath::Max(Cover, 1 - S(150, 500, SegmentDistance(P, FVector2D(Snag.Root), FVector2D(Snag.Tip))));
     const FPier& Pr = Pier();
     Cover = FMath::Max(Cover, 1 - S(150, 450, SegmentDistance(P, Pr.Root, Pr.Root + Pr.Dir * Pr.Length)));
-    Cover = FMath::Max(Cover, 0.5f * (1 - S(900, 1500, FVector2D::Distance(P, GIsland) - Lay(2500))));
+    for (const FCover& C : CoverObjects()) Cover = FMath::Max(Cover, 1 - S(150, 450, SegmentDistance(P, C.A, C.B)));
+    Cover = FMath::Max(Cover, 0.6f * WeedAt(P));
     Z.Cover = Cover;
     Z.Deep = S(3.4f, 4.8f, D);
     Z.Open = S(12, 25, SD) * (1 - 0.5f * Z.Deep);

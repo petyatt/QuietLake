@@ -23,7 +23,7 @@ void ALakeBirds::BeginPlay()
     const FVector2D Camp = LakeMap::StartSpot(&Facing);
     const FVector2D Side(-Facing.Y, Facing.X);
     Centres = { FVector(Camp + Facing * 5500 + Side * 3500, LakeMap::SurfaceZ + 2300),
-        FVector(LakeMap::IslandCentre(), LakeMap::SurfaceZ + 3400),
+        FVector(LakeMap::Centre, LakeMap::SurfaceZ + 3400),
         FVector(LakeMap::WestBay(), LakeMap::SurfaceZ + 2900) };
     Mesh->SetMaterial(0, LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Bark.M_Bark")));
     Tick(0);
