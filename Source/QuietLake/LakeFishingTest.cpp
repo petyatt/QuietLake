@@ -652,7 +652,7 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     // letting go. Logged as QUIET_LAKE_BITE_SURVEY.
     struct FKind { EFishSpecies Species; EBait Bait; bool bBottom; float Weight; };
     const FKind Kinds[] = { { EFishSpecies::Roach, EBait::Maggot, false, 0.15f }, { EFishSpecies::Perch, EBait::Worm, false, 0.3f },
-                            { EFishSpecies::Crucian, EBait::Bread, true, 0.5f }, { EFishSpecies::Pike, EBait::Worm, false, 2.0f } };
+                            { EFishSpecies::Crucian, EBait::Bread, true, 1.2f }, { EFishSpecies::Pike, EBait::Worm, false, 2.0f } };
     struct FSurvey { int32 Trials = 0, Takes = 0, Returns = 0, LeftUntaken = 0; float Testing = 0, Window = 0, MinWindow = 1e9f, MaxWindow = 0; };
     FSurvey Survey[4];
     constexpr float Dt = 0.05f;
@@ -1195,7 +1195,8 @@ bool FLakeFishMotionTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("A splash right beside it: it bolts"), Shy->IsFree());
 
     // Sizes: the model follows the weight in length and build.
-    TestTrue(TEXT("A big crucian is deeper-bodied than a small one"), Girth(EFishSpecies::Crucian, 0.9f) > Girth(EFishSpecies::Crucian, 0.15f) + 0.1f);
+    const FFishSpeciesInfo& CrucianInfo = LakeFish::Info(EFishSpecies::Crucian);
+    TestTrue(TEXT("A big crucian is deeper-bodied than a small one"), Girth(EFishSpecies::Crucian, CrucianInfo.MaxWeight) > Girth(EFishSpecies::Crucian, CrucianInfo.MinWeight) + 0.1f);
     TestTrue(TEXT("Big fish are calmer"), SpawnFish(World, EFishSpecies::Perch, 0.8f, Open)->Agility < SpawnFish(World, EFishSpecies::Perch, 0.08f, Open + FVector(200, 0, 0))->Agility);
 
     // A feeding crucian roots nose down at the bottom.
@@ -1382,6 +1383,63 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Crucian"), Count[(int32)EFishSpecies::Crucian], 240);
     TestEqual(TEXT("Pike"), Count[(int32)EFishSpecies::Pike], 24);
     TestTrue(TEXT("Every fish is in the water"), bInWater);
+
+    // Crucian keep in loose groups by size at their own spots (stock.sizes, stock.groups, stock.spots
+    // in the passport): small ones together, big ones alone or in twos; none at the other spots.
+    {
+        const FFishSpeciesInfo& C = LakeFish::Info(EFishSpecies::Crucian);
+        const TConstArrayView<LakeMap::FSpot> AllSpots = LakeMap::Spots();
+        auto ToWater = [](const LakeMap::FSpot& Spot, FVector2D P)
+        {
+            FVector2D A = Spot.Location - Spot.Outward * 200, B = Spot.Location - Spot.Outward * 600;
+            if (!Spot.bBoards)
+            {
+                const LakeMap::FPier& Pier = LakeMap::Pier();
+                A = Pier.Root + Pier.Dir * (Pier.Length + 200);
+                B = Pier.Root + Pier.Dir * (Pier.Length + 600);
+            }
+            const float T = FMath::Clamp(FVector2D::DotProduct(P - A, B - A) / (B - A).SizeSquared(), 0.0f, 1.0f);
+            return (float)FVector2D::Distance(P, A + (B - A) * T);
+        };
+        TArray<int32> AtSpot;
+        AtSpot.Init(0, AllSpots.Num());
+        TMap<FIntPoint, int32> SmallHomes, BigHomes;
+        int32 Crucians = 0, Small = 0, BigCount = 0;
+        bool bWeights = true;
+        for (const ALakeFish* Fish : All)
+        {
+            if (Fish->Species != EFishSpecies::Crucian) continue;
+            ++Crucians;
+            bWeights &= Fish->WeightKg >= C.MinWeight - 0.001f && Fish->WeightKg <= C.MaxWeight + 0.001f;
+            const FVector2D Home(Fish->GetHomeAnchor());
+            const FIntPoint Key(FMath::RoundToInt(Home.X), FMath::RoundToInt(Home.Y));
+            if (Fish->WeightKg < 0.3f) { ++Small; ++SmallHomes.FindOrAdd(Key); }
+            if (Fish->WeightKg > 1.0f) { ++BigCount; ++BigHomes.FindOrAdd(Key); }
+            int32 Owner = INDEX_NONE;
+            float Best = 600;
+            for (int32 I = 0; I < AllSpots.Num(); ++I)
+                if (const float D = ToWater(AllSpots[I], Home); D < Best) { Best = D; Owner = I; }
+            if (Owner != INDEX_NONE) ++AtSpot[Owner];
+        }
+        int32 BiggestBig = 0;
+        for (const TPair<FIntPoint, int32>& H : BigHomes) BiggestBig = FMath::Max(BiggestBig, H.Value);
+        FString Where, Stray;
+        for (int32 I = 0; I < AllSpots.Num(); ++I)
+        {
+            const bool bListed = C.Stock.Spots.Contains(AllSpots[I].Name);
+            if (bListed) Where += FString::Printf(TEXT(" %s %d,"), AllSpots[I].Name, AtSpot[I]);
+            if (bListed && AtSpot[I] < 3) Stray += FString::Printf(TEXT(" too few at %s (%d),"), AllSpots[I].Name, AtSpot[I]);
+            if (!bListed && AtSpot[I] > 0) Stray += FString::Printf(TEXT(" %d at %s,"), AtSpot[I], AllSpots[I].Name);
+        }
+        AddInfo(FString::Printf(TEXT("Crucian: %d, under 0.3 kg %d in %d groups, over 1 kg %d in %d groups; at its spots:%s"),
+            Crucians, Small, SmallHomes.Num(), BigCount, BigHomes.Num(), *Where));
+        TestEqual(TEXT("Crucian: as many as set"), Crucians, 240);
+        TestTrue(TEXT("Crucian: weights within the passport's"), bWeights);
+        TestTrue(FString::Printf(TEXT("Crucian: most are small, as the sizes say (%d of %d under 0.3 kg)"), Small, Crucians), Small >= Crucians * 50 / 100 && Small <= Crucians * 70 / 100);
+        TestTrue(TEXT("Crucian: the small ones keep in groups (at least 4 a group on average)"), SmallHomes.Num() * 4 <= Small);
+        TestTrue(TEXT("Crucian: the big ones alone or in twos"), BiggestBig <= 2);
+        TestTrue(FString::Printf(TEXT("Crucian: at its own spots only (%s)"), *Stray), Stray.IsEmpty());
+    }
 
     // Every spot has a school in reach: within a perch's sense of the water its pole reaches
     // (2-6 m out from the waterline; from the pier, beyond its end).

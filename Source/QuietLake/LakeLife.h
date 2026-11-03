@@ -176,11 +176,14 @@ private:
     /** Water fish can be stocked in, on a 3 m grid, and how well it suits each species (LakeFish::HabitatScore). */
     struct FStockPlace { FVector2D P; TArray<float, TInlineAllocator<8>> Score; };
     void BuildStockPlaces();
-    /** A stocking place for Species, drawn by how well the water suits it, among Candidates (all if empty), at least Spacing from Taken and Away from every player. */
-    bool DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candidates, const TArray<FVector2D>& Taken, float Spacing, float Away, FVector2D& Out);
-    /** Weight < 0: drawn for the species (most fish small, big ones rare). */
+    /** A stocking place for Species, drawn by how well the water suits it, among Candidates (all if empty), at least Spacing from Taken and Away from every player. DeeperM: for fish that go deeper than the species' habitat. */
+    bool DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candidates, const TArray<FVector2D>& Taken, float Spacing, float Away, FVector2D& Out, float DeeperM = 0);
+    /** Weight < 0: drawn by the passport (LakeFish::DrawWeight). Home: the school's home, or a loose group's (zero: where it is put). */
     ALakeFish* SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift, float Weight = -1);
-    void RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries);
+    /** LikeWeight > 0: a newcomer of that size band (a loose group keeps its size). */
+    void RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries, float LikeWeight = -1);
+    /** A species that keeps in loose groups (stock.groups): its groups at its spots (stock.spots), the rest away from the other spots. Returns how many live at the spots. */
+    int32 StockInGroups(EFishSpecies Species, int32 Count, FString& Plan);
     TArray<FStockPlace> StockPlaces;
     TArray<float> StockRef;   // a good score for each species (80th percentile), to compare species
     FRandomStream StockRandom;

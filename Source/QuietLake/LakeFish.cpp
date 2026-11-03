@@ -155,6 +155,32 @@ bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpecie
     if (Info.Mesh.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: no mesh"), *File));
     if (Info.Stock.SchoolSize < 1) Problems.Add(FString::Printf(TEXT("%s: stock.schoolSize must be 1 or more"), *File));
     if (Info.Stock.Count < 0) Problems.Add(FString::Printf(TEXT("%s: stock.count must be 0 (not in the pond) or more"), *File));
+    {
+        const FFishStock& St = Info.Stock;
+        float Below = Info.MinWeight, Shares = 0;
+        for (const FFishSizeBand& B : St.Sizes)
+        {
+            if (B.UpTo <= Below || B.Share < 0) Problems.Add(FString::Printf(TEXT("%s: stock.sizes: upTo must grow from minWeight, share must be 0 or more"), *File));
+            Below = B.UpTo;
+            Shares += B.Share;
+        }
+        if (St.Sizes.Num() && (Shares <= 0 || !FMath::IsNearlyEqual(Below, Info.MaxWeight, 0.01f)))
+            Problems.Add(FString::Printf(TEXT("%s: stock.sizes: shares must add up to more than 0 and the last upTo be maxWeight"), *File));
+        Below = 0;
+        for (const FFishGroupSize& G : St.Groups)
+        {
+            if (G.UpTo <= Below || G.Min < 1 || G.Max < G.Min || G.Drift <= 0 || G.DeeperM < 0)
+                Problems.Add(FString::Printf(TEXT("%s: stock.groups: upTo must grow, 1 <= min <= max, drift above 0, deeperM 0 or more"), *File));
+            Below = G.UpTo;
+        }
+        if (St.Groups.Num() && St.SchoolSize > 1) Problems.Add(FString::Printf(TEXT("%s: stock.groups are for fish that do not school (schoolSize 1)"), *File));
+        for (const TPair<FString, int32>& Spot : St.Spots)
+        {
+            bool bKnown = false;
+            for (const LakeMap::FSpot& Known : LakeMap::Spots()) bKnown |= Spot.Key == Known.Name;
+            if (!bKnown || Spot.Value < 0) Problems.Add(FString::Printf(TEXT("%s: stock.spots: no fishing spot \"%s\" (or a count below 0)"), *File, *Spot.Key));
+        }
+    }
     if (Info.Name.IsEmpty() || Info.Noun.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: name and noun are needed"), *File));
     if (Info.Diet.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: diet is empty - what does it eat? (plankton, insects, benthos, plants, fry, fish)"), *File));
     const FFishFightStyle& F = Info.Fight;
@@ -448,15 +474,49 @@ const TCHAR* LakeFish::GoalName(EFishSpecies Species, EFishGoal Goal)
 }
 namespace
 {
-    float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y, const FFishConditions* Conditions);
+    float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y, const FFishConditions* Conditions, float DeeperM = 0);
 }
-float LakeFish::HabitatScore(EFishSpecies Species, float X, float Y, const FFishConditions* Conditions)
+float LakeFish::HabitatScore(EFishSpecies Species, float X, float Y, const FFishConditions* Conditions, float DeeperM)
 {
-    return ScoreHabitat(Info(Species).Habitat, Species, X, Y, Conditions);
+    return ScoreHabitat(Info(Species).Habitat, Species, X, Y, Conditions, DeeperM);
+}
+float LakeFish::DrawWeight(EFishSpecies Species, FRandomStream& Random, float Like)
+{
+    const FFishSpeciesInfo& S = Info(Species);
+    const TArray<FFishSizeBand>& Bands = S.Stock.Sizes;
+    // No bands: most fish are small, big ones are rare.
+    if (Bands.IsEmpty())
+        return Like >= 0 ? FMath::Clamp(Like * Random.FRandRange(0.8f, 1.2f), S.MinWeight, S.MaxWeight)
+                         : FMath::Lerp(S.MinWeight, S.MaxWeight, FMath::Pow(Random.FRand(), 2.5f));
+    int32 Band = Bands.Num() - 1;
+    if (Like >= 0)
+    {
+        for (int32 I = 0; I < Bands.Num(); ++I) if (Like <= Bands[I].UpTo) { Band = I; break; }
+    }
+    else
+    {
+        float Total = 0;
+        for (const FFishSizeBand& B : Bands) Total += FMath::Max(0.0f, B.Share);
+        float Pick = Random.FRand() * Total;
+        for (int32 I = 0; I < Bands.Num(); ++I) if ((Pick -= FMath::Max(0.0f, Bands[I].Share)) <= 0) { Band = I; break; }
+    }
+    const float Lo = Band > 0 ? Bands[Band - 1].UpTo : S.MinWeight;
+    return FMath::Clamp(FMath::Lerp(Lo, Bands[Band].UpTo, Random.FRand()), S.MinWeight, S.MaxWeight);
+}
+const FFishGroupSize* LakeFish::GroupFor(EFishSpecies Species, float WeightKg)
+{
+    const TArray<FFishGroupSize>& Groups = Info(Species).Stock.Groups;
+    for (const FFishGroupSize& G : Groups) if (WeightKg <= G.UpTo) return &G;
+    return Groups.Num() ? &Groups.Last() : nullptr;
+}
+float LakeFish::DeeperM(EFishSpecies Species, float WeightKg)
+{
+    const FFishGroupSize* G = GroupFor(Species, WeightKg);
+    return G ? G->DeeperM : 0.0f;
 }
 namespace
 {
-float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y, const FFishConditions* Conditions)
+float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y, const FFishConditions* Conditions, float DeeperM)
 {
     using namespace LakeFish;
     if (!LakeMap::IsWater(X, Y)) return 0;
@@ -467,7 +527,7 @@ float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y
     const float D = LakeMap::Depth(X, Y) / 100;
     // Warm water and bright sun push the depth band down, a grey sky lets it up.
     const float Shift = Conditions ? DepthShiftM(Species, *Conditions) : 0.0f;
-    const float Min = FMath::Max(0.25f, H.MinDepthM + Shift), Max = FMath::Max(Min + 0.4f, H.MaxDepthM + FMath::Max(0.0f, Shift));
+    const float Min = FMath::Max(0.25f, H.MinDepthM + Shift), Max = FMath::Max(Min + 0.4f, H.MaxDepthM + DeeperM + FMath::Max(0.0f, Shift));
     const float DepthFit = FMath::SmoothStep(Min - 0.4f, Min, D) * (1 - FMath::SmoothStep(Max, Max + 0.6f, D));
     // The wind drives food to the bank it blows onto, and the fish follow.
     float Downwind = 1;
@@ -492,7 +552,7 @@ float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y
 }
 }
 FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions, EFishGoal Goal,
-                           const TFunction<float(const FVector2D&)>& Weigh)
+                           const TFunction<float(const FVector2D&)>& Weigh, float DeeperM)
 {
     const FFishHabitat& Habitat = HabitatFor(Species, Goal);
     // Best of a few random candidates, with some chance so fish do not all crowd one spot.
@@ -531,7 +591,7 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
             }
             if (!bOpen) continue;
         }
-        const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions) * Comfort * Random.FRandRange(0.6f, 1.0f) * (Weigh ? Weigh(P) : 1.0f);
+        const float Score = ScoreHabitat(Habitat, Species, P.X, P.Y, Conditions, DeeperM) * Comfort * Random.FRandRange(0.6f, 1.0f) * (Weigh ? Weigh(P) : 1.0f);
         if (Score > BestScore) { BestScore = Score; Best = P; }
     }
     if (BestScore < 0)
@@ -587,6 +647,7 @@ void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int3
 {
     Species = InSpecies;
     WeightKg = InWeight;
+    Deeper = LakeFish::DeeperM(Species, WeightKg);
     HomePoint = HomeAnchor = Home;
     School = InSchool;
     Random.Initialize(GetUniqueID() * 7919 + (int32)(InWeight * 1000));
@@ -695,7 +756,7 @@ void ALakeFish::PickRoamTarget(bool bLocal)
         const float Felt = S.Learning.Fright * PressureLife->PressureAt(HomePoint);
         // (Roach after two or three catches or fish lost, crucian and pike sooner, perch keep biting longer.)
         if (Felt > 1.2f && Random.FRand() < 0.5f)
-            HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift + 2000 * FMath::Min(1.0f, Felt / 2.4f), C, EFishGoal::Cruise, ShyOfPressure);
+            HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift + 2000 * FMath::Min(1.0f, Felt / 2.4f), C, EFishGoal::Cruise, ShyOfPressure, Deeper);
     }
     if (Goal == EFishGoal::Cruise)
     {
@@ -703,13 +764,13 @@ void ALakeFish::PickRoamTarget(bool bLocal)
         // Now and then a home moves to better water for the conditions (deeper in the heat, to the
         // bank the wind blows onto), so schools drift with the weather - around the place they were
         // stocked in, not step by step away from it.
-        if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift, C, EFishGoal::Cruise, ShyOfPressure);
+        if (bHomeBound && bWeather && Random.FRand() < 0.08f) HomePoint = LakeFish::PickSpot(Species, Random, FVector2D(HomeAnchor), HomeDrift, C, EFishGoal::Cruise, ShyOfPressure, Deeper);
         const float Range = S.Habitat.bAmbush ? 350.0f : S.IsSchooling() ? 900.0f : 2500.0f;
         // A cruising fish carries on more or less the way it is going rather than doubling back.
         const FVector Ahead = GetActorForwardVector().GetSafeNormal2D();
         for (int32 Try = 0; Try < 4; ++Try)
         {
-            RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bHomeBound ? HomePoint : GetActorLocation()), Range, C, EFishGoal::Cruise, ShyOfPressure);
+            RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bHomeBound ? HomePoint : GetActorLocation()), Range, C, EFishGoal::Cruise, ShyOfPressure, Deeper);
             if (FVector::DotProduct((RoamTarget - GetActorLocation()).GetSafeNormal2D(), Ahead) > -0.2f) break;
         }
         // Warm still sunny water: roach and crucian bask just under the surface, a pike lies up there
@@ -787,7 +848,7 @@ void ALakeFish::PickRoamTarget(bool bLocal)
         };
         EFishFood Which;
         auto Weigh = [&](const FVector2D& P) { return ShyOfPressure(P) * (0.5f + Best(P, Which)) * (1 - 0.4f * FMath::Min(1.0f, (float)FVector2D::Distance(P, Near) / FMath::Max(1.0f, Range))); };
-        const FVector Spot = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal, Weigh);
+        const FVector Spot = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal, Weigh, Deeper);
         const float Value = Best(FVector2D(Spot), Which);
         // Fry close by are a richer meal than most for a fish that eats them.
         if (Fry >= 0 && Diet.Fry * Random.FRandRange(0.7f, 1.1f) > FMath::Max(Value, GroundValue)) { ChaseFry(); return; }
@@ -817,7 +878,7 @@ void ALakeFish::PickRoamTarget(bool bLocal)
     else
     {
         FeedOn = EFishFood::None;
-        RoamTarget = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal, ShyOfPressure);
+        RoamTarget = LakeFish::PickSpot(Species, Random, Near, Range, C, Goal, ShyOfPressure, Deeper);
     }
     const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
     auto Column = [&](float Fraction) { return FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, Fraction); };
@@ -840,7 +901,7 @@ void ALakeFish::ChooseLie()
     const FFishConditions* C = GetConditions(Conditions) ? &Conditions : nullptr;
     // A lie near home (the first one) or a short move along the weed edge (the next ones).
     const bool bMove = bAtSpot && Goal == EFishGoal::Feed;
-    RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bMove ? GetActorLocation() : HomePoint), bMove ? 800.0f : FMath::Min(1500.0f, HomeDrift + 300), C, EFishGoal::Feed);
+    RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bMove ? GetActorLocation() : HomePoint), bMove ? 800.0f : FMath::Min(1500.0f, HomeDrift + 300), C, EFishGoal::Feed, nullptr, Deeper);
     const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y);
     RoamTarget.Z = FMath::Lerp(LakeFish::SurfaceZ - 10, Bottom + 8, Random.FRandRange(0.45f, 0.8f));
     if (C) RoamTarget.Z = LakeWater::ToLivable(Species, *C, RoamTarget.X, RoamTarget.Y, RoamTarget.Z);
