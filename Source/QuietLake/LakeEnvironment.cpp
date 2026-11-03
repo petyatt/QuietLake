@@ -169,8 +169,12 @@ void ALakeEnvironment::BeginPlay()
                         + 0.35f * FMath::PerlinNoise2D(P / 650);
                     const float Meadow = FMath::SmoothStep(0.35f + ShorePatch, 3.2f + ShorePatch, L) * (1 - Forest);
                     // Clay faces get some dark forest soil mixed in: dirty, not like a sand dune.
-                    const float Worn = 1 - 0.85f * PierApproach(P);
-                    Colors.Add(FLinearColor(Meadow * (1 - Bare) * Worn, Forest * (1 - Bare) * Worn + 0.3f * Bare, 0.7f * Bare));
+                    const float Worn = 1 - 0.85f * FMath::Max(PierApproach(P), 0.8f * LakeMap::PathAmount(P));
+                    // The beach and the stream channels show the sandy bed.
+                    const float Sand = FMath::Max(LakeMap::BeachAmount(P), 1 - FMath::SmoothStep(140.0f, 260.0f, LakeMap::StreamDistance(P)));
+                    // Bare faces of bluffs and steep slopes: mostly dark forest earth with some clay showing,
+                    // so they read as earth banks, not sand dunes.
+                    Colors.Add(FLinearColor(Meadow * (1 - Bare) * Worn * (1 - Sand), (Forest * (1 - Bare) * Worn + 0.65f * Bare) * (1 - Sand), 0.35f * Bare * (1 - Sand)));
                 };
                 for (int32 Y = 0; Y <= NY; ++Y)
                     for (int32 X = 0; X <= NX; ++X)
@@ -264,6 +268,19 @@ void ALakeEnvironment::BeginPlay()
     auto* Bark = Group(TEXT("Cylinder"), TEXT("M_OldBark"), true);    // piles, snags, stakes, logs
     auto* Wood = Group(TEXT("Cube"), TEXT("M_WeatheredWood"), true);
     auto* Metal = Group(TEXT("Cylinder"), TEXT("M_Metal"), true);
+    auto* Burrows = Group(TEXT("Sphere"), TEXT("M_OldBark"), false);     // sand martins' holes in the clay
+    Burrows->SetCastShadow(false);
+    UHierarchicalInstancedStaticMeshComponent* Roots = nullptr;            // roots in the cliffs' faces
+    if (UStaticMesh* RootMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Bottom/SM_BottomBranch2.SM_BottomBranch2")))
+    {
+        Roots = NewObject<UHierarchicalInstancedStaticMeshComponent>(this);
+        Roots->SetupAttachment(RootComponent);
+        Roots->SetStaticMesh(RootMesh);
+        Roots->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        Roots->SetCullDistances(12000, 16000);
+        Roots->RegisterComponent();
+        AddInstanceComponent(Roots);
+    }
     // Invisible trunk colliders: the Megaplants trees are skinned meshes without per-instance collision.
     auto* Trunks = Group(TEXT("Cylinder"), TEXT("M_Bark"), true);
     Trunks->SetHiddenInGame(true);
@@ -423,6 +440,64 @@ void ALakeEnvironment::BeginPlay()
             ++Leaning;
         }
     }
+    // Details of the banks: the old pine on the high bank at "Омут", a birch grove on the hill above
+    // "Сосновый яр", alders crowding the bank at "Ольхи".
+    {
+        FRandomStream DetailRandom(20261103);
+        const LakeMap::FBankThing Pine = LakeMap::OldPine();
+        Place(Pines, FTransform(FRotator(0, DetailRandom.FRandRange(0, 360), 0), FVector(Pine.Location, Ground(Pine.Location) - 20), FVector(1.25f)));
+        TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, FVector(Pine.Location, Ground(Pine.Location) + 300), FVector(0.6f, 0.6f, 6.0f)));
+        float GroveRadius = 0;
+        const FVector2D Grove = LakeMap::BirchGrove(&GroveRadius);
+        for (int32 I = 0, Placed = 0; I < 40 && Placed < 9; ++I)
+        {
+            const FVector2D P = Grove + FVector2D(1, 0).GetRotated(DetailRandom.FRandRange(0, 360)) * GroveRadius * FMath::Sqrt(DetailRandom.FRand());
+            if (LakeMap::ShoreDistance(P.X, P.Y) > -400 || Slope(P.X, P.Y) > 0.6f || LakeMap::PathAmount(P) > 0.2f) continue;
+            Place(Birches, Upright(FVector(P, Ground(P) - 12), DetailRandom.FRandRange(0.75f, 1.05f)));
+            TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, FVector(P, Ground(P) + 230), FVector(0.35f, 0.35f, 4.5f)));
+            ++Placed;
+            ++TreeCount;
+        }
+        for (const LakeMap::FShorePoint& S : Shore)
+        {
+            if (FVector2D::Distance(S.Location, FVector2D(-27400, 6000)) > 1600 || LakeMap::SpotAmount(S.Location) > 0.05f || DetailRandom.FRand() > 0.12f) continue;
+            const FVector2D P = S.Location + S.Outward * DetailRandom.FRandRange(300, 900);
+            const FVector Toward(-S.Outward, 0);
+            const FQuat Lean = FQuat(FVector::CrossProduct(FVector::UpVector, Toward).GetSafeNormal(), FMath::DegreesToRadians(DetailRandom.FRandRange(4, 14)))
+                * FQuat(FVector::UpVector, DetailRandom.FRandRange(0, 2 * PI));
+            Place(Alders, FTransform(Lean, FVector(P, Ground(P) - 15), FVector(DetailRandom.FRandRange(0.6f, 0.9f))));
+            TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, FVector(P, Ground(P) + 235), FVector(0.4f, 0.4f, 4.5f)));
+            ++TreeCount;
+        }
+    }
+    // Weeping willows over the water and the old oak by the pier (bought models, static meshes).
+    {
+        auto Tree = [this](const TCHAR* Name, const LakeMap::FBankThing& Spot, float Scale, float Lean)
+        {
+            UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Plants/Trees/SM_%s.SM_%s"), Name, Name));
+            if (!Mesh) return false;
+            auto* C = NewObject<UStaticMeshComponent>(this);
+            C->SetupAttachment(RootComponent);
+            C->SetStaticMesh(Mesh);
+            C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            C->RegisterComponent();
+            AddInstanceComponent(C);
+            const FVector Toward(Spot.Facing, 0);
+            const FQuat Tilt = FQuat(FVector::CrossProduct(FVector::UpVector, Toward).GetSafeNormal(), FMath::DegreesToRadians(Lean));
+            C->SetWorldTransform(FTransform(Tilt * FQuat(FVector::UpVector, FMath::Atan2(Spot.Facing.Y, Spot.Facing.X)),
+                FVector(Spot.Location, LakeMap::Ground(Spot.Location.X, Spot.Location.Y) - 25), FVector(Scale)));
+            return true;
+        };
+        int32 Willows = 0;
+        for (const LakeMap::FBankThing& Willow : LakeMap::Willows())
+        {
+            Willows += Tree(TEXT("Willow"), Willow, Random.FRandRange(0.9f, 1.1f), Random.FRandRange(4, 9));
+            TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, FVector(Willow.Location, Ground(Willow.Location) + 200), FVector(0.5f, 0.5f, 4.0f)));
+        }
+        const bool bOak = Tree(TEXT("Oak"), LakeMap::OldOak(), 1.0f, 0);
+        if (bOak) TrunkTransforms.Add(FTransform(FRotator::ZeroRotator, FVector(LakeMap::OldOak().Location, Ground(LakeMap::OldOak().Location) + 250), FVector(0.8f, 0.8f, 5.0f)));
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_TREES willows %d, old oak %d"), Willows, bOak);
+    }
     // Small groves frame the camp; keep the central view and the walking approach open.
     {
         FRandomStream GroveRandom(311026);
@@ -453,6 +528,7 @@ void ALakeEnvironment::BeginPlay()
     int32 ShrubCount = 0;
     auto PlaceShrub = [&](const FVector2D& P, float MinScale, float MaxScale)
     {
+        if (LakeMap::PathAmount(P) > 0.2f || LakeMap::StreamDistance(P) < 350) return;
         if (FVector2D::Distance(P, Village) < 9000 || FVector2D::Distance(P, Start) < 1400) return;
         if (LakeMap::SpotAmount(P) > 0.05f || SegmentDistance2D(P, Pier.Root - Pier.Dir * 800, PierEnd) < 600) return;
         if (Slope(P.X, P.Y) > 0.7f || -LakeMap::ShoreDistance(P.X, P.Y) < 180) return;
@@ -579,6 +655,21 @@ void ALakeEnvironment::BeginPlay()
             Place(bBulrush ? Bulrush : DryReed, Upright(FVector(P, Ground(P) - 8), Random.FRandRange(0.8f, 1.3f)));
             ++ReedCount;
         }
+    }
+
+    // A dense stand of cattails at the upper end, broken by the window at "Верховье".
+    {
+        FRandomStream CattailRandom(20261104);
+        int32 Cattails = 0;
+        for (int32 I = 0; I < 4000 && Cattails < 260; ++I)
+        {
+            const FVector2D P(CattailRandom.FRandRange(26000, 39000), CattailRandom.FRandRange(0, 8500));
+            if (!LakeMap::InCattails(P) || !LakeMap::IsWater(P.X, P.Y) || LakeMap::Depth(P.X, P.Y) > 110) continue;
+            if (!LakeMap::LilyAllowed(P) || LakeMap::SpotAmount(P) > 0.2f || LakeMap::LilyAmount(P.X, P.Y) > 0.3f) continue;
+            Place(Bulrush, Upright(FVector(P, Ground(P) - 8), CattailRandom.FRandRange(0.9f, 1.35f)));
+            ++Cattails;
+        }
+        ReedCount += Cattails;
     }
 
     {
@@ -813,8 +904,8 @@ void ALakeEnvironment::BeginPlay()
                 // The wet edge alternates low sedge and small bare, muddy pockets.
                 if (L < 1.8f && Random.FRand() > FMath::Clamp(0.62f + Patch * 0.6f, 0.15f, 0.9f)) continue;
                 if (Trees > 0.5f && Random.FRand() > 0.12f) continue;     // thin under the trees
-                const float Path = PierApproach(P);
-                if (Path > 0.65f) continue;
+                const float Path = FMath::Max(PierApproach(P), LakeMap::PathAmount(P));
+                if (Path > 0.65f || LakeMap::BeachAmount(P) > 0.5f || LakeMap::StreamDistance(P) < 150) continue;
                 if (SegmentDistance2D(P, Pier.Root - Pier.Dir * 50, Pier.Root + Pier.Dir * 400) < 140) continue;
                 if (Slope(P.X, P.Y) > 0.6f) continue;                      // bare clay faces
                 const float Spot = LakeMap::SpotAmount(P);
@@ -833,6 +924,30 @@ void ALakeEnvironment::BeginPlay()
                 Add(Kind, FVector(P, Ground(P) - 2), FVector(Scale, Scale, Scale * Random.FRandRange(0.85f, 1.2f)), FRotator(0, Random.FRandRange(0, 360), 0));
                 ++GrassCount;
             }
+        // Sedge tussocks standing in the shallows at "Ольхи".
+        FRandomStream TussockRandom(20261105);
+        for (int32 I = 0, Tussocks = 0; I < 600 && Tussocks < 18; ++I)
+        {
+            const FVector2D P(TussockRandom.FRandRange(-29200, -24200), TussockRandom.FRandRange(4200, 8200));
+            if (!LakeMap::InSedgeTussocks(P) || !LakeMap::LilyAllowed(P) || LakeMap::SpotAmount(P) > 0.1f) continue;
+            const float Scale = TussockRandom.FRandRange(1.3f, 1.9f);
+            Add(Sedge, FVector(P, Ground(P) + 20), FVector(Scale, Scale, Scale * 1.2f), FRotator(0, TussockRandom.FRandRange(0, 360), 0));
+            ++Tussocks;
+            ++GrassCount;
+        }
+        // Weed beds under water by the hump and off "Отмель": tall blades swaying on the bed.
+        for (int32 I = 0, Weeds = 0; I < 6000 && Weeds < 500; ++I)
+        {
+            const FVector2D P(TussockRandom.FRandRange(4500, 14500), TussockRandom.FRandRange(-2500, 1500));
+            const float Amount = LakeMap::WeedAmount(P);
+            if (Amount < 0.4f || TussockRandom.FRand() > Amount) continue;
+            const float Bed = Ground(P);
+            const float Scale = FMath::Min(TussockRandom.FRandRange(0.9f, 1.6f), (LakeMap::SurfaceZ - 40 - Bed) / 90);
+            if (Scale < 0.5f) continue;
+            Add(Tall, FVector(P, Bed - 2), FVector(Scale, Scale, Scale * 1.3f), FRotator(TussockRandom.FRandRange(-8, 8), TussockRandom.FRandRange(0, 360), 0));
+            ++Weeds;
+            ++GrassCount;
+        }
     }
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BUILD reeds %d, lilies %d, grass %d, %.1f s"), ReedCount, LilyCount, GrassCount, FPlatformTime::Seconds() - BuildStart);
 
@@ -1028,6 +1143,147 @@ void ALakeEnvironment::BeginPlay()
         }
         UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WEST piles %d, boulders %d, fallen tree %d, boat %d"), Piles, Boulders, bFallen, bBoat);
     }
+
+    // --- streams: a ribbon of water down each channel; stones on the outflow's riffle ----------------
+    int32 StreamPoints = 0, RiffleStones = 0;
+    for (const LakeMap::FStream& Stream : LakeMap::Streams())
+    {
+        TArray<FVector> Verts, Normals;
+        TArray<FVector2D> UVs;
+        TArray<int32> Triangles;
+        TArray<FLinearColor> Colors;
+        TArray<FProcMeshTangent> Tangents;
+        float Along = 0;
+        for (int32 I = 0; I < Stream.Surface.Num(); ++I)
+        {
+            const FVector Here = Stream.Surface[I];
+            const FVector2D Dir = (FVector2D(Stream.Surface[FMath::Min(I + 1, Stream.Surface.Num() - 1)]) - FVector2D(Stream.Surface[FMath::Max(I - 1, 0)])).GetSafeNormal();
+            const FVector2D Across(-Dir.Y, Dir.X);
+            const float Half = Stream.Width * 0.5f * (0.85f + 0.3f * FMath::PerlinNoise1D(I * 0.37f));
+            if (I > 0) Along += FVector::Dist(Here, Stream.Surface[I - 1]);
+            for (float Side : { -1.0f, 1.0f })
+            {
+                Verts.Add(Here + FVector(Across * Side * Half, 0));
+                Normals.Add(FVector::UpVector);
+                UVs.Add(FVector2D(Along, Side * Half) / 250);
+                Colors.Add(FLinearColor::White);
+                Tangents.Add(FProcMeshTangent(FVector(Dir, 0), false));
+            }
+            if (I > 0) { const int32 A = (I - 1) * 2; Triangles.Append({ A, A + 2, A + 1, A + 1, A + 2, A + 3 }); }
+            // The outflow leaves over a stony riffle: stones across its first dozen metres.
+            if (Stream.bOutflow && Along < 1400 && I % 2 == 0)
+                for (int32 K = 0; K < 3; ++K)
+                {
+                    const FVector2D P = FVector2D(Here) + Across * Random.FRandRange(-Half * 1.3f, Half * 1.3f) + Dir * Random.FRandRange(-50, 50);
+                    const float Size = Random.FRandRange(0.12f, 0.32f);
+                    Add(Rocks, FVector(P, FMath::Max(Ground(P), Here.Z - 25) - 4), FVector(Size, Size * 0.85f, Size * 0.6f), FRotator(Random.FRandRange(-8, 8), Random.FRandRange(0, 360), 0));
+                    ++RiffleStones;
+                }
+        }
+        auto* StreamWater = NewObject<UProceduralMeshComponent>(this);
+        StreamWater->SetupAttachment(RootComponent);
+        StreamWater->RegisterComponent();
+        AddInstanceComponent(StreamWater);
+        StreamWater->CreateMeshSection_LinearColor(0, Verts, Triangles, Normals, UVs, Colors, Tangents, false);
+        StreamWater->SetMaterial(0, Material(TEXT("M_LakeSurface")));
+        StreamWater->SetCastShadow(false);
+        StreamWater->bAffectDistanceFieldLighting = false;
+        StreamWater->bAffectDynamicIndirectLighting = false;
+        StreamPoints += Stream.Surface.Num();
+    }
+    // Footbridges where the path crosses the streams: two log stringers and a deck of planks.
+    for (const LakeMap::FFootbridge& Bridge : LakeMap::Footbridges())
+    {
+        const FVector2D Dir = (Bridge.B - Bridge.A).GetSafeNormal(), Side(-Dir.Y, Dir.X);
+        const float Length = FVector2D::Distance(Bridge.A, Bridge.B);
+        const float Z = FMath::Max(Ground(Bridge.A), Ground(Bridge.B)) + 12;
+        for (float S : { -35.0f, 35.0f })
+        {
+            const FVector A(Bridge.A + Side * S - Dir * 60, Z), B(Bridge.B + Side * S + Dir * 60, Z);
+            Add(Bark, (A + B) * 0.5f, FVector(0.16f, 0.16f, FVector::Dist(A, B) / 100), FRotationMatrix::MakeFromZ(B - A).Rotator());
+        }
+        for (float T = 0; T <= Length; T += 26)
+        {
+            const FVector2D P = Bridge.A + Dir * T;
+            Add(Wood, FVector(P, Z + 10), FVector(0.22f, 1.05f, 0.04f), FRotator(Random.FRandRange(-1.5f, 1.5f), YawOf(Dir) + Random.FRandRange(-3, 3), 0));
+        }
+    }
+    // The log frame over the spring: three courses of logs round a square of clear water.
+    {
+        const LakeMap::FBankThing Spring = LakeMap::Spring();
+        const FVector2D F = Spring.Facing, R(-F.Y, F.X);
+        const float Base = Ground(Spring.Location);
+        for (int32 Course = 0; Course < 3; ++Course)
+            for (int32 Wall = 0; Wall < 4; ++Wall)
+            {
+                const FVector2D Normal = Wall == 0 ? F : Wall == 1 ? -F : Wall == 2 ? R : -R;
+                const FVector2D Run(-Normal.Y, Normal.X);
+                const FVector2D C = Spring.Location + Normal * 60;
+                const FVector A(C - Run * 80, Base + 8 + Course * 17 + (Wall >= 2 ? 8 : 0)), B(C + Run * 80, A.Z);
+                Add(Bark, (A + B) * 0.5f, FVector(0.16f, 0.16f, 1.6f), FRotationMatrix::MakeFromZ(B - A).Rotator());
+            }
+    }
+    // A row of old stakes in the south bay, sticking out of the water at different heights.
+    for (const FVector2D& Stake : LakeMap::Stakes())
+    {
+        const float Bed = Ground(Stake) - 30, Top = LakeMap::SurfaceZ + Random.FRandRange(10, 70);
+        Add(Bark, FVector(Stake, (Bed + Top) * 0.5f), FVector(0.1f, 0.1f, (Top - Bed) / 100), FRotator(Random.FRandRange(-10, 10), 0, Random.FRandRange(-10, 10)));
+    }
+    // The lookout by the old pine: a plank bench on two stumps, facing the sunset over the outflow.
+    {
+        const LakeMap::FBankThing Seat = LakeMap::Lookout();
+        const FVector2D Side(-Seat.Facing.Y, Seat.Facing.X);
+        const float Yaw = YawOf(Seat.Facing);
+        for (float S : { -70.0f, 70.0f })
+        {
+            const FVector2D P = Seat.Location + Side * S;
+            Add(Bark, FVector(P, Ground(P) + 20), FVector(0.3f, 0.3f, 0.4f), FRotator::ZeroRotator);
+        }
+        Add(Wood, FVector(Seat.Location, Ground(Seat.Location) + 44), FVector(0.4f, 1.9f, 0.06f), FRotator(0, Yaw, 0));
+    }
+    // Sand martins' burrows: rows of small dark holes high on the clay faces.
+    for (const LakeMap::FBankThing& Colony : LakeMap::SwallowBanks())
+    {
+        const FVector2D Along(-Colony.Facing.Y, Colony.Facing.X);
+        for (int32 K = 0; K < 28; ++K)
+        {
+            const FVector2D P = Colony.Location + Along * Random.FRandRange(-600, 600) - Colony.Facing * Random.FRandRange(-40, 60);
+            const float Z = Ground(P) + Random.FRandRange(-30, 30);
+            if (Z < LakeMap::SurfaceZ + 120) continue;
+            Add(Burrows, FVector(P + Colony.Facing * 6, Z), FVector(0.09f, 0.09f, 0.07f), FRotator(0, YawOf(Colony.Facing), 0));
+        }
+    }
+    // Cliffs: boulders at the foot and roots sticking out of the clay near the top.
+    int32 CliffRoots = 0;
+    for (int32 I = 0; I < Shore.Num(); I += 2)
+    {
+        const LakeMap::FShorePoint& S = Shore[I];
+        if (!LakeMap::CliffAt(S.Location) || LakeMap::SpotAmount(S.Location) > 0.05f) continue;
+        if (Random.FRand() < 0.35f)
+        {
+            const FVector2D P = S.Location + S.Outward * Random.FRandRange(-120, 60);
+            const float Size = Random.FRandRange(0.3f, 0.8f);
+            Add(Rocks, FVector(P, Ground(P) - 8), FVector(Size, Size, Size * Random.FRandRange(0.7f, 1.2f)), FRotator(Random.FRandRange(-10, 10), Random.FRandRange(0, 360), Random.FRandRange(-10, 10)));
+        }
+        if (Roots && Random.FRand() < 0.3f)
+        {
+            // Find the top of the face: where the ground stops rising steeply.
+            FVector2D Edge = S.Location;
+            for (float Up = 100; Up < 450; Up += 50)
+            {
+                const FVector2D Q = S.Location + S.Outward * Up;
+                if (Ground(Q) - Ground(Edge) < 20) break;
+                Edge = Q;
+            }
+            const FVector Out(-S.Outward, 0);
+            const FRotator Rot = (Out * 0.8f + FVector(0, 0, -0.6f)).Rotation() + FRotator(0, Random.FRandRange(-30, 30), Random.FRandRange(0, 360));
+            const float Size = Random.FRandRange(0.9f, 1.6f);
+            Add(Roots, FVector(Edge, Ground(Edge) - 25), FVector(Size), Rot);
+            ++CliffRoots;
+        }
+    }
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DETAILS streams %d (%d points), riffle stones %d, footbridges %d, stakes %d, cliff roots %d"),
+        LakeMap::Streams().Num(), StreamPoints, RiffleStones, LakeMap::Footbridges().Num(), LakeMap::Stakes().Num(), CliffRoots);
 
     // --- fishing spots: boards at the water's edge and two rod stakes ------------------------------
     for (const LakeMap::FSpot& Spot : LakeMap::Spots())
@@ -1235,6 +1491,9 @@ void ALakeEnvironment::BeginPlay()
             Component->Play();
         };
         Audio(TEXT("A_Wind"),FVector::ZeroVector,0.32f,false);
+        // Quiet local sounds: the streams babbling, frogs in the warm shallows, a cuckoo far off.
+        for (const LakeMap::FSoundPlace& Sound : LakeMap::SoundPlaces())
+            Audio(Sound.Sound, FVector(Sound.Location, LakeMap::SurfaceZ + 60), Sound.Volume, true);
         // No bird ambience: it was the wrong sound for this lake and got on the player's nerves.
         // The flocks themselves (-LakeBirds) still fly over the water.
     }
@@ -1287,6 +1546,34 @@ void ALakeEnvironment::BeginPlay()
         {
             Eye = FVector(Start + StartFacing * 5500 + Side * 3500, LakeMap::SurfaceZ + 2600);
             View = FRotator(0, YawOf(StartFacing), 0);
+        }
+        else if (SceneView.Equals(TEXT("Outflow"), ESearchCase::IgnoreCase) && LakeMap::Streams().Num() > 0)
+        {
+            // The outflow's riffle and its footbridge, from the bank beside the stream.
+            for (const LakeMap::FStream& Stream : LakeMap::Streams())
+                if (Stream.bOutflow && Stream.Surface.Num() > 25)
+                {
+                    const FVector2D A(Stream.Surface[3]), B(Stream.Surface[25]);
+                    const FVector2D Dir = (B - A).GetSafeNormal();
+                    const FVector2D P = A + Dir * 900 + FVector2D(-Dir.Y, Dir.X) * 900;
+                    Eye = FVector(P, Ground(P) + 170);
+                    View = (FVector(A + Dir * 1200, Stream.Surface[12].Z + 20) - Eye).Rotation();
+                }
+        }
+        else if (SceneView.Equals(TEXT("Spring"), ESearchCase::IgnoreCase))
+        {
+            const LakeMap::FBankThing Spring = LakeMap::Spring();
+            const FVector2D P = Spring.Location + Spring.Facing * 900 + FVector2D(-Spring.Facing.Y, Spring.Facing.X) * 500;
+            Eye = FVector(P, FMath::Max(Ground(P), LakeMap::SurfaceZ) + 170);
+            View = (FVector(Spring.Location, Ground(Spring.Location) + 40) - Eye).Rotation();
+        }
+        else if (SceneView.Equals(TEXT("Oak"), ESearchCase::IgnoreCase) || SceneView.Equals(TEXT("Willow"), ESearchCase::IgnoreCase))
+        {
+            // From the water, looking at the old oak above the pier or at the first willow.
+            const LakeMap::FBankThing Tree = SceneView.Equals(TEXT("Oak"), ESearchCase::IgnoreCase) ? LakeMap::OldOak() : LakeMap::Willows()[0];
+            const LakeMap::FShorePoint Bank = LakeMap::NearestShore(Tree.Location);
+            Eye = FVector(Bank.Location - Bank.Outward * 2600, LakeMap::SurfaceZ + 180);
+            View = (FVector(Tree.Location, Ground(Tree.Location) + 450) - Eye).Rotation();
         }
         else if (!SceneView.Equals(TEXT("Camp"), ESearchCase::IgnoreCase))
         {

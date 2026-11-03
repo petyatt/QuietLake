@@ -89,6 +89,46 @@ namespace LakeMap
     /** False in the casting lanes and windows in front of the spots and along the pier: no lily leaves there. */
     QUIETLAKE_API bool LilyAllowed(const FVector2D& P);
 
+    // --- details of the banks (decoration; the environment builds them) ---------------------------
+    /** A thing on the bank: where it stands and the direction it faces (towards the water). */
+    struct FBankThing { FVector2D Location, Facing; };
+    /** Weeping willows leaning over the water on the meadow bank and over the outflow. */
+    QUIETLAKE_API TConstArrayView<FBankThing> Willows();
+    /** The old oak by the pier, the old pine on the high bank at "Омут" and the lookout bench beside it. */
+    QUIETLAKE_API FBankThing OldOak();
+    QUIETLAKE_API FBankThing OldPine();
+    QUIETLAKE_API FBankThing Lookout();
+    /** The log frame over the spring at the head of the backwater. */
+    QUIETLAKE_API FBankThing Spring();
+    /** Streams with water: the outflow, the brook, the spring's run. Points along the water surface (cm, Z included), from the lake outwards. */
+    struct FStream { TArray<FVector> Surface; float Width; bool bOutflow; };
+    QUIETLAKE_API const TArray<FStream>& Streams();
+    /** Distance (cm) to the middle of the nearest stream's channel; large far from any. */
+    QUIETLAKE_API float StreamDistance(const FVector2D& P);
+    /** Footbridges where the path round the lake crosses the streams. */
+    struct FFootbridge { FVector2D A, B; };
+    QUIETLAKE_API const TArray<FFootbridge>& Footbridges();
+    /** 1 on the footpath round the lake (about 7 m up the bank), 0 off it. */
+    QUIETLAKE_API float PathAmount(const FVector2D& P);
+    /** 1 on the little sandy beach in the south bay. */
+    QUIETLAKE_API float BeachAmount(const FVector2D& P);
+    /** 1 in the submerged weed beds (by the hump and off "Отмель"). */
+    QUIETLAKE_API float WeedAmount(const FVector2D& P);
+    /** True in the cattail stand at the upper end, and in the sedge tussocks by "Ольхи". */
+    QUIETLAKE_API bool InCattails(const FVector2D& P);
+    QUIETLAKE_API bool InSedgeTussocks(const FVector2D& P);
+    /** The row of old stakes in the south bay. */
+    QUIETLAKE_API TConstArrayView<FVector2D> Stakes();
+    /** Clay faces where sand martins dig their burrows (on the bank, facing the water). */
+    QUIETLAKE_API TConstArrayView<FBankThing> SwallowBanks();
+    /** The birch grove on the hill above "Сосновый яр": centre and radius. */
+    QUIETLAKE_API FVector2D BirchGrove(float* OutRadius = nullptr);
+    /** True where the bank at P is a cliff (a steep clay wall), not a sloping bluff. */
+    QUIETLAKE_API bool CliffAt(const FVector2D& P);
+    /** Places for the quiet sounds of the lake: the streams, frogs, a cuckoo in the forest. */
+    struct FSoundPlace { const TCHAR* Sound; FVector2D Location; float Volume; };
+    QUIETLAKE_API TConstArrayView<FSoundPlace> SoundPlaces();
+
     /** How much a point is each kind of fish habitat, 0..1. */
     struct FZones { float Shallows = 0, ReedEdge = 0, DropOff = 0, Cover = 0, Deep = 0, Open = 0; };
     QUIETLAKE_API FZones ZonesAt(float X, float Y);

@@ -52,6 +52,10 @@ bool ULakeForestPointsSettings::AllowsTree(const FVector2D& P) const
     const float Land = -LakeMap::ShoreDistance(P.X, P.Y);
     if (Land < 300 || FVector2D::Distance(P, LakeMap::VillageCentre()) < FMath::Max(13000.0f, VillageClearance)
         || FVector2D::Distance(P, LakeMap::StartSpot()) < 1600 || LakeMap::SpotAmount(P) > 0.03f) return false;
+    // The footpath round the lake, the streams, the old oak and the willows stay clear of the forest.
+    if (LakeMap::PathAmount(P) > 0.15f || LakeMap::StreamDistance(P) < 450) return false;
+    if (FVector2D::Distance(P, LakeMap::OldOak().Location) < 900) return false;
+    for (const LakeMap::FBankThing& Willow : LakeMap::Willows()) if (FVector2D::Distance(P, Willow.Location) < 700) return false;
     const auto& Pier = LakeMap::Pier();
     if (SegmentDistance(P, Pier.Root - Pier.Dir * 1700, Pier.Root + Pier.Dir * Pier.Length) < 650) return false;
     if (LakeMap::ForestAmount(P) < 0.55f) return false;

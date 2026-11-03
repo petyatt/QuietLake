@@ -347,28 +347,33 @@ namespace
     struct FDescent { float X, Y, Width; };
     const FDescent GDescents[] = { { -232.5f, -45, 8 }, { 202.5f, -53, 8 } };
 
-    /** Valleys running to the lake (metres): the outflow, the brook, the spring's run and a dry ravine. */
-    struct FValley { TArray<FVector2D> Points; float HalfWidth; };
+    /** Valleys running to the lake (metres): the outflow, the brook, the spring's run (with water) and a dry ravine. */
+    struct FValley { TArray<FVector2D> Points; float HalfWidth; bool bWater, bOutflow; };
     const TArray<FValley>& Valleys()
     {
         static const TArray<FValley> Instance = []
         {
-            auto V = [](std::initializer_list<FVector2D> Metres, float HalfWidth)
+            auto V = [](std::initializer_list<FVector2D> Metres, float HalfWidth, bool bWater, bool bOutflow)
             {
                 FValley Out;
                 for (const FVector2D& P : Metres) Out.Points.Add(P * Mt);
                 Out.HalfWidth = HalfWidth * Mt;
+                Out.bWater = bWater;
+                Out.bOutflow = bOutflow;
                 return Out;
             };
             return TArray<FValley>{
-                V({ { -286, 14 }, { -322, 24 }, { -365, 16 }, { -420, 30 } }, 12),         // the outflow
-                V({ { 362, 49 }, { 392, 60 }, { 420, 64 }, { 525, 71 } }, 13),             // the brook
-                V({ { 57, -190 }, { 44, -222 }, { 30, -262 }, { 24, -300 } }, 10),         // the spring's run
-                V({ { -48.75f, -84 }, { -56.25f, -202.5f } }, 16),                         // the ravine above "Овраг"
+                V({ { -286, 14 }, { -322, 24 }, { -365, 16 }, { -420, 30 } }, 12, true, true),     // the outflow
+                V({ { 362, 49 }, { 392, 60 }, { 420, 64 }, { 525, 71 } }, 13, true, false),         // the brook
+                V({ { 57, -190 }, { 44, -222 }, { 30, -262 }, { 24, -300 } }, 10, true, false),     // the spring's run
+                V({ { -48.75f, -84 }, { -56.25f, -202.5f } }, 16, false, false),                    // the dry ravine above "Овраг"
             };
         }();
         return Instance;
     }
+    /** The stream's water surface (m above the lake) this far (m) along its valley: the brook and the spring's run come down to the lake, the outflow falls away from it. */
+    float StreamLevel(const FValley& V, float AlongM) { return V.bOutflow ? -0.015f * FMath::Max(0.0f, AlongM - 40) : 0.04f * AlongM; }
+    constexpr float StreamHalfWidth = 110.0f;     // the water; the channel is a little wider
 
     /** The bank at the waterline nearest to P. */
     struct FBank { float Bluff = 0, Step = 0, Flat = 0; bool bCliff = false; };
@@ -531,10 +536,12 @@ namespace
                 + (Bank.bCliff ? 0.5f * Noise(P + FVector2D(-260, 140), 180) : 0.0f);
             H += Height * S(Toe, Toe + Face, L + Ragged) * (1 - S(25, 70, L));    // the top merges into the hills
         }
-        H += FMath::Lerp(12.0f, 24.0f, Forest) * (0.5f + 0.5f * Fbm(P, 22000)) * S(8, 90, LH);
-        H += 5.0f * Fbm(P + FVector2D(4000, -7000), 9000) * S(10, 50, LH);                 // rolling hills between the big ones
+        H += FMath::Lerp(10.0f, 20.0f, Forest) * (0.5f + 0.5f * Fbm(P, 22000)) * S(12, 120, LH);
+        H += 4.0f * Fbm(P + FVector2D(4000, -7000), 9000) * S(20, 70, LH);                 // rolling hills between the big ones
         H += 2.2f * Fbm(P + FVector2D(300, 900), 5000) * S(5, 30, LH) + 0.25f * Noise(P + FVector2D(-77, 31), 500);
-        // Valleys cut down through the hills to the lake, their floors rising gently inland.
+        // Valleys cut down through the hills to the lake, their floors rising gently inland; the
+        // streams run in a narrow channel along the floor.
+        bool bChannel = false;
         for (const FValley& V : Valleys())
         {
             float Acc = 0;
@@ -545,8 +552,15 @@ namespace
                 const float Segment = FVector2D::Distance(V.Points[K], V.Points[K + 1]);
                 if (Dist < V.HalfWidth * 1.8f)
                 {
-                    const float Floor = 0.3f + 0.045f * (Acc + T * Segment) / 100;
+                    const float Along = (Acc + T * Segment) / 100;
+                    const float Water = StreamLevel(V, Along);
+                    const float Floor = V.bWater ? Water + 0.3f : 0.3f + 0.045f * Along;
                     H = FMath::Min(H, FMath::Lerp(Floor, H, S(0, V.HalfWidth * 1.8f, Dist + 0.3f * V.HalfWidth * Noise(P, 1200))));
+                    if (V.bWater)
+                    {
+                        const float Channel = 1 - S(StreamHalfWidth + 20, StreamHalfWidth + 120, Dist);
+                        if (Channel > 0) { H = FMath::Lerp(H, FMath::Min(H, Water - 0.3f), Channel); bChannel = true; }
+                    }
                 }
                 Acc += Segment;
             }
@@ -559,8 +573,8 @@ namespace
         // Beyond the terrain (the distant ring) the hills keep rising to close the horizon.
         const FVector2D Outside = FVector2D(FMath::Max3(0.0, TerrainBounds.Min.X - X, X - TerrainBounds.Max.X), FMath::Max3(0.0, TerrainBounds.Min.Y - Y, Y - TerrainBounds.Max.Y));
         H += 0.02f * Outside.Size() / 100 + 6.0f * S(0, 60000, Outside.Size()) * (0.5f + 0.5f * Fbm(P, 60000));
-        // Never below the water level away from the lake.
-        H = FMath::Max(H, 0.15f * S(0, 3, L));
+        // Never below the water level away from the lake (except in a stream's channel).
+        if (!bChannel) H = FMath::Max(H, 0.15f * S(0, 3, L));
         return SurfaceZ + H * 100;
     }
 
@@ -938,4 +952,152 @@ LakeMap::FZones LakeMap::ZonesAt(float X, float Y)
 bool LakeMap::InPlayArea(float X, float Y)
 {
     return TerrainBounds.ExpandBy(-4000).IsInside(FVector2D(X, Y));
+}
+
+// --- details of the banks ----------------------------------------------------------------------
+
+namespace
+{
+    /** A point on the bank nearest to (X, Y) metres, Up cm inland, facing the water. */
+    FBankThing OnBank(float X, float Y, float Up)
+    {
+        const FShorePoint Sh = NearestShore(At(X, Y));
+        return { Sh.Location + Sh.Outward * Up, -Sh.Outward };
+    }
+    /** How far up the bank the footpath runs (cm), wandering a little. */
+    float PathLine(const FVector2D& P) { return 700 + 120 * Noise(P + FVector2D(3000, 0), 2500); }
+}
+
+TConstArrayView<FBankThing> LakeMap::Willows()
+{
+    static const TArray<FBankThing> Instance = { OnBank(-72, 92, 300), OnBank(-14, 38, 300), OnBank(-206, 100, 300), OnBank(-298, 24, 300) };
+    return Instance;
+}
+FBankThing LakeMap::OldOak()
+{
+    // On the meadow a little west of the pier, above the landing.
+    static const FBankThing Instance = []
+    {
+        const FSpot& Spot = SpotList()[1];
+        const FVector2D Along(-Spot.Outward.Y, Spot.Outward.X);
+        return FBankThing{ Spot.Location + Spot.Outward * 1000 + Along * 900, -Spot.Outward };
+    }();
+    return Instance;
+}
+FBankThing LakeMap::OldPine() { static const FBankThing Instance = OnBank(-240, -60, 900); return Instance; }
+FBankThing LakeMap::Lookout() { static const FBankThing Instance = OnBank(-226, -50, 600); return Instance; }
+FBankThing LakeMap::Spring() { static const FBankThing Instance = OnBank(58, -192, 650); return Instance; }
+
+const TArray<FStream>& LakeMap::Streams()
+{
+    static const TArray<FStream> Instance = []
+    {
+        TArray<FStream> Out;
+        const FBox2D Land = TerrainBounds.ExpandBy(-500);
+        for (const FValley& V : Valleys())
+        {
+            if (!V.bWater) continue;
+            FStream Stream;
+            Stream.Width = StreamHalfWidth * 2;
+            Stream.bOutflow = V.bOutflow;
+            float Acc = 0;
+            for (int32 K = 0; K + 1 < V.Points.Num(); ++K)
+            {
+                const float Segment = FVector2D::Distance(V.Points[K], V.Points[K + 1]);
+                for (float D = 0; D < Segment; D += 100)
+                {
+                    const FVector2D P = V.Points[K] + (V.Points[K + 1] - V.Points[K]) * (D / Segment);
+                    if (!Land.IsInside(P)) break;
+                    // From the bank outwards: the lake's own water fills the mouth of the channel.
+                    if (ShoreDistance(P.X, P.Y) < -100) Stream.Surface.Add(FVector(P, SurfaceZ + StreamLevel(V, (Acc + D) / 100) * 100 - 4));
+                }
+                Acc += Segment;
+            }
+            if (Stream.Surface.Num() > 1) Out.Add(MoveTemp(Stream));
+        }
+        return Out;
+    }();
+    return Instance;
+}
+float LakeMap::StreamDistance(const FVector2D& P)
+{
+    float Best = 1e9f;
+    for (const FValley& V : Valleys())
+        if (V.bWater)
+            for (int32 K = 0; K + 1 < V.Points.Num(); ++K) Best = FMath::Min(Best, SegmentDistance(P, V.Points[K], V.Points[K + 1]));
+    return Best;
+}
+const TArray<FFootbridge>& LakeMap::Footbridges()
+{
+    static const TArray<FFootbridge> Instance = []
+    {
+        TArray<FFootbridge> Out;
+        for (const FStream& Stream : Streams())
+            for (int32 I = 1; I + 1 < Stream.Surface.Num(); ++I)
+            {
+                const FVector2D P(Stream.Surface[I]);
+                if (-ShoreDistance(P.X, P.Y) < PathLine(P)) continue;
+                const FVector2D Dir = (FVector2D(Stream.Surface[I + 1]) - FVector2D(Stream.Surface[I - 1])).GetSafeNormal();
+                const FVector2D Across(-Dir.Y, Dir.X);
+                Out.Add({ P + Across * 170, P - Across * 170 });
+                break;
+            }
+        return Out;
+    }();
+    return Instance;
+}
+float LakeMap::PathAmount(const FVector2D& P)
+{
+    const float SD = ShoreDistance(P.X, P.Y);
+    if (SD > -200) return 0;
+    return 1 - S(45, 95, FMath::Abs(-SD - PathLine(P)));
+}
+float LakeMap::BeachAmount(const FVector2D& P)
+{
+    const float L = -ShoreDistance(P.X, P.Y) / 100;
+    if (L < -1 || L > 11) return 0;
+    return (1 - S(900, 1300, FVector2D::Distance(P, At(-104, 138)) + 300 * Noise(P + FVector2D(900, 0), 500))) * (1 - S(8.5f, 11, L + 2 * Noise(P, 400)));
+}
+float LakeMap::WeedAmount(const FVector2D& P) { return WeedAt(P); }
+bool LakeMap::InCattails(const FVector2D& P) { static const FEllipse Stand = E(326, 44, 56, 30, 15); return Stand.K(P) < 1; }
+bool LakeMap::InSedgeTussocks(const FVector2D& P)
+{
+    if (FVector2D::Distance(P, At(-262, 64)) > 1800) return false;
+    const float SD = ShoreDistance(P.X, P.Y);
+    return SD > 40 && SD < 280;
+}
+TConstArrayView<FVector2D> LakeMap::Stakes()
+{
+    static const TArray<FVector2D> Instance = []
+    {
+        TArray<FVector2D> Out;
+        const FVector2D First = At(-122, 98), Last = At(-100, 92);
+        for (int32 K = 0; K < 7; ++K) Out.Add(First + (Last - First) * (K / 6.0) + FVector2D(40 * FMath::PerlinNoise1D(K * 0.7f), 40 * FMath::PerlinNoise1D(K * 0.7f + 5)));
+        return Out;
+    }();
+    return Instance;
+}
+TConstArrayView<FBankThing> LakeMap::SwallowBanks()
+{
+    static const TArray<FBankThing> Instance = { OnBank(-128, -54, 150), OnBank(152, -97, 150) };
+    return Instance;
+}
+FVector2D LakeMap::BirchGrove(float* OutRadius)
+{
+    if (OutRadius) *OutRadius = 1600;
+    return At(168, -128);
+}
+bool LakeMap::CliffAt(const FVector2D& P) { const FBank Bank = BankAt(P); return Bank.bCliff && Bank.Bluff > 0.9f; }
+TConstArrayView<FSoundPlace> LakeMap::SoundPlaces()
+{
+    static const TArray<FSoundPlace> Instance = {
+        { TEXT("A_Brook"), At(-292, 14), 0.5f },      // the outflow's riffle
+        { TEXT("A_Brook"), At(360, 49), 0.35f },      // the brook's mouth
+        { TEXT("A_Brook"), At(57, -192), 0.25f },     // the spring
+        { TEXT("A_Frogs"), At(76, -168), 0.3f },      // the backwater
+        { TEXT("A_Frogs"), At(334, 30), 0.3f },       // the upper end
+        { TEXT("A_Cuckoo"), At(-180, -170), 0.25f },  // far in the forest
+        { TEXT("A_Cuckoo"), At(250, -170), 0.2f },
+    };
+    return Instance;
 }

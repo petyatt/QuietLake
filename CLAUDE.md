@@ -1,4 +1,4 @@
-# «Тихое озеро» (QuietLake) — памятка для Claude
+﻿# «Тихое озеро» (QuietLake) — памятка для Claude
 
 Сетевая игра про рыбалку с поплавочной удочкой на UE 5.8. Почти всё мира создаётся из C++ при запуске
 (рельеф, растения, предметы, рыбы), ассеты генерируются скриптами из `Tools/`.
@@ -76,9 +76,9 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-FisherPreview` | рыбак в своей одежде: вид спереди, сбоку и сзади (`Saved/Fisher_*.png`) | `LakePreviews.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
 
-Скрипты ассетов в `Tools/`: `Generate*.py` запускаются Blender (`--background --factory-startup --python …`),
+Скрипты ассетов в `Tools/`: `Generate*.py` запускаются Blender (`--background --factory-startup --python …`; кроме `GenerateLifeSounds.py` и `GenerateLakeSounds.py` — это обычный `python`),
 `Create*.py` и `Import*.py` — питоном редактора (`GenerateFishModels.py`/`ImportFish.py` с `QUIETLAKE_FISH=Bream,Rudd` в окружении делают только эти виды) (`CreateGrownPlants.py` готовит графы редактора растений, выгрузка — Ctrl+E в окне графа): `UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -run=pythonscript -script=C:/Fish/Tools/<имя>.py`.
-Готовая (купленная) модель рыбы — конвейер с тремя LOD: `PrepareMeshyLODs.py` в Blender переставляет модель (нос в начало координат, тело по +X, координата волны в красном канале вершинных цветов) и облегчает её по бюджету вида; `ImportMeshyLODs.py` запускается **в полном редакторе** (`UnrealEditor.exe … -ExecutePythonScript=`, в commandlet нет `StaticMeshEditorSubsystem`) через `ImportMeshyLODsRun.py`, импортирует LOD0 и подкладывает LOD1/2, собирает материал `M_Meshy_<Вид>`. Список видов — `QUIETLAKE_FISH`, папка источников — `QUIETLAKE_MESHY_SOURCE` (по умолчанию `Saved/AssetReview/Meshy-20261101/<вид>`), длины моделей пишутся в `meshLength` паспорта. Простой вариант без LOD — `ProcessMeshyFish.py` + `ImportTexturedFish.py`.
+Готовая (купленная) модель рыбы — конвейер с тремя LOD: `PrepareMeshyLODs.py` в Blender переставляет модель (нос в начало координат, тело по +X, координата волны в красном канале вершинных цветов) и облегчает её по бюджету вида; `ImportMeshyLODs.py` запускается **в полном редакторе** (`UnrealEditor.exe … -ExecutePythonScript=`, в commandlet нет `StaticMeshEditorSubsystem`) через `ImportMeshyLODsRun.py`, импортирует LOD0 и подкладывает LOD1/2, собирает материал `M_Meshy_<Вид>`. Список видов — `QUIETLAKE_FISH`, папка источников — `QUIETLAKE_MESHY_SOURCE` (по умолчанию `Saved/AssetReview/Meshy-20261101/<вид>`), длины моделей пишутся в `meshLength` паспорта. Простой вариант без LOD — `ProcessMeshyFish.py` + `ImportTexturedFish.py`. Купленные деревья (ива, дуб): `PrepareTrees.py` в Blender ставит дерево комлем в начало координат и задаёт высоту, `PrepareTreeFoliage.py` в Blender заменяет комки кроны листовыми карточками и рисует текстуры листьев (проверочный рендер `Saved/TreeRender_*.png`), `ImportTrees.py` (commandlet) импортирует их Nanite-мешами в `Content/Plants/Trees`; источники распаковываются в `Saved/TreeAssets`.
 
 ## Код (`Source/QuietLake`)
 
