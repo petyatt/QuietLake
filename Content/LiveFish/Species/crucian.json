@@ -69,6 +69,6 @@
     "pauseMax": 2.4, "burstChance": 0.32, "burstMin": 0.35, "burstMax": 0.7,
     "seriesMin": 1, "seriesMax": 1, "recovery": 0.24, "effortCost": 1.8
   },
-  "stock": { "count": 240, "schoolSize": 1 },
+  "stock": { "count": 0, "schoolSize": 1 },
   "signs": { "bubbles": "Карась роется в иле — пузыри", "jump": "Из воды выпрыгнул карась" }
 }

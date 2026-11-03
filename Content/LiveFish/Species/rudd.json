@@ -65,6 +65,6 @@
     "seriesMin": 1, "seriesMax": 2, "seriesGap": 0.26, "recovery": 0.18,
     "effortCost": 1.7
   },
-  "stock": { "count": 80, "schoolSize": 10, "schoolsWith": [ "roach" ] },
+  "stock": { "count": 0, "schoolSize": 10, "schoolsWith": [ "roach" ] },
   "signs": { "rise": "Краснопёрка берёт с поверхности — круги", "jump": "Из воды выпрыгнула краснопёрка" }
 }

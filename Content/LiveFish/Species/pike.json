@@ -66,6 +66,6 @@
     "effortCost": 2.0, "jumpChance": 0.28, "jumpSpeed": 390, "jumpCooldown": 9,
     "shoreRunChance": 0.7, "shoreDistance": 700
   },
-  "stock": { "count": 24, "schoolSize": 1 },
+  "stock": { "count": 0, "schoolSize": 1 },
   "signs": { "swirl": "Бурун — щука ударила под водой", "splash": "Всплеск — удар щуки", "scatter": "Щука влетела в стайку малька", "jump": "Из воды выпрыгнула щука" }
 }

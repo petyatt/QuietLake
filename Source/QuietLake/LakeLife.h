@@ -76,8 +76,13 @@ public:
      * Stock the pond at the start of a game (BeginPlay with ALakeGameMode): first the fish living
      * at each fishing spot (a school of perch or roach, a pike by cover, crucian at the weedy
      * spots), then the rest of each species spread over the lake as well as its water suits it.
+     * How many of each: StockCount. Fry shoals come with the fish (none in an empty pond).
      */
     void StockPond();
+    /** How many of a species the pond is stocked with: StockOverride if it names the species, otherwise its passport (stock.count). */
+    int32 StockCount(EFishSpecies Species) const;
+    /** Counts by species id replacing the passports' stock.count: tests, and -Stock=roach:40,perch:12 on the command line. */
+    TMap<FString, int32> StockOverride;
     /** A fish was caught or eaten: after a while another of its species takes its place, in its school and its water. */
     void Restock(const ALakeFish* Gone);
     /** Advance the pond: rebuild the grid, move the fry, update detail levels (Tick calls it; tests call it directly). */

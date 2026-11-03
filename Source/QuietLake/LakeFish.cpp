@@ -154,6 +154,7 @@ bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpecie
     if (Info.Bite.Take.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: bite.take is empty - how does it take the bait?"), *File));
     if (Info.Mesh.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: no mesh"), *File));
     if (Info.Stock.SchoolSize < 1) Problems.Add(FString::Printf(TEXT("%s: stock.schoolSize must be 1 or more"), *File));
+    if (Info.Stock.Count < 0) Problems.Add(FString::Printf(TEXT("%s: stock.count must be 0 (not in the pond) or more"), *File));
     if (Info.Name.IsEmpty() || Info.Noun.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: name and noun are needed"), *File));
     if (Info.Diet.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: diet is empty - what does it eat? (plankton, insects, benthos, plants, fry, fish)"), *File));
     const FFishFightStyle& F = Info.Fight;

@@ -56,6 +56,6 @@
   "strength": 0.6,
   "stamina": 3,
   "runBurst": 0.3,
-  "stock": { "count": 120, "schoolSize": 20, "schoolsWith": [ "roach" ] },
+  "stock": { "count": 0, "schoolSize": 20, "schoolsWith": [ "roach" ] },
   "signs": { "rise": "Уклейка хватает с поверхности — мелкие круги", "jump": "Из воды выскочила уклейка" }
 }

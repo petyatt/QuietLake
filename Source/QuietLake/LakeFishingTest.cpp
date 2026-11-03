@@ -1340,10 +1340,28 @@ bool FLakeRipplesTest::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeStockingTest, "QuietLake.Fishing.Stocking", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeStockingTest::RunTest(const FString& Parameters)
 {
+    // As the passports say (the pond is being restocked stage by stage: maybe empty yet); no fry without fish.
+    {
+        UWorld* Plain = UWorld::CreateWorld(EWorldType::Game, false);
+        ALakeLife* PlainLife = Plain->SpawnActor<ALakeLife>();
+        PlainLife->StockPond();
+        int32 Want = 0, Got = 0;
+        for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp) Want += LakeFish::Info((EFishSpecies)Sp).Stock.Count;
+        for (TActorIterator<ALakeFish> It(Plain); It; ++It) ++Got;
+        AddInfo(FString::Printf(TEXT("Stocked from the passports: %d fish of %d, %d fry shoals"), Got, Want, PlainLife->FryShoals().Num()));
+        TestTrue(TEXT("The passports' counts are stocked"), Got <= Want && Got >= Want * 9 / 10);
+        if (Want == 0) TestTrue(TEXT("No fry in an empty pond"), PlainLife->FryShoals().IsEmpty());
+        Plain->DestroyWorld(false);
+    }
+
+    // The whole old stock, set over the passports: how Live Fish lays out a full pond.
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    Life->StockOverride = { { TEXT("perch"), 144 }, { TEXT("roach"), 208 }, { TEXT("crucian"), 240 }, { TEXT("pike"), 24 },
+        { TEXT("bream"), 40 }, { TEXT("rudd"), 80 }, { TEXT("bleak"), 120 } };
     Life->StockPond();
     Life->Step(0);
+    TestTrue(FString::Printf(TEXT("Fry shoals come with the fish (%d)"), Life->FryShoals().Num()), Life->FryShoals().Num() >= 8);
     // By species (a species file added for a try counts too).
     TArray<int32> Count;
     Count.Init(0, LakeFish::NumSpecies());
@@ -1766,7 +1784,7 @@ bool FLakeSpeciesFilesTest::RunTest(const FString& Parameters)
         for (const TPair<FString, float>& Bait : S.Baits) bBaits &= Bait.Value >= 0 && Bait.Value <= 1;
         TestTrue(FString::Printf(TEXT("%s: likes for its baits, 0..1"), *S.Id), bBaits);
         TestTrue(FString::Printf(TEXT("%s: a whole bite"), *S.Id), !S.Bite.Take.IsEmpty() && S.Bite.Take.ContainsByPredicate([](const FFishBiteMove& M) { return M.bTake; }));
-        TestTrue(FString::Printf(TEXT("%s: the pond holds some"), *S.Id), S.Stock.Count > 0 && S.Stock.SchoolSize >= 1);
+        TestTrue(FString::Printf(TEXT("%s: a stock count (0: not in the pond yet) and a school size"), *S.Id), S.Stock.Count >= 0 && S.Stock.SchoolSize >= 1);
     }
     // A bream, as one would add it: the example in the species README, read as its file alone (so the
     // example always works).

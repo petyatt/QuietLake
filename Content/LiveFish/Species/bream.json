@@ -44,6 +44,6 @@
     "pauseMax": 1.7, "burstChance": 0.22, "burstMin": 0.65, "burstMax": 1.1,
     "seriesMin": 1, "seriesMax": 1, "recovery": 0.16, "effortCost": 1.8
   },
-  "stock": { "count": 40, "schoolSize": 10, "schoolsWith": [ "roach" ] },
+  "stock": { "count": 0, "schoolSize": 10, "schoolsWith": [ "roach" ] },
   "signs": { "bubbles": "Лещ роется в иле — крупные пузыри", "jump": "Из воды показался лещ" }
 }

@@ -77,8 +77,7 @@ void ALakeLife::BeginPlay()
     if (HasAuthority())
     {
         FoodField.Init();
-        SpawnFry();
-        // A game (not a test world): Live Fish stocks the pond.
+        // A game (not a test world): Live Fish stocks the pond (and the fry with it).
         if (GetWorld()->GetAuthGameMode<ALakeGameMode>()) StockPond();
     }
 #if !UE_BUILD_SHIPPING
@@ -383,9 +382,28 @@ ALakeFish* ALakeLife::SpawnStocked(EFishSpecies Species, FVector2D At, FVector H
     return Fish;
 }
 
+int32 ALakeLife::StockCount(EFishSpecies Species) const
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    const int32* Override = StockOverride.Find(S.Id);
+    return FMath::Max(0, Override ? *Override : S.Stock.Count);
+}
+
 void ALakeLife::StockPond()
 {
     const double Begin = FPlatformTime::Seconds();
+    // -Stock=roach:40,perch:12 stocks those counts instead of the passports' (trying a stage out).
+    FString StockArg;
+    if (FParse::Value(FCommandLine::Get(), TEXT("Stock="), StockArg, false))
+    {
+        TArray<FString> Items;
+        StockArg.ParseIntoArray(Items, TEXT(","));
+        for (const FString& Item : Items)
+        {
+            FString Id, Count;
+            if (Item.Split(TEXT(":"), &Id, &Count)) StockOverride.Add(Id.TrimStartAndEnd().ToLower(), FCString::Atoi(*Count));
+        }
+    }
     StockRandom.Initialize(20261027);
     BuildStockPlaces();
     // How many of each species, from the passports (stock.count, in schools of stock.schoolSize).
@@ -393,11 +411,14 @@ void ALakeLife::StockPond()
     TArray<int32> SchoolsLeft, LonersLeft, Resident;
     SchoolsLeft.Init(0, Kinds); LonersLeft.Init(0, Kinds); Resident.Init(0, Kinds);
     TArray<EFishSpecies> Schooling, Ambushers, Loners;
+    int32 Total = 0;
     for (int32 Sp = 0; Sp < Kinds; ++Sp)
     {
         const FFishSpeciesInfo& S = LakeFish::Info((EFishSpecies)Sp);
-        if (S.IsSchooling()) { SchoolsLeft[Sp] = S.Stock.Count / S.Stock.SchoolSize; Schooling.Add((EFishSpecies)Sp); }
-        else { LonersLeft[Sp] = S.Stock.Count; (S.Habitat.bAmbush ? Ambushers : Loners).Add((EFishSpecies)Sp); }
+        const int32 Count = StockCount((EFishSpecies)Sp);
+        Total += Count;
+        if (S.IsSchooling()) { SchoolsLeft[Sp] = Count / S.Stock.SchoolSize; Schooling.Add((EFishSpecies)Sp); }
+        else { LonersLeft[Sp] = Count; (S.Habitat.bAmbush ? Ambushers : Loners).Add((EFishSpecies)Sp); }
     }
     // Homes of the schools and the ambushers: schools keep apart, ambushers keep their own patch of water.
     TArray<FVector2D> SchoolHomes, LieHomes;
@@ -468,7 +489,7 @@ void ALakeLife::StockPond()
         // An ambusher where there is cover or a weed edge for its lie (at most about half of them live at the spots).
         for (const EFishSpecies Species : Ambushers)
         {
-            if (Fit(Species, Round) <= 0.6f || LonersLeft[(int32)Species] <= 0 || Resident[(int32)Species] >= (LakeFish::Info(Species).Stock.Count + 1) * 55 / 100) continue;
+            if (Fit(Species, Round) <= 0.6f || LonersLeft[(int32)Species] <= 0 || Resident[(int32)Species] >= (StockCount(Species) + 1) * 55 / 100) continue;
             if (!DrawStockPlace(Species, Round, LieHomes, 1500, 0, Home)) continue;
             SpawnStocked(Species, Home, FVector::ZeroVector, -1, 400);
             LieHomes.Add(Home);
@@ -520,8 +541,11 @@ void ALakeLife::StockPond()
         }
     FString Residents;
     for (int32 Sp = 0; Sp < Kinds; ++Sp) Residents += FString::Printf(TEXT("%s%s %d"), Sp ? TEXT(", ") : TEXT(""), SpeciesNoun((EFishSpecies)Sp), Resident[Sp]);
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_STOCK pond stocked from %d places in %.2f s; living at the spots (schools or fish): %s%s"),
-        StockPlaces.Num(), FPlatformTime::Seconds() - Begin, *Residents, *Plan);
+    // Fry shoals are the young of the pond's fish: none while it is empty.
+    Fry.Reset();
+    if (Total > 0) SpawnFry();
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_STOCK pond stocked with %d fish, %d fry shoals, from %d places in %.2f s; living at the spots (schools or fish): %s%s"),
+        Total, Fry.Num(), StockPlaces.Num(), FPlatformTime::Seconds() - Begin, *Residents, *Plan);
 }
 
 void ALakeLife::Restock(const ALakeFish* Gone)

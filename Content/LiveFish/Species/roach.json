@@ -69,6 +69,6 @@
     "seriesMin": 1, "seriesMax": 2, "seriesGap": 0.23, "recovery": 0.15,
     "effortCost": 1.6
   },
-  "stock": { "count": 208, "schoolSize": 8, "schoolsWith": [ "rudd", "bleak", "bream" ] },
+  "stock": { "count": 0, "schoolSize": 8, "schoolsWith": [ "rudd", "bleak", "bream" ] },
   "signs": { "rise": "Плотва берёт с поверхности — круги", "jump": "Из воды выпрыгнула плотва" }
 }

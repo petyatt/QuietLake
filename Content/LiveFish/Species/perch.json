@@ -63,6 +63,6 @@
     "seriesMin": 3, "seriesMax": 5, "seriesGap": 0.18, "recovery": 0.16,
     "effortCost": 1.7
   },
-  "stock": { "count": 144, "schoolSize": 6 },
+  "stock": { "count": 0, "schoolSize": 6 },
   "signs": { "splash": "Окунь бьёт малька", "scatter": "Окуни гоняют малька — «котёл»", "jump": "Из воды выпрыгнул окунь" }
 }
