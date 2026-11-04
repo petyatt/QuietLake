@@ -39,10 +39,12 @@ struct FLakeFishingFixture
 };
 namespace
 {
-    ALakeFish* SpawnFish(UWorld* World, EFishSpecies Species, float Weight, FVector Location, int32 School = -1)
+    // Seed >= 0 fixes the fish's chance, so the result does not depend on how many objects the
+    // engine happened to create before (assets loaded by other parts of the game shift the ids).
+    ALakeFish* SpawnFish(UWorld* World, EFishSpecies Species, float Weight, FVector Location, int32 School = -1, int32 Seed = -1)
     {
         ALakeFish* Fish = World->SpawnActor<ALakeFish>(Location, FRotator::ZeroRotator);
-        Fish->Setup(Species, Weight, Location, School);
+        Fish->Setup(Species, Weight, Location, School, Seed);
         return Fish;
     }
 }
@@ -634,7 +636,7 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     EBiteMotion FirstTake = EBiteMotion::None;
     for (int32 Try = 0; Try < 8 && FirstTake == EBiteMotion::None; ++Try)
     {
-        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.6f, Fisher->BaitLocation() + FVector(150, 0, 0));
+        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.6f, Fisher->BaitLocation() + FVector(150, 0, 0), -1, 500 + Try);
         for (int32 Step = 0; Step < 2400 && Fisher->FishingState == EFishingState::Waiting; ++Step)
         {
             Crucian->Simulate(0.05f);
@@ -670,7 +672,8 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
                 Fisher->FloatDepth = FMath::Max(30.0f, LakeFish::SurfaceZ - ALakeFish::BottomZ(At.X, At.Y) - 25);
                 FLakeFishingFixture::ImmersedRig(Fisher);
             }
-            ALakeFish* Fish = SpawnFish(World, Kind.Species, Kind.Weight, Fisher->BaitLocation() + FVector(150, 0, 0));
+            ALakeFish* Fish = SpawnFish(World, Kind.Species, Kind.Weight, Fisher->BaitLocation() + FVector(150, 0, 0), -1,
+                1000 * ((int32)Kind.Species + 1) + Trial);
             Fish->Hunger = 1;
             ++Sv.Trials;
             float Touch = -1, TakeAt = -1;
@@ -719,7 +722,7 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     Fisher->Bait = EBait::Maggot;
     Fisher->FloatDepth = 80;
     FLakeFishingFixture::ImmersedRig(Fisher);
-    ALakeFish* Shy = SpawnFish(World, EFishSpecies::Roach, 0.15f, Fisher->BaitLocation() + FVector(100, 0, 0));
+    ALakeFish* Shy = SpawnFish(World, EFishSpecies::Roach, 0.15f, Fisher->BaitLocation() + FVector(100, 0, 0), -1, 900);
     Shy->Hunger = 1;
     for (int32 Step = 0; Step < 600 && Shy->State != ALakeFish::EState::Nibble; ++Step) Shy->Simulate(Dt);
     const bool bTrying = Shy->State == ALakeFish::EState::Nibble;

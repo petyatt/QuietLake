@@ -40,6 +40,9 @@ static TAutoConsoleVariable<float> CVarCastCameraMax(TEXT("lake.CastCameraMax"),
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "ReferenceSkeleton.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/SCS_Node.h"
 #include "Camera/CameraActor.h"
 #include "Misc/CommandLine.h"
 #include "UnrealClient.h"
@@ -66,9 +69,10 @@ ALakeCharacter::ALakeCharacter()
     ThirdPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("ThirdPersonCamera"));
     ThirdPersonCamera->SetupAttachment(ThirdPersonArm);
     ThirdPersonCamera->SetAutoActivate(false);
-    // Body: the UE5 mannequin driven by the C++ fisher animation (locomotion + hands on the rod).
+    // Body: the angler's hands and clothes on the MetaHuman-shaped skeleton (Tools/GenerateFisherClothes.py),
+    // driven by the C++ fisher animation (mannequin locomotion clips + hands on the rod).
     USkeletalMeshComponent* Body = GetMesh();
-    Body->SetSkeletalMesh(LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/Mannequins/Meshes/SKM_Manny_Simple.SKM_Manny_Simple")));
+    Body->SetSkeletalMesh(LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/Fisher/SKM_Fisher.SKM_Fisher")));
     Body->SetRelativeLocationAndRotation(FVector(0, 0, -89), FRotator(0, -90, 0));
     Body->SetAnimInstanceClass(UFisherAnimInstance::StaticClass());
     Body->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -76,98 +80,78 @@ ALakeCharacter::ALakeCharacter()
 }
 void ALakeCharacter::CreateFisherOutfit()
 {
-    // The mannequin stays as the animated skeleton: its bones carry the angler's own boots, trousers,
-    // sweater, jacket, hands and head as static-mesh parts, so the C++ fisher animation and the hand
-    // IK keep working while the body itself is hidden.
+    // The body mesh (hands and clothes) is the animated skeleton. The MetaHuman head and the flat cap
+    // are separate meshes that copy its bone pose: they are hidden in the first person, where the
+    // camera is the eyes.
     USkeletalMeshComponent* Body = GetMesh();
-    USkeletalMesh* BodyMesh = Body ? Body->GetSkeletalMeshAsset() : nullptr;
-    if (!BodyMesh || !BodyMesh->GetSkeleton()) return;
-    const FReferenceSkeleton& Ref = BodyMesh->GetSkeleton()->GetReferenceSkeleton();
-    UStaticMesh* Cube = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-    UStaticMesh* Cylinder = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-    UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-    auto Material = [](const TCHAR* Name)
+    if (!Body || !Body->GetSkeletalMeshAsset()) return;
+    auto Follow = [&](USkeletalMeshComponent* Part)
     {
-        return LoadObject<UMaterialInterface>(nullptr, *FString::Printf(TEXT("/Game/Characters/Fisher/%s.%s"), Name, Name));
-    };
-    UMaterialInterface* Boots = Material(TEXT("M_Fisher_Boots"));
-    UMaterialInterface* Pants = Material(TEXT("M_Fisher_Pants"));
-    UMaterialInterface* Sweater = Material(TEXT("M_Fisher_Sweater"));
-    UMaterialInterface* Jacket = Material(TEXT("M_Fisher_Jacket"));
-    UMaterialInterface* Skin = Material(TEXT("M_Fisher_Skin"));
-    UMaterialInterface* Hat = Material(TEXT("M_Fisher_Hat"));
-    if (!Cube) return;
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISHER_MATERIALS boots=%s pants=%s sweater=%s jacket=%s skin=%s hat=%s"),
-        *GetNameSafe(Boots), *GetNameSafe(Pants), *GetNameSafe(Sweater), *GetNameSafe(Jacket), *GetNameSafe(Skin), *GetNameSafe(Hat));
-
-    // A part hangs on a bone: Centre and Size are in the bone's own space, in centimetres
-    // (the engine basic shapes are 100 cm, hence the /100 scale).
-    auto Add = [&](FName Bone, const FVector& Centre, const FVector& Size, UStaticMesh* Shape,
-                   UMaterialInterface* Mat, bool bHead, const FQuat& Rot = FQuat::Identity) -> UStaticMeshComponent*
-    {
-        if (Ref.FindBoneIndex(Bone) < 0 || !Shape) return nullptr;
-        auto* Part = NewObject<UStaticMeshComponent>(this);
-        Part->SetupAttachment(Body, Bone);
-        Part->SetStaticMesh(Shape);
-        Part->SetMaterial(0, Mat);
+        Part->SetupAttachment(Body);
+        Part->SetRelativeTransform(FTransform::Identity);
+        Part->SetAnimInstanceClass(nullptr);
+        Part->SetLeaderPoseComponent(Body);
         Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
         Part->SetCastShadow(true);
-        Part->SetRelativeLocation(Centre);
-        Part->SetRelativeRotation(Rot);
-        Part->SetRelativeScale3D(Size / 100.0f);
         Part->RegisterComponent();
-        OutfitParts.Add(Part);
-        if (bHead) OutfitHead.Add(Part);
-        return Part;
+        OutfitHead.Add(Part);
     };
-    // A cylinder along a bone segment: from bone head (From) to the child joint (To), both as a
-    // fraction of the segment, so boots can cover the lower half of the calf.
-    auto Segment = [&](FName Bone, FName Child, float From, float To, float Radius, UMaterialInterface* Mat, bool bHead = false)
+    // A dedicated server needs only the body's bones (the hands hold the tackle there too), not the looks.
+    if (GetNetMode() == NM_DedicatedServer) return;
+    // The face, hair and brows come from the MetaHuman assembled by MetaHuman Creator
+    // (Tools/CreateFisherMetaHuman.py), copied from its blueprint as they are: a face or a haircut
+    // rebuilt in the Creator comes into the game without code changes.
+    int32 Grooms = 0;
+    if (const UBlueprintGeneratedClass* MetaHuman = LoadObject<UBlueprintGeneratedClass>(nullptr,
+            TEXT("/Game/Characters/MetaHumans/Fisher/MH_Fisher/BP_MH_Fisher.BP_MH_Fisher_C")))
     {
-        const int32 ChildIndex = Ref.FindBoneIndex(Child);
-        if (Ref.FindBoneIndex(Bone) < 0 || ChildIndex < 0 || !Cylinder) return;
-        const FVector Col = Ref.GetRefBonePose()[ChildIndex].GetLocation();
-        const float Len = Col.Size();
-        if (Len < 1.0f) return;
-        const FVector Dir = Col / Len;
-        Add(Bone, Dir * (Len * (From + To) * 0.5f), FVector(Radius * 2.0f, Radius * 2.0f, Len * FMath::Max(To - From, 0.02f)),
-            Cylinder, Mat, bHead, FRotationMatrix::MakeFromZ(Dir).ToQuat());
-    };
-    // Along the bone's X axis (in the mannequin the bones point along X): for the head and the cap.
-    const FQuat AlongX = FRotationMatrix::MakeFromZ(FVector(1, 0, 0)).ToQuat();
-
-    // Legs: canvas trousers, rubber boots over the lower calf, a flat foot.
-    Segment(TEXT("thigh_l"), TEXT("calf_l"), 0.0f, 1.0f, 9.0f, Pants);
-    Segment(TEXT("thigh_r"), TEXT("calf_r"), 0.0f, 1.0f, 9.0f, Pants);
-    Segment(TEXT("calf_l"), TEXT("foot_l"), 0.0f, 0.58f, 7.6f, Pants);
-    Segment(TEXT("calf_r"), TEXT("foot_r"), 0.0f, 0.58f, 7.6f, Pants);
-    Segment(TEXT("calf_l"), TEXT("foot_l"), 0.42f, 1.06f, 8.4f, Boots);
-    Segment(TEXT("calf_r"), TEXT("foot_r"), 0.42f, 1.06f, 8.4f, Boots);
-    Add(TEXT("foot_l"), FVector(7, 0, -1), FVector(9, 9, 24), Cube, Boots, false, AlongX);
-    Add(TEXT("foot_r"), FVector(7, 0, -1), FVector(9, 9, 24), Cube, Boots, false, AlongX);
-
-    // Hips and torso: sweater under an open canvass jacket.
-    Add(TEXT("pelvis"), FVector(7, 0, 0), FVector(24, 32, 24), Cube, Pants, false);
-    Add(TEXT("spine_03"), FVector(2, 0, 0), FVector(30, 30, 25), Cube, Sweater, false);
-    Add(TEXT("spine_03"), FVector(13, 0, 0), FVector(26, 34, 29), Cube, Jacket, false);
-    Add(TEXT("spine_05"), FVector(6, 0, 0), FVector(14, 26, 24), Cube, Jacket, false);   // collar of the jacket
-    // Sleeves: jacket over the sweater.
-    Segment(TEXT("upperarm_l"), TEXT("lowerarm_l"), 0.0f, 1.0f, 6.6f, Jacket);
-    Segment(TEXT("upperarm_r"), TEXT("lowerarm_r"), 0.0f, 1.0f, 6.6f, Jacket);
-    Segment(TEXT("lowerarm_l"), TEXT("hand_l"), 0.0f, 1.0f, 5.4f, Jacket);
-    Segment(TEXT("lowerarm_r"), TEXT("hand_r"), 0.0f, 1.0f, 5.4f, Jacket);
-
-    // Hands, neck and head with a cloth cap: hidden in the first person, where the camera is the eyes.
-    Add(TEXT("hand_l"), FVector(5, 0, 0), FVector(9, 9, 9), Sphere, Skin, false);
-    Add(TEXT("hand_r"), FVector(5, 0, 0), FVector(9, 9, 9), Sphere, Skin, false);
-    Segment(TEXT("neck_01"), TEXT("head"), 0.0f, 0.95f, 5.0f, Skin, true);
-    Add(TEXT("head"), FVector(9, 0, 0), FVector(21, 19, 21), Sphere, Skin, true);
-    Add(TEXT("head"), FVector(17, 0, 0), FVector(20, 20, 7), Cylinder, Hat, true, AlongX);
-    Add(TEXT("head"), FVector(13.5f, 0, 0), FVector(27, 27, 2.0f), Cylinder, Hat, true, AlongX);   // cap brim
-
-    // The mannequin itself only drives the bones now.
-    Body->SetVisibility(false, false);
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISHER outfit parts %d"), OutfitParts.Num());
+        USkeletalMeshComponent* Face = nullptr;
+        TArray<USceneComponent*> Hair;
+        if (MetaHuman->SimpleConstructionScript)
+            for (const USCS_Node* Node : MetaHuman->SimpleConstructionScript->GetAllNodes())
+            {
+                UActorComponent* Template = Node ? Node->ComponentTemplate : nullptr;
+                if (!Template) continue;
+                if (Node->GetVariableName() == TEXT("Face") && Template->IsA<USkeletalMeshComponent>())
+                    Face = NewObject<USkeletalMeshComponent>(this, TEXT("MetaHumanFace"), RF_NoFlags, Template);
+                else if (Template->GetClass()->GetName() == TEXT("GroomComponent"))
+                {
+                    // Only the slots the Creator filled (hair, brows); stubble is baked into the face skin.
+                    const FObjectPropertyBase* Asset = CastField<FObjectPropertyBase>(Template->GetClass()->FindPropertyByName(TEXT("GroomAsset")));
+                    if (Asset && Asset->GetObjectPropertyValue_InContainer(Template))
+                        Hair.Add(NewObject<USceneComponent>(this, Template->GetClass(), Node->GetVariableName(), RF_NoFlags, Template));
+                }
+            }
+        if (Face)
+        {
+            // The face keeps its own animation blueprint: it copies the pose of the parent body by bone
+            // name and moves its facial and neck helper bones from there (a leader pose would leave
+            // those at rest and tear the neck when the head turns).
+            Face->SetupAttachment(Body);
+            Face->SetRelativeTransform(FTransform::Identity);
+            Face->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Face->SetCastShadow(true);
+            Face->RegisterComponent();
+            Face->AddTickPrerequisiteComponent(Body);
+            OutfitHead.Add(Face);
+            for (USceneComponent* Strands : Hair)
+            {
+                Strands->SetupAttachment(Face);
+                Strands->RegisterComponent();
+                OutfitHead.Add(Strands);
+                ++Grooms;
+            }
+        }
+    }
+    // The flat cap: our own mesh on the body's skeleton.
+    if (USkeletalMesh* Cap = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/Fisher/SKM_Fisher_Cap.SKM_Fisher_Cap")))
+    {
+        auto* Part = NewObject<USkeletalMeshComponent>(this, TEXT("FisherCap"));
+        Part->SetSkeletalMesh(Cap);
+        Follow(Part);
+    }
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISHER body=%s head parts %d grooms %d"),
+        *GetNameSafe(Body->GetSkeletalMeshAsset()), OutfitHead.Num(), Grooms);
 }
 void ALakeCharacter::BeginPlay()
 {
@@ -1037,15 +1021,13 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
         Pose.Left.Alpha = HandsAlpha;
         Pose.Left.Pinch = OnRig;
     }
-    // In first person the owner's own head would block the camera.
+    // In the first person the camera is the angler's eyes: his own face, hair and cap are not drawn
+    // for him (they still cast their shadow). Any other view shows them: the third-person camera,
+    // preview cameras and the other players.
     if (IsLocallyControlled())
-    {
-        if (bThirdPerson) GetMesh()->UnHideBoneByName(TEXT("neck_01"));
-        else GetMesh()->HideBoneByName(TEXT("neck_01"), PBO_None);
-    // The angler's own head and cap are hidden in the first person as well: the camera is the eyes.
-    for (UStaticMeshComponent* Part : OutfitHead)
-        if (Part) Part->SetVisibility(bThirdPerson);
-    }
+        for (USceneComponent* Part : OutfitHead)
+            if (UPrimitiveComponent* Prim = Cast<UPrimitiveComponent>(Part))
+                Prim->SetOwnerNoSee(!bThirdPerson);
 }
 void ALakeCharacter::FinishFishing(const FString& Message)
 {

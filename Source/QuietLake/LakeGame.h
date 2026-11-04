@@ -308,9 +308,8 @@ private:
     TWeakObjectPtr<ALakeFish> BaitFish;     // fish testing or holding the bait
     TWeakObjectPtr<ALakeFish> HookedFish;
     UPROPERTY() TObjectPtr<class UCameraComponent> FishingCamera;
-    /** The clothes and body parts, and the ones hidden in the first person (head, cap, neck). */
-    UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> OutfitParts;
-    UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> OutfitHead;
+    /** MetaHuman face with its hair and brows, and the cap: they follow the body's bones and are hidden in the first person. */
+    UPROPERTY() TArray<TObjectPtr<class USceneComponent>> OutfitHead;
 };
 
 UCLASS()

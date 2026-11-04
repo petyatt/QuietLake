@@ -648,14 +648,14 @@ void ALakeFish::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
     DOREPLIFETIME(ALakeFish, bLifted);
 }
 
-void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int32 InSchool)
+void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int32 InSchool, int32 Seed)
 {
     Species = InSpecies;
     WeightKg = InWeight;
     Deeper = LakeFish::DeeperM(Species, WeightKg);
     HomePoint = HomeAnchor = Home;
     School = InSchool;
-    Random.Initialize(GetUniqueID() * 7919 + (int32)(InWeight * 1000));
+    Random.Initialize(Seed >= 0 ? Seed : GetUniqueID() * 7919 + (int32)(InWeight * 1000));
     Phase = Random.FRandRange(0, 2 * PI);
     Hunger = Random.FRandRange(0.55f, 1.0f);
     Energy = Random.FRandRange(0.5f, 1.0f);

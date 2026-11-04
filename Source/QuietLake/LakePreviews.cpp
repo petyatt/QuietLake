@@ -52,14 +52,15 @@ void ALakeCharacter::RunRodDiagnostics(float DeltaSeconds)
 
 void ALakeCharacter::RunPreviews()
 {
-    // -FisherPreview: the angler's clothes from the front, the side and the back, close up.
+    // -FisherPreview: the angler from the front, the side and the back, then the face close up.
     if (FParse::Param(FCommandLine::Get(), TEXT("FisherPreview")) && GetNetMode() == NM_Standalone)
     {
-        struct FShot { float YawOffset, Distance, Height; const TCHAR* File; };
+        struct FShot { float YawOffset, Distance, Height, TargetZ, Fov; const TCHAR* File; };
         static const FShot Shots[] = {
-            { 0.0f, 520.0f, 25.0f, TEXT("Fisher_Front.png") },
-            { 90.0f, 520.0f, 25.0f, TEXT("Fisher_Side.png") },
-            { 180.0f, 520.0f, 25.0f, TEXT("Fisher_Back.png") },
+            { 0.0f, 520.0f, 25.0f, 35.0f, 42.0f, TEXT("Fisher_Front.png") },
+            { 90.0f, 520.0f, 25.0f, 35.0f, 42.0f, TEXT("Fisher_Side.png") },
+            { 180.0f, 520.0f, 25.0f, 35.0f, 42.0f, TEXT("Fisher_Back.png") },
+            { 30.0f, 170.0f, 5.0f, 68.0f, 30.0f, TEXT("Fisher_Face.png") },   // face, collar and cap close up
         };
         TWeakObjectPtr<ACameraActor> Cam;
         APlayerController* PC = Cast<APlayerController>(GetController());
@@ -84,7 +85,7 @@ void ALakeCharacter::RunPreviews()
             FTimerHandle Pose, Snap;
             GetWorldTimerManager().SetTimer(Pose, [this, Shot, &Cam, PC]
             {
-                const FVector Target = GetActorLocation() + FVector(0, 0, 35);
+                const FVector Target = GetActorLocation() + FVector(0, 0, Shot.TargetZ);
                 const FVector Dir = FRotator(0, GetActorRotation().Yaw + Shot.YawOffset, 0).Vector();
                 const FVector From = Target + Dir * Shot.Distance + FVector(0, 0, Shot.Height);
                 ACameraActor* Camera = Cam.Get();
@@ -96,7 +97,7 @@ void ALakeCharacter::RunPreviews()
                 if (Camera)
                 {
                     Camera->SetActorLocationAndRotation(From, (Target - From).Rotation());
-                    Camera->GetCameraComponent()->SetFieldOfView(42);
+                    Camera->GetCameraComponent()->SetFieldOfView(Shot.Fov);
                     if (PC) PC->SetViewTarget(Camera);
                 }
             }, At - 1.0f, false);
