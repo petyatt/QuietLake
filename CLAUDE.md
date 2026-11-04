@@ -10,8 +10,8 @@
   Комментарии в коде — по-английски, коротко и по делу.
 - Коммитить только по просьбе пользователя.
 - Изменения проекта и запуск работы в других чатах сначала согласовывать с пользователем; выполнять работу в пределах согласованной задачи.
-- Никогда не коммитить `Content/Fab`, `Content/Megaplant_Library`, `Content/Characters/Mannequins`
-  (они в `.gitignore`; восстанавливаются через Fab в редакторе и `Tools/CopyMannequin.ps1`;
+- Никогда не коммитить `Content/Fab`, `Content/Megaplant_Library`, `Content/Characters/Mannequins`, `Content/Characters/MetaHumans`
+  (они в `.gitignore`; восстанавливаются через Fab в редакторе, `Tools/CopyMannequin.ps1` и `Tools/CreateFisherMetaHuman.py`;
   после восстановления Megaplant запустить `Tools/FixPineBark.py` питоном редактора).
 - Fab: только бесплатные лицензии; не входить в аккаунты и не вводить пароли за пользователя.
 - После изменения механики обновлять [WORLD.md](WORLD.md), а после проверки — раздел «Проверено …» в [README.md](README.md).
@@ -73,19 +73,21 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-WeatherPreview` | погода и время суток | `LakeWeather.cpp` |
 | `-NightPreview` | сразу ночь: три кадра — берег, в сторону луны, густой туман; по 10–12 с на кадр (~50 с всего) | `LakeWeather.cpp` |
 | `-MapPreview` | миникарта и большая карта озера (M): `Saved/Map_Minimap.png`, `Saved/Map_Full.png` | `LakeHUD.cpp` |
-| `-FisherPreview` | рыбак в своей одежде: вид спереди, сбоку и сзади (`Saved/Fisher_*.png`) | `LakePreviews.cpp` |
+| `-FisherPreview` | рыбак-MetaHuman в одежде: вид спереди, сбоку, сзади и лицо крупно (`Saved/Fisher_Front/Side/Back/Face.png`) | `LakePreviews.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
 
 Скрипты ассетов в `Tools/`: `Generate*.py` запускаются Blender (`--background --factory-startup --python …`; кроме `GenerateLifeSounds.py` и `GenerateLakeSounds.py` — это обычный `python`),
 `Create*.py` и `Import*.py` — питоном редактора (`GenerateFishModels.py`/`ImportFish.py` с `QUIETLAKE_FISH=Bream,Rudd` в окружении делают только эти виды) (`CreateGrownPlants.py` готовит графы редактора растений, выгрузка — Ctrl+E в окне графа): `UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -run=pythonscript -script=C:/Fish/Tools/<имя>.py`.
 Готовая (купленная) модель рыбы — конвейер с тремя LOD: `PrepareMeshyLODs.py` в Blender переставляет модель (нос в начало координат, тело по +X, координата волны в красном канале вершинных цветов) и облегчает её по бюджету вида; `ImportMeshyLODs.py` запускается **в полном редакторе** (`UnrealEditor.exe … -ExecutePythonScript=`, в commandlet нет `StaticMeshEditorSubsystem`) через `ImportMeshyLODsRun.py`, импортирует LOD0 и подкладывает LOD1/2, собирает материал `M_Meshy_<Вид>`. Список видов — `QUIETLAKE_FISH`, папка источников — `QUIETLAKE_MESHY_SOURCE` (по умолчанию `Saved/AssetReview/Meshy-20261101/<вид>`), длины моделей пишутся в `meshLength` паспорта. Простой вариант без LOD — `ProcessMeshyFish.py` + `ImportTexturedFish.py`. Купленные деревья (ива, дуб): `PrepareTrees.py` в Blender ставит дерево комлем в начало координат и задаёт высоту, `PrepareTreeFoliage.py` в Blender заменяет комки кроны листовыми карточками и рисует текстуры листьев (проверочный рендер `Saved/TreeRender_*.png`), `ImportTrees.py` (commandlet) импортирует их Nanite-мешами в `Content/Plants/Trees`; источники распаковываются в `Saved/TreeAssets`.
+Рыбак (MetaHuman + своя одежда), по порядку: `CreateFisherMetaHuman.py` — **в полном редакторе** (`UnrealEditor.exe … -ExecutePythonScript=`; нужны MetaHuman Creator Core Data из лаунчера и вход в Epic для облачного рига и текстур; флаги `QUIETLAKE_MH_PRESET=Bruce`, `QUIETLAKE_MH_CLOUD=1`, `QUIETLAKE_MH_BUILD=1`, `QUIETLAKE_MH_EXPORT=1`) создаёт `MH_Fisher` (лицо из пресета, тело 180 см), собирает `Content/Characters/MetaHumans/Fisher` и выгружает FBX тела и головы в `Saved/FisherBody`; `GenerateFisherClothes.py` (Blender, аргументы — эти два FBX и папка) шьёт по телу ватник со стоячим воротником, свитер с горлом, штаны, сапоги и кепку (`Fisher_Outfit.fbx`, `Fisher_Cap.fbx`, кадры `Saved/FisherClothes_*.png`); `GenerateFisherTextures.py` (Blender) — текстуры ткани в `Tools/GeneratedFisher`; `CreateFisherMaterials.py` — `M_Fisher_Cloth` и `MI_Fisher_*`; `ImportFisherOutfit.py` (commandlet) — `SKM_Fisher`, `SKM_Fisher_Cap`, LOD и материалы. Если в Creator поменять лицо или причёску — пересобрать (`QUIETLAKE_MH_BUILD=1 QUIETLAKE_MH_EXPORT=1`) и повторить три последних шага, чтобы кепка и ворот сели по новой голове.
 
 ## Код (`Source/QuietLake`)
 
 - `LakeGame.h/.cpp` — рыбак `ALakeCharacter` (заброс, поклёвка, подсечка, вываживание, вынимание рыбы,
-  и его одежда: `CreateFisherOutfit` ставит сапоги, штаны, кофту, куртку, руки и голову частями на кости
-  манекена, сам манекен скрыт; материалы — `Content/Characters/Fisher`, `Tools/CreateFisherMaterials.py`,
-  проверка — `-FisherPreview`;
+  и его вид: тело — `SKM_Fisher` (кисти и одежда на скелете MetaHuman, совместимом с манекеном, — клипы
+  манекена и IK рук `FisherAnim` работают как раньше); `CreateFisherOutfit` берёт лицо и пряди из собранного
+  `BP_MH_Fisher` (лицо со своим `ABP_Face` копирует позу тела) и надевает кепку; от первого лица они не
+  рисуются для самого рыбака (`SetOwnerNoSee`), на выделенном сервере не создаются; проверка — `-FisherPreview`;
   поза удилища), `ALakeEnvironment` (объявление), `ALakeGameMode`.
 - `LakePreviews.cpp` — сценарии `-LakePreview`, `-BitePreview`, `-LandPreview`.
 - `LakeHUD.h/.cpp` — экран: карточка статуса, полосы натяжения и заброса, погода, панель F3.

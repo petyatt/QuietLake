@@ -578,7 +578,8 @@ public:
     virtual void Tick(float DeltaSeconds) override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
 
-    void Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int32 InSchool);
+    /** Seed < 0: from the object's id (different every run); tests pass a fixed one to stay repeatable. */
+    void Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int32 InSchool, int32 Seed = -1);
 
     UPROPERTY(Replicated) EFishSpecies Species = EFishSpecies::Perch;
     UPROPERTY(Replicated) float WeightKg = 0.2f;
