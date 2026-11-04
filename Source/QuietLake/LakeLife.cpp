@@ -471,7 +471,8 @@ int32 ALakeLife::StockInGroups(EFishSpecies Species, int32 Count, int32& NextSch
     for (int32 I = Plans.Num() - 1; I > 0; --I) Plans.Swap(I, StockRandom.RandRange(0, I));
 
     // The spot with the smallest share of its fish takes the next group (so every spot gets one
-    // before any gets two); once every spot has its own, the lake.
+    // before any gets two); once the spots have their number between them (and each a group at
+    // least), the lake.
     TArray<FVector2D> Homes;
     int32 AtSpots = 0, Placed = 0, AllQuotas = 0;
     for (const int32 Q : Quota) AllQuotas += Q;
@@ -479,9 +480,9 @@ int32 ALakeLife::StockInGroups(EFishSpecies Species, int32 Count, int32& NextSch
     for (const FGroupPlan& G : Plans)
     {
         int32 Spot = INDEX_NONE;
-        for (int32 I = 0; I < Spots.Num() && AtSpots < AllQuotas; ++I)
+        for (int32 I = 0; I < Spots.Num(); ++I)
         {
-            if (Got[I] >= Quota[I]) continue;
+            if (Got[I] >= Quota[I] || (AtSpots >= AllQuotas && Got[I] > 0)) continue;
             const int64 Mine = (int64)Got[I] * FMath::Max(1, Spot == INDEX_NONE ? 1 : Quota[Spot]);
             const int64 Theirs = Spot == INDEX_NONE ? 0 : (int64)Got[Spot] * Quota[I];
             if (Spot == INDEX_NONE || Mine < Theirs || (Mine == Theirs && Quota[I] > Quota[Spot])) Spot = I;

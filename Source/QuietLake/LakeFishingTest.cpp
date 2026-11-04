@@ -1359,7 +1359,7 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     ALakeLife* Life = World->SpawnActor<ALakeLife>();
     Life->StockOverride = { { TEXT("perch"), 144 }, { TEXT("roach"), 208 }, { TEXT("crucian"), 240 }, { TEXT("pike"), 24 },
-        { TEXT("bream"), 150 }, { TEXT("rudd"), 120 }, { TEXT("bleak"), 120 } };
+        { TEXT("bream"), 150 }, { TEXT("rudd"), 120 }, { TEXT("bleak"), 150 } };
     Life->StockPond();
     Life->Step(0);
     TestTrue(FString::Printf(TEXT("Fry shoals come with the fish (%d)"), Life->FryShoals().Num()), Life->FryShoals().Num() >= 8);
@@ -1494,6 +1494,7 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
             const FString Id = LakeFish::Info((EFishSpecies)Sp).Id;
             if (Id == TEXT("bream")) CheckSchools((EFishSpecies)Sp, 0.4f, 1.5f, 7);
             if (Id == TEXT("rudd")) CheckSchools((EFishSpecies)Sp, 0.2f, 0.55f, 6);
+            if (Id == TEXT("bleak")) CheckSchools((EFishSpecies)Sp, 0.035f, 0.035f, 24);
         }
     }
 
