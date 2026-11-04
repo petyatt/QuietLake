@@ -173,7 +173,7 @@ bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpecie
                 Problems.Add(FString::Printf(TEXT("%s: stock.groups: upTo must grow, 1 <= min <= max, drift above 0, deeperM 0 or more"), *File));
             Below = G.UpTo;
         }
-        if (St.Groups.Num() && St.SchoolSize > 1) Problems.Add(FString::Printf(TEXT("%s: stock.groups are for fish that do not school (schoolSize 1)"), *File));
+        if (St.Spots.Num() && St.Groups.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: stock.spots need stock.groups"), *File));
         for (const TPair<FString, int32>& Spot : St.Spots)
         {
             bool bKnown = false;
@@ -513,6 +513,11 @@ float LakeFish::DeeperM(EFishSpecies Species, float WeightKg)
 {
     const FFishGroupSize* G = GroupFor(Species, WeightKg);
     return G ? G->DeeperM : 0.0f;
+}
+int32 LakeFish::UsualSchool(EFishSpecies Species, float WeightKg)
+{
+    const FFishGroupSize* G = GroupFor(Species, WeightKg);
+    return G ? FMath::DivideAndRoundUp(G->Min + G->Max, 2) : Info(Species).Stock.SchoolSize;
 }
 namespace
 {

@@ -182,8 +182,8 @@ private:
     ALakeFish* SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift, float Weight = -1);
     /** LikeWeight > 0: a newcomer of that size band (a loose group keeps its size). */
     void RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries, float LikeWeight = -1);
-    /** A species that keeps in loose groups (stock.groups): its groups at its spots (stock.spots), the rest away from the other spots. Returns how many live at the spots. */
-    int32 StockInGroups(EFishSpecies Species, int32 Count, FString& Plan);
+    /** A species with stock.groups: its schools or loose groups at its spots (stock.spots), the rest away from the other spots. Returns how many live at the spots. */
+    int32 StockInGroups(EFishSpecies Species, int32 Count, int32& NextSchool, FString& Plan);
     TArray<FStockPlace> StockPlaces;
     TArray<float> StockRef;   // a good score for each species (80th percentile), to compare species
     FRandomStream StockRandom;

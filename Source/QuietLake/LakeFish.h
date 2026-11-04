@@ -322,9 +322,10 @@ struct FFishSizeBand
 };
 
 /**
- * How fish up to UpTo kg of a non-schooling species keep together: loose groups of Min..Max sharing
- * one home, each swimming on its own within about Drift cm of it. DeeperM: how much deeper than the
- * species' habitat these fish go (big fish keep deeper).
+ * How fish up to UpTo kg keep together: groups of Min..Max sharing one home within about Drift cm of
+ * it. A schooling species (schoolSize above 1): each group is a school following its leader, and its
+ * usual size is the middle of Min..Max. Otherwise a loose group: each fish swims on its own.
+ * DeeperM: how much deeper than the species' habitat these fish go (big fish keep deeper).
  */
 USTRUCT()
 struct FFishGroupSize
@@ -340,8 +341,8 @@ struct FFishGroupSize
 /**
  * How many of the species the pond holds at the start (see ALakeLife::StockPond), in schools of
  * SchoolSize (1: alone). Sizes: shares by weight (empty: mostly small, the big ones rare). Groups:
- * loose groups by size instead of loners (SchoolSize 1 only). Spots: how many live at each named
- * fishing spot; with it, the rest live away from the other spots.
+ * schools or loose groups by size (FFishGroupSize). Spots: how many live at each named fishing spot
+ * (with Groups); the rest live away from the other spots.
  */
 USTRUCT()
 struct FFishStock
@@ -517,6 +518,8 @@ namespace LakeFish
     QUIETLAKE_API const FFishGroupSize* GroupFor(EFishSpecies Species, float WeightKg);
     /** How much deeper than its species' habitat a fish of this weight goes (stock.groups). */
     QUIETLAKE_API float DeeperM(EFishSpecies Species, float WeightKg);
+    /** The usual size of a school led by a fish of this weight: the middle of its stock.groups size, or stock.schoolSize. */
+    QUIETLAKE_API int32 UsualSchool(EFishSpecies Species, float WeightKg);
     QUIETLAKE_API const FFishHabitat& HabitatFor(EFishSpecies Species, EFishGoal Goal);
     QUIETLAKE_API const TCHAR* GoalName(EFishSpecies Species, EFishGoal Goal);
     /**
