@@ -1359,7 +1359,7 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     ALakeLife* Life = World->SpawnActor<ALakeLife>();
     Life->StockOverride = { { TEXT("perch"), 144 }, { TEXT("roach"), 208 }, { TEXT("crucian"), 240 }, { TEXT("pike"), 24 },
-        { TEXT("bream"), 40 }, { TEXT("rudd"), 80 }, { TEXT("bleak"), 120 } };
+        { TEXT("bream"), 150 }, { TEXT("rudd"), 80 }, { TEXT("bleak"), 120 } };
     Life->StockPond();
     Life->Step(0);
     TestTrue(FString::Printf(TEXT("Fry shoals come with the fish (%d)"), Life->FryShoals().Num()), Life->FryShoals().Num() >= 8);
@@ -1489,6 +1489,8 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         };
         CheckSchools(EFishSpecies::Roach, 0.2f, 0.5f, 6);
         CheckSchools(EFishSpecies::Perch, 0.15f, 0.35f, 5);
+        for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp)
+            if (LakeFish::Info((EFishSpecies)Sp).Id == TEXT("bream")) CheckSchools((EFishSpecies)Sp, 0.4f, 1.5f, 7);
     }
 
     // Every spot has a school in reach: within a perch's sense of the water its pole reaches

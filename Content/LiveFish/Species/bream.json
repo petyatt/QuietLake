@@ -4,7 +4,7 @@
   "noun": "лещ",
   "description": "Стайная донная рыба глубоких мест: кормится на свалах и в русле, роется в иле, к берегу подходит на зорьках и ночью. Молодь ест планктон, крупный лещ — мотыль и личинки. Берёт осторожно: поднимает и кладёт поплавок, медленно ведёт. На крючке тянет тяжело и подолгу, иногда делает отдельный сильный рывок.",
   "mesh": "/Game/Fish/SM_Fish_Meshy_Bream.SM_Fish_Meshy_Bream",
-  "meshLength": 37.38701, "condition": 1.45, "minWeight": 0.3, "maxWeight": 2.5, "girthGrowth": 0.16,
+  "meshLength": 37.38701, "condition": 1.6, "minWeight": 0.15, "maxWeight": 3.0, "girthGrowth": 0.16,
   "habitat":     { "dropOff": 0.8, "deep": 1.0, "open": 0.5, "minDepthM": 2.0, "maxDepthM": 6.0 },
   "feedHabitat": { "shallows": 0.2, "dropOff": 1.0, "deep": 0.6, "minDepthM": 1.2, "maxDepthM": 4.5 },
   "restHabitat": { "deep": 1.0, "open": 0.6, "minDepthM": 2.5, "maxDepthM": 7.0 },
@@ -44,6 +44,14 @@
     "pauseMax": 1.7, "burstChance": 0.22, "burstMin": 0.65, "burstMax": 1.1,
     "seriesMin": 1, "seriesMax": 1, "recovery": 0.16, "effortCost": 1.8
   },
-  "stock": { "count": 0, "schoolSize": 10, "schoolsWith": [ "roach" ] },
+  "stock": {
+    "count": 150, "schoolSize": 10, "schoolsWith": [ "roach" ],
+    "sizes": [ { "upTo": 0.4, "share": 0.45 }, { "upTo": 0.8, "share": 0.25 }, { "upTo": 1.5, "share": 0.18 },
+               { "upTo": 2.2, "share": 0.09 }, { "upTo": 3.0, "share": 0.03 } ],
+    "groups": [ { "upTo": 0.5, "min": 15, "max": 30, "drift": 900 },
+                { "upTo": 1.5, "min": 8, "max": 15, "drift": 1000, "deeperM": 0.5 },
+                { "upTo": 3.0, "min": 3, "max": 6, "drift": 1200, "deeperM": 1.0 } ],
+    "spots": { "Под яром": 20, "Берёзовая гряда": 20, "Сосновый яр": 15, "Омут": 15, "Плёс": 10, "Луговая бровка": 10 }
+  },
   "signs": { "bubbles": "Лещ роется в иле — крупные пузыри", "jump": "Из воды показался лещ" }
 }
