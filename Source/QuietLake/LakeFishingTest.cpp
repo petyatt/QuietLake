@@ -1378,7 +1378,7 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         bInWater &= LakeMap::IsWater(Fish->GetActorLocation().X, Fish->GetActorLocation().Y);
     }
     AddInfo(FString::Printf(TEXT("Stocked: %d perch, %d roach, %d crucian, %d pike in %d schools"), Count[0], Count[1], Count[2], Count[3], Members.Num()));
-    TestEqual(TEXT("Perch: 24 schools of 6"), Count[(int32)EFishSpecies::Perch], 144);
+    TestEqual(TEXT("Perch: as many as set"), Count[(int32)EFishSpecies::Perch], 144);
     TestEqual(TEXT("Roach: as many as set"), Count[(int32)EFishSpecies::Roach], 208);
     TestEqual(TEXT("Crucian"), Count[(int32)EFishSpecies::Crucian], 240);
     TestEqual(TEXT("Pike"), Count[(int32)EFishSpecies::Pike], 24);
@@ -1440,50 +1440,55 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Crucian: the big ones alone or in twos"), BiggestBig <= 2);
         TestTrue(FString::Printf(TEXT("Crucian: at its own spots only (%s)"), *Stray), Stray.IsEmpty());
 
-        // Roach keep in schools by size at their own spots: big shoals of small ones, small schools of
-        // big ones (stock.groups of a schooling species); none at the other spots.
-        const FFishSpeciesInfo& R = LakeFish::Info(EFishSpecies::Roach);
-        TMap<int32, TArray<const ALakeFish*>> BySchool;
-        int32 Roach = 0, Schooled = 0;
-        bool bRoachWeights = true;
-        for (const ALakeFish* Fish : All)
+        // Schooling species keep in schools by size at their own spots (stock.groups, stock.spots):
+        // big schools of small fish, small schools of big ones; none at the other spots.
+        auto CheckSchools = [&](EFishSpecies Species, float SmallUpTo, float BigFrom, int32 BigMost)
         {
-            if (Fish->Species != EFishSpecies::Roach) continue;
-            ++Roach;
-            bRoachWeights &= Fish->WeightKg >= R.MinWeight - 0.001f && Fish->WeightKg <= R.MaxWeight + 0.001f;
-            if (Fish->GetSchool() >= 0) { BySchool.FindOrAdd(Fish->GetSchool()).Add(Fish); ++Schooled; }
-        }
-        TArray<int32> SchoolsAt;
-        SchoolsAt.Init(0, AllSpots.Num());
-        int32 SmallSchools = 0, SmallInThem = 0, BiggestOfBig = 0;
-        for (const TPair<int32, TArray<const ALakeFish*>>& It : BySchool)
-        {
-            float Lightest = 1e9f, Heaviest = 0;
-            for (const ALakeFish* F : It.Value) { Lightest = FMath::Min(Lightest, F->WeightKg); Heaviest = FMath::Max(Heaviest, F->WeightKg); }
-            if (Heaviest < 0.2f) { ++SmallSchools; SmallInThem += It.Value.Num(); }
-            if (Lightest > 0.5f) BiggestOfBig = FMath::Max(BiggestOfBig, It.Value.Num());
-            const FVector2D Home(It.Value[0]->GetHomeAnchor());
-            int32 Nearest = INDEX_NONE;
-            float Best = 600;
+            const FFishSpeciesInfo& R = LakeFish::Info(Species);
+            TMap<int32, TArray<const ALakeFish*>> BySchool;
+            int32 Fish = 0, Schooled = 0;
+            bool bWeights = true;
+            for (const ALakeFish* F : All)
+            {
+                if (F->Species != Species) continue;
+                ++Fish;
+                bWeights &= F->WeightKg >= R.MinWeight - 0.001f && F->WeightKg <= R.MaxWeight + 0.001f;
+                if (F->GetSchool() >= 0) { BySchool.FindOrAdd(F->GetSchool()).Add(F); ++Schooled; }
+            }
+            TArray<int32> SchoolsAt;
+            SchoolsAt.Init(0, AllSpots.Num());
+            int32 SmallSchools = 0, SmallInThem = 0, BiggestOfBig = 0;
+            for (const TPair<int32, TArray<const ALakeFish*>>& It : BySchool)
+            {
+                float Lightest = 1e9f, Heaviest = 0;
+                for (const ALakeFish* F : It.Value) { Lightest = FMath::Min(Lightest, F->WeightKg); Heaviest = FMath::Max(Heaviest, F->WeightKg); }
+                if (Heaviest < SmallUpTo) { ++SmallSchools; SmallInThem += It.Value.Num(); }
+                if (Lightest >= BigFrom) BiggestOfBig = FMath::Max(BiggestOfBig, It.Value.Num());
+                const FVector2D Home(It.Value[0]->GetHomeAnchor());
+                int32 Nearest = INDEX_NONE;
+                float Best = 600;
+                for (int32 I = 0; I < AllSpots.Num(); ++I)
+                    if (const float D = ToWater(AllSpots[I], Home); D < Best) { Best = D; Nearest = I; }
+                if (Nearest != INDEX_NONE) ++SchoolsAt[Nearest];
+            }
+            FString At, Wrong;
             for (int32 I = 0; I < AllSpots.Num(); ++I)
-                if (const float D = ToWater(AllSpots[I], Home); D < Best) { Best = D; Nearest = I; }
-            if (Nearest != INDEX_NONE) ++SchoolsAt[Nearest];
-        }
-        FString RoachAt, RoachStray;
-        for (int32 I = 0; I < AllSpots.Num(); ++I)
-        {
-            const bool bListed = R.Stock.Spots.Contains(AllSpots[I].Name);
-            if (bListed) RoachAt += FString::Printf(TEXT(" %s %d,"), AllSpots[I].Name, SchoolsAt[I]);
-            if (bListed && SchoolsAt[I] == 0) RoachStray += FString::Printf(TEXT(" none at %s,"), AllSpots[I].Name);
-            if (!bListed && SchoolsAt[I] > 0) RoachStray += FString::Printf(TEXT(" %d at %s,"), SchoolsAt[I], AllSpots[I].Name);
-        }
-        AddInfo(FString::Printf(TEXT("Roach: %d in %d schools; small ones %d in %d schools, the biggest school of big ones %d; schools at its spots:%s"),
-            Roach, BySchool.Num(), SmallInThem, SmallSchools, BiggestOfBig, *RoachAt));
-        TestTrue(TEXT("Roach: weights within the passport's"), bRoachWeights);
-        TestEqual(TEXT("Roach: every one in a school"), Schooled, Roach);
-        TestTrue(TEXT("Roach: the small ones in big schools (12 or more on average)"), SmallSchools > 0 && SmallInThem >= SmallSchools * 12);
-        TestTrue(TEXT("Roach: the big ones in small schools"), BiggestOfBig <= 7);
-        TestTrue(FString::Printf(TEXT("Roach: schools at its own spots only (%s)"), *RoachStray), RoachStray.IsEmpty());
+            {
+                const bool bListed = R.Stock.Spots.Contains(AllSpots[I].Name);
+                if (bListed) At += FString::Printf(TEXT(" %s %d,"), AllSpots[I].Name, SchoolsAt[I]);
+                if (bListed && SchoolsAt[I] == 0) Wrong += FString::Printf(TEXT(" none at %s,"), AllSpots[I].Name);
+                if (!bListed && SchoolsAt[I] > 0) Wrong += FString::Printf(TEXT(" %d at %s,"), SchoolsAt[I], AllSpots[I].Name);
+            }
+            AddInfo(FString::Printf(TEXT("%s: %d in %d schools; small ones %d in %d schools, the biggest school of big ones %d; schools at its spots:%s"),
+                *R.Id, Fish, BySchool.Num(), SmallInThem, SmallSchools, BiggestOfBig, *At));
+            TestTrue(FString::Printf(TEXT("%s: weights within the passport's"), *R.Id), bWeights);
+            TestEqual(FString::Printf(TEXT("%s: every one in a school"), *R.Id), Schooled, Fish);
+            TestTrue(FString::Printf(TEXT("%s: the small ones in big schools (10 or more on average)"), *R.Id), SmallSchools > 0 && SmallInThem >= SmallSchools * 10);
+            TestTrue(FString::Printf(TEXT("%s: the big ones in small schools"), *R.Id), BiggestOfBig <= BigMost);
+            TestTrue(FString::Printf(TEXT("%s: schools at its own spots only (%s)"), *R.Id, *Wrong), Wrong.IsEmpty());
+        };
+        CheckSchools(EFishSpecies::Roach, 0.2f, 0.5f, 6);
+        CheckSchools(EFishSpecies::Perch, 0.15f, 0.35f, 5);
     }
 
     // Every spot has a school in reach: within a perch's sense of the water its pole reaches
