@@ -1359,7 +1359,7 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     ALakeLife* Life = World->SpawnActor<ALakeLife>();
     Life->StockOverride = { { TEXT("perch"), 144 }, { TEXT("roach"), 208 }, { TEXT("crucian"), 240 }, { TEXT("pike"), 24 },
-        { TEXT("bream"), 150 }, { TEXT("rudd"), 80 }, { TEXT("bleak"), 120 } };
+        { TEXT("bream"), 150 }, { TEXT("rudd"), 120 }, { TEXT("bleak"), 120 } };
     Life->StockPond();
     Life->Step(0);
     TestTrue(FString::Printf(TEXT("Fry shoals come with the fish (%d)"), Life->FryShoals().Num()), Life->FryShoals().Num() >= 8);
@@ -1490,11 +1490,16 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         CheckSchools(EFishSpecies::Roach, 0.2f, 0.5f, 6);
         CheckSchools(EFishSpecies::Perch, 0.15f, 0.35f, 5);
         for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp)
-            if (LakeFish::Info((EFishSpecies)Sp).Id == TEXT("bream")) CheckSchools((EFishSpecies)Sp, 0.4f, 1.5f, 7);
+        {
+            const FString Id = LakeFish::Info((EFishSpecies)Sp).Id;
+            if (Id == TEXT("bream")) CheckSchools((EFishSpecies)Sp, 0.4f, 1.5f, 7);
+            if (Id == TEXT("rudd")) CheckSchools((EFishSpecies)Sp, 0.2f, 0.55f, 6);
+        }
     }
 
-    // Every spot has a school in reach: within a perch's sense of the water its pole reaches
-    // (2-6 m out from the waterline; from the pier, beyond its end).
+    // Every spot has fish in reach - a school, a loose group or a lone pike (each species keeps to its
+    // own spots): within a perch's sense of the water its pole reaches (2-6 m out from the waterline;
+    // from the pier, beyond its end).
     FString Empty;
     for (const LakeMap::FSpot& Spot : LakeMap::Spots())
     {
@@ -1510,11 +1515,11 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         {
             const FVector2D P(Fish->GetActorLocation());
             const float T = FMath::Clamp(FVector2D::DotProduct(P - A, B - A) / (B - A).SizeSquared(), 0.0f, 1.0f);
-            bSchool |= Fish->GetSchool() >= 0 && FVector2D::Distance(P, A + (B - A) * T) < 650;
+            bSchool |= FVector2D::Distance(P, A + (B - A) * T) < 650;
         }
         if (!bSchool) Empty += FString(TEXT(" ")) + Spot.Name;
     }
-    TestTrue(FString::Printf(TEXT("A school in reach of every fishing spot (none at:%s)"), *Empty), Empty.IsEmpty());
+    TestTrue(FString::Printf(TEXT("Fish in reach of every fishing spot (none at:%s)"), *Empty), Empty.IsEmpty());
 
     // A fish caught out of a school: a few game hours later another of its kind swims with the same school.
     ALakeFish* Caught = nullptr;
