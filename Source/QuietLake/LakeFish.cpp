@@ -151,6 +151,7 @@ bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpecie
     // Numbers that would break the fish.
     if (Info.MaxWeight <= Info.MinWeight || Info.MinWeight <= 0) Problems.Add(FString::Printf(TEXT("%s: minWeight must be above 0 and below maxWeight"), *File));
     if (Info.CruiseSpeed <= 0 || Info.BurstSpeed < Info.CruiseSpeed) Problems.Add(FString::Printf(TEXT("%s: cruiseSpeed must be above 0 and burstSpeed at least as fast"), *File));
+    if (Info.SurfaceClearance < 0 || Info.SurfaceClearance > 150) Problems.Add(FString::Printf(TEXT("%s: surfaceClearance goes from 0 to 150 cm"), *File));
     if (Info.Bite.Take.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: bite.take is empty - how does it take the bait?"), *File));
     if (Info.Mesh.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: no mesh"), *File));
     if (Info.Stock.SchoolSize < 1) Problems.Add(FString::Printf(TEXT("%s: stock.schoolSize must be 1 or more"), *File));
@@ -609,8 +610,28 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
     // Heat and bright sun also press the fish towards the bottom of the water column.
     const float Lower = Conditions ? FMath::Clamp(DepthShiftM(Species, *Conditions) * 0.25f, -0.2f, 0.3f) : 0.0f;
     const float Column = FMath::Clamp(Random.FRandRange(S.DepthMin, S.DepthMax) + Lower, 0.0f, 1.0f);
-    const float Z = FMath::Lerp(SurfaceZ - 10, Bottom + 8, Column);
-    return FVector(Best, Conditions ? LakeWater::ToLivable(Species, *Conditions, Best.X, Best.Y, Z) : Z);
+    // Never higher than the species keeps under the surface (a sip or a gulp is a moment, not a place).
+    const float Z = FMath::Min(FMath::Lerp(SurfaceZ - 10, Bottom + 8, Column), CeilingAt(Species, Best.X, Best.Y, S.MeshLength));
+    return FVector(Best, Conditions ? FMath::Min(LakeWater::ToLivable(Species, *Conditions, Best.X, Best.Y, Z), CeilingAt(Species, Best.X, Best.Y, S.MeshLength)) : Z);
+}
+float LakeFish::CeilingAt(EFishSpecies Species, float X, float Y, float LengthCm)
+{
+    // The fish's origin is at its mouth, about an eighth of its length below the back.
+    const float Under = SurfaceZ - Info(Species).SurfaceClearance - 0.12f * LengthCm;
+    const float Middle = 0.5f * (ALakeFish::BottomZ(X, Y) + SurfaceZ);
+    return FMath::Min(SurfaceZ - 4, FMath::Max(Under, Middle));
+}
+FVector LakeFish::OffTheBank(FVector P, float Margin, float MinDepth)
+{
+    for (int32 Step = 0; Step < 30; ++Step)
+    {
+        if (LakeMap::IsWater(P.X, P.Y) && LakeMap::ShoreDistance(P.X, P.Y) >= Margin && LakeMap::Depth(P.X, P.Y) >= MinDepth) break;
+        // Straight out from the nearest bank (the distance field's slope), 20 cm at a time.
+        const FVector2D Out = -LakeMap::NearestShore(FVector2D(P)).Outward;
+        P.X += Out.X * 20;
+        P.Y += Out.Y * 20;
+    }
+    return P;
 }
 float ALakeFish::BottomZ(float X, float Y) { return ALakeEnvironment::GroundHeight(X, Y); }
 
@@ -731,6 +752,10 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
     // thermocline, out of the hot top).
     FFishConditions Conditions;
     if (Leader() == this && GetConditions(Conditions)) RoamTarget.Z = LakeWater::ToLivable(Species, Conditions, RoamTarget.X, RoamTarget.Y, RoamTarget.Z);
+    // And under its clearance, unless it is going up to sip insects off the top.
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    const bool bSip = Goal == EFishGoal::Feed && (FeedOn == EFishFood::Insects || (FeedOn == EFishFood::None && S.Feeding.SipAtDusk > 0 && RoamTarget.Z > LakeFish::SurfaceZ - 15));
+    if (!bSip) RoamTarget.Z = FMath::Min(RoamTarget.Z, LakeFish::CeilingAt(Species, RoamTarget.X, RoamTarget.Y, LakeFish::LengthCm(Species, WeightKg)));
 }
 
 void ALakeFish::PickRoamTarget(bool bLocal)
@@ -778,8 +803,8 @@ void ALakeFish::PickRoamTarget(bool bLocal)
             RoamTarget = LakeFish::PickSpot(Species, Random, FVector2D(bHomeBound ? HomePoint : GetActorLocation()), Range, C, EFishGoal::Cruise, ShyOfPressure, Deeper);
             if (FVector::DotProduct((RoamTarget - GetActorLocation()).GetSafeNormal2D(), Ahead) > -0.2f) break;
         }
-        // Warm still sunny water: roach and crucian bask just under the surface, a pike lies up there
-        // in the shallows - fish the angler can see.
+        // Warm still sunny water: roach and crucian bask high in the water, a pike lies up there in
+        // the shallows (no higher than each keeps under the surface, see ChooseRoamTarget).
         if (bWeather && Conditions.WaterTempC > 17 && Conditions.SunElevation > 15 && Conditions.Wind < 0.3f && Conditions.Rain < 0.15f)
         {
             const float Chance = S.Feeding.Bask;
@@ -803,7 +828,7 @@ void ALakeFish::PickRoamTarget(bool bLocal)
         const bool bResident = HomeDrift < 1000;
         Fry = Life->NearestFry(bResident ? HomePoint : GetActorLocation(), bResident ? 1500.0f : 4500.0f);
     }
-    auto ChaseFry = [&] { PreyFry = Fry; FeedOn = EFishFood::Fry; RoamTarget = Life->FryLocation(Fry) - FVector(0, 0, 20); };
+    auto ChaseFry = [&] { PreyFry = Fry; FeedOn = EFishFood::Fry; RoamTarget = FryChaseTarget(Life->FryLocation(Fry)); };
     if (Fry >= 0 && !bByFood) { ChaseFry(); return; }
     // A pike hunts from a lie at the edge of cover.
     if (Goal == EFishGoal::Feed && S.Habitat.bAmbush && !bLocal)
@@ -979,11 +1004,20 @@ void ALakeFish::SetNearPlayers(bool bInNear)
     SetNetUpdateFrequency(bNear ? 12.0f : 2.0f);
 }
 
+FVector ALakeFish::FryChaseTarget(FVector Fry) const
+{
+    // Under the fry shoal at its own depth, and on the open-water side of it if the shoal is close
+    // in: the perch drives the fry, it does not swim into the bank after them.
+    const FVector At = LakeFish::OffTheBank(Fry, 120.0f, 40.0f);
+    return FVector(At.X, At.Y, LakeFish::CeilingAt(Species, At.X, At.Y, LakeFish::LengthCm(Species, WeightKg)));
+}
+
 void ALakeFish::Dash(FVector Target, float Seconds)
 {
     if (State != EState::Roam) return;
     BurstTime = FMath::Max(BurstTime, Seconds);
-    DashTarget = Target;
+    // A rush up into the fry: to the top, but never into the bank or onto a shoal.
+    DashTarget = LakeFish::OffTheBank(Target, 70.0f, 30.0f);
     DashUntil = SimTime + Seconds;
 }
 
@@ -1133,6 +1167,54 @@ FVector ALakeFish::SteerBounds() const
     return Push;
 }
 
+bool ALakeFish::AtSurfaceMoment() const
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    // At a bait (it may hang just under the float), on the line, out of the water.
+    if (State != EState::Roam && State != EState::Flee) return true;
+    if (bLifted) return true;
+    // Sipping insects off the top; gulping air; a rush up into the fry or a strike.
+    if (Goal == EFishGoal::Feed && (FeedOn == EFishFood::Insects || (FeedOn == EFishFood::None && S.Feeding.SipAtDusk > 0 && RoamTarget.Z > LakeFish::SurfaceZ - 15)))
+        return true;
+    return SimTime < SurfaceUntil || SimTime < DashUntil + 0.6f || StrikeEnd > 0;
+}
+
+float ALakeFish::CeilingZ() const
+{
+    if (AtSurfaceMoment()) return LakeFish::SurfaceZ - 4;
+    const FVector P = GetActorLocation();
+    return LakeFish::CeilingAt(Species, P.X, P.Y, LakeFish::LengthCm(Species, WeightKg));
+}
+
+FVector ALakeFish::AvoidBank(const FVector& Desired) const
+{
+    // A fish sees the bank coming. Looking ahead along its wish (farther the faster it goes), it
+    // takes the part of the wish that heads into the bank or onto a shoal and turns it along the
+    // bank instead, so it swims round rather than nosing into the shore and stopping dead.
+    const float Speed = Desired.Size2D();
+    if (Speed < 1) return Desired;
+    const FVector P = GetActorLocation();
+    const FVector2D Dir = FVector2D(Desired) / Speed;
+    const float Len = LakeFish::LengthCm(Species, WeightKg);
+    const float Ahead = FMath::Max(60.0f, FMath::Max(Speed, (float)Vel.Size2D()) * 0.9f + Len);
+    const FVector2D Q = FVector2D(P) + Dir * Ahead;
+    const float Shore = LakeMap::IsWater(Q.X, Q.Y) ? LakeMap::ShoreDistance(Q.X, Q.Y) : 0.0f;
+    const float Depth = LakeMap::IsWater(Q.X, Q.Y) ? LakeMap::Depth(Q.X, Q.Y) : 0.0f;
+    // Going for a bait it lets itself closer in (the bait may lie in the shallows by the bank).
+    const bool bBait = State != EState::Roam && State != EState::Flee;
+    const float Edge = bBait ? 25.0f : 80.0f, Shoal = bBait ? 12.0f : 30.0f;
+    const float Danger = FMath::Max(FMath::Clamp((Edge - Shore) / (0.75f * Edge), 0.0f, 1.0f), FMath::Clamp((Shoal - Depth) / (0.6f * Shoal), 0.0f, 1.0f));
+    if (Danger <= 0) return Desired;
+    const FVector2D Out = -LakeMap::NearestShore(FVector2D(P)).Outward;   // into the lake
+    const float Into = -FVector2D::DotProduct(Dir, Out);                     // > 0: heading for the bank
+    if (Into <= 0) return Desired;
+    // Along the bank: the course with the part into it taken out (head-on, whichever side it leans to).
+    FVector2D Along = Dir + Out * Into;
+    if (Along.SizeSquared() < 0.09f) Along = FVector2D(-Out.Y, Out.X) * (FVector2D::CrossProduct(Out, Dir) >= 0 ? 1.0f : -1.0f);
+    const FVector2D Safe = (Along.GetSafeNormal() + Out * 0.3f).GetSafeNormal();
+    return FVector(FMath::Lerp(Dir, Safe, Danger).GetSafeNormal() * Speed, Desired.Z);
+}
+
 // --- daily life ------------------------------------------------------------------------------
 
 void ALakeFish::UpdateRooting(FVector& Desired, float& MaxSpeed)
@@ -1189,6 +1271,7 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
             if (SimTime >= NextGulp)
             {
                 NextGulp = SimTime + Random.FRandRange(6.0f, 14.0f);
+                SurfaceUntil = SimTime + 3.0f;
                 if (ALakeLife* AirLife = ALakeLife::Get(GetWorld())) AirLife->EmitSign(ELakeSign::Gulp, FVector(P.X, P.Y, LakeFish::SurfaceZ), 0.25f + 0.3f * WeightKg, Species, WeightKg);
             }
         }
@@ -1296,7 +1379,7 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         if (!bFollower && HomeDrift < 1000 && FVector::Dist2D(Life->FryLocation(PreyFry), HomePoint) > 2000) ChooseRoamTarget();
         else if (!bFollower)
         {
-            RoamTarget = Life->FryLocation(PreyFry) - FVector(0, 0, 20);
+            RoamTarget = FryChaseTarget(Life->FryLocation(PreyFry));
             if (FVector::Dist2D(GetActorLocation(), RoamTarget) < 320 && SimTime >= NextFryAttack)
             {
                 NextFryAttack = SimTime + Random.FRandRange(1.0f, 2.4f);
@@ -1311,8 +1394,10 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
             // A pike keeps its lie for a minute or two, then moves along the weed edge.
             if (SimTime >= LieUntil) ChooseLie();
         }
+        // (A slow fish - a crucian, a bream - is given longer on its way before it gives the place up,
+        // or it turns off a few metres short of a far patch over and over.)
         else if (Goal == EFishGoal::Cruise ? (Dist < 150 || StateTime > 45)
-                                           : (bAtSpot && (Dist < 50 || StateTime > 25)) || StateTime > (S.Habitat.bAmbush ? 90 : 60))
+                                           : (bAtSpot && (Dist < 50 || StateTime > 25)) || StateTime > (S.Habitat.bAmbush ? 90.0f : 60.0f) * FMath::Max(1.0f, 24.0f / S.CruiseSpeed))
         {
             // Cruising, the next waypoint is chosen before the fish arrives, so it never stops;
             // at its feeding or resting spot it browses along a few metres at a time.
@@ -1433,7 +1518,7 @@ void ALakeFish::UpdateStrike(FVector& Desired, float& MaxSpeed)
     if (!Life) { StrikeEnd = -1; return; }
     // The strike: a short explosive dash at the prey.
     ALakeFish* Target = Prey.Get();
-    const FVector At = Target ? Target->GetActorLocation() : Life->FryLocation(PreyFry);
+    const FVector At = Target ? Target->GetActorLocation() : LakeFish::OffTheBank(Life->FryLocation(PreyFry), 70.0f, 30.0f);
     const FVector To = At - MouthLocation();
     Desired = To.GetSafeNormal() * S.BurstSpeed;
     MaxSpeed = S.BurstSpeed;
@@ -2085,6 +2170,12 @@ void ALakeFish::Move(FVector Desired, float MaxSpeed, float DeltaSeconds)
     // Banking a little into turns.
     Roll = FMath::FInterpTo(Roll, FMath::Clamp(YawRate * FMath::Max(0.0f, ForwardSpeed) / 400.0f, -14.0f, 14.0f), Dt, 3.0f);
 
+    // It does not coast up past its ceiling; above it (a moment at the surface has ended, the bed
+    // rises under it) it sinks back gently.
+    {
+        const float Room = CeilingZ() - GetActorLocation().Z;
+        Vel.Z = FMath::Min((float)Vel.Z, Room >= 0 ? Room * 2.0f : FMath::Max(Room * 1.5f, -25.0f));
+    }
     // Integrate and keep the fish inside the water volume.
     FVector P = GetActorLocation() + Vel * Dt;
     const float Bottom = BottomZ(P.X, P.Y);
@@ -2094,6 +2185,7 @@ void ALakeFish::Move(FVector Desired, float MaxSpeed, float DeltaSeconds)
     if (!LakeMap::IsWater(P.X, P.Y) || LakeFish::SurfaceZ - Bottom < 10)
     {
         // Hit the shore: stop the motion towards it.
+        ++BankHits;
         const FVector In(LakeMap::DeeperDirection(P.X, P.Y), 0);
         P = GetActorLocation();
         Vel -= In * FMath::Min(0.0, FVector::DotProduct(Vel, In)) * 1.0;
@@ -2404,6 +2496,14 @@ void ALakeFish::Simulate(float DeltaSeconds)
     if (State == EState::Flee) MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed);
     if (BurstTime > 0 && State != EState::Hooked) MaxSpeed = S.BurstSpeed;
     Desired += SteerBounds();
+    if (State != EState::Hooked && !bLifted && !bPrecise)
+    {
+        Desired = AvoidBank(Desired);
+        // Under its clearance: no wish to rise past it, and above it a wish to sink back.
+        const float Room = CeilingZ() - GetActorLocation().Z;
+        if (Desired.Z > 0) Desired.Z = FMath::Min((float)Desired.Z, FMath::Max(0.0f, Room) * 1.5f);
+        if (Room < 0) Desired.Z += FMath::Max(Room * 1.5f, -30.0f);
+    }
     Move(Desired, MaxSpeed, DeltaSeconds);
 }
 

@@ -302,4 +302,5 @@ private:
     friend class FLakeFoodTest;
     friend class FLakeLearningTest;
     friend class FLakeMixedSchoolsTest;
+    friend class FLakeBanksAndDepthTest;
 };

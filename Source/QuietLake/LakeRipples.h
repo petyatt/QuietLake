@@ -52,6 +52,16 @@ private:
     void BuildSponge();
 };
 
+namespace LakeRipples
+{
+    /**
+     * How hard a free fish's body pushes the surface above it (cm/s^2 at the bulge ahead of its
+     * head): in proportion to its speed, fading within a few cm of water over its back, nothing
+     * from 25 cm down. The push is as wide as the fish, so a bigger fish leaves a bigger wake.
+     */
+    QUIETLAKE_API float FishWake(float LengthCm, float WaterOverBack, float Speed);
+}
+
 /**
  * Shows FLakeRippleSim on the lake (every machine that renders; nothing is replicated): gathers
  * the sources from what this machine shows (fish near the surface, the floats, the rain), steps

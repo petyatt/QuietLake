@@ -15,6 +15,7 @@
   "restHabitat": { "shallows": 0.6, "reedEdge": 0.6, "dropOff": 0.3, "cover": 0.5, "deep": 0.0, "open": 0.3, "minDepthM": 0.8, "maxDepthM": 2.5 },
   "depthMin": 0.1,
   "depthMax": 0.4,
+  "surfaceClearance": 8,
 
   "cruiseSpeed": 24,
   "burstSpeed": 130,

@@ -30,10 +30,18 @@ namespace
     constexpr float RecentreStep = 120.0f;
 
     // How hard the sources push the surface (per second): tuned on the previews.
-    constexpr float FishPush = 12.0f;
+    constexpr float FishPush = 0.2f;      // a fish's wake: a V of a few mm (a fish cruising near the wave speed piles it up)
     constexpr float FloatPush = 12.0f;
     constexpr float LinePush = 0.5f;
     constexpr float WadePush = 6.0f;
+}
+
+float LakeRipples::FishWake(float LengthCm, float WaterOverBack, float Speed)
+{
+    // The wake grows with the fish through the width of the water it pushes (see AddFishSources).
+    if (WaterOverBack > 25) return 0;
+    const float Near = FMath::Exp(-FMath::Max(WaterOverBack, 0.0f) / 6.0f);
+    return Near * FMath::Min(Speed, 200.0f) * FishPush;
 }
 
 // --- the simulation -------------------------------------------------------------------------------
@@ -318,7 +326,8 @@ void ALakeRipples::ApplyQueue()
 void ALakeRipples::AddFishSources(float DeltaSeconds)
 {
     // A fish displaces the water above it: a bulge ahead of its head, a trough along its back.
-    // Close under the surface it shows; from about half a metre down it leaves nothing.
+    // Only right under the surface it shows, a small wake in proportion to the fish (a 25 cm fish
+    // is the unit); from about 25 cm down it leaves nothing.
     for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
     {
         ALakeFish* Fish = *It;
@@ -329,7 +338,7 @@ void ALakeRipples::AddFishSources(float DeltaSeconds)
         const FVector Move = P - Prev;
         Last = P;
         const float Length = LakeFish::LengthCm(Fish->Species, Fish->WeightKg);
-        const float Size = FMath::Sqrt(Length / 20.0f);
+        const float Size = FMath::Clamp(Length / 25.0f, 0.2f, 3.0f);   // splashes and drops: in proportion to the fish
         if (Fish->IsLifted())
         {
             // Drawn out on the line: a splash where it leaves the water, then it drips while it hangs
@@ -343,9 +352,9 @@ void ALakeRipples::AddFishSources(float DeltaSeconds)
             continue;
         }
         const float Top = LakeFish::SurfaceZ - (P.Z + 0.12f * Length);        // water above its back
-        if (Top > 50) continue;
-        const float Near = FMath::Exp(-FMath::Max(Top, 0.0f) / 12.0f);
-        const float Speed = FMath::Min(Move.Size2D() / FMath::Max(DeltaSeconds, 1e-3f), 400.0f);
+        if (Top > 25) continue;
+        const float Near = FMath::Exp(-FMath::Max(Top, 0.0f) / 6.0f);
+        const float Speed = FMath::Min(Move.Size2D() / FMath::Max(DeltaSeconds, 1e-3f), 200.0f);
         // On the hook near the top it rolls and beats its tail: boils and slaps.
         const bool bHooked = Fish->IsHooked();
         if (bHooked && Top < 15 && Random.FRand() < DeltaSeconds * 3.0f)
@@ -355,7 +364,7 @@ void ALakeRipples::AddFishSources(float DeltaSeconds)
         const FVector2D Dir = FVector2D(Move).GetSafeNormal();
         const float Width = FMath::Max(0.18f * Length, 2.5f);
         // Push as an acceleration of the surface (cm/s^2) over this frame.
-        const float Strength = Near * Speed * Size * FishPush * (bHooked ? 2.0f : 1.0f) * DeltaSeconds;
+        const float Strength = LakeRipples::FishWake(Length, Top, Speed) * (bHooked ? 2.0f : 1.0f) * DeltaSeconds;
         Simulation.Push(FVector2D(P) + Dir * 0.35f * Length, Width, Strength);
         Simulation.Push(FVector2D(P) - Dir * 0.1f * Length, Width * 1.3f, -Strength / 1.69f);   // same volume
     }

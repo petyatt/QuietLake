@@ -1011,12 +1011,16 @@ void ALakeLife::LogStats()
 {
     TArray<int32> Count;
     Count.Init(0, LakeFish::NumSpecies() * (int32)EFishGoal::Count);
-    int32 Near = 0;
+    int32 Near = 0, BankHits = 0, PerchHits = 0, High = 0, Free = 0;
     for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
         if (const ALakeFish* Fish = Weak.Get())
         {
             ++Count[(int32)Fish->Species * (int32)EFishGoal::Count + (int32)Fish->GetGoal()];
             Near += IsNearPlayer(Fish->GetActorLocation(), NearPlayer);
+            // Swum into the bank so far (it should not), and now higher than its passport lets it outside a surface moment.
+            BankHits += Fish->BankHits;
+            if (LakeFish::Info(Fish->Species).Feeding.bHuntsFry) PerchHits += Fish->BankHits;
+            if (Fish->IsFree() && !Fish->AtSurfaceMoment()) { ++Free; High += Fish->GetActorLocation().Z > Fish->CeilingZ() + 3; }
         }
     FString Line;
     auto Of = [&](int32 S, EFishGoal G) { return Count[S * (int32)EFishGoal::Count + (int32)G]; };
@@ -1024,8 +1028,8 @@ void ALakeLife::LogStats()
         Line += FString::Printf(TEXT(" | %s feed %d rest %d cruise %d"), SpeciesNoun((EFishSpecies)S), Of(S, EFishGoal::Feed), Of(S, EFishGoal::Rest), Of(S, EFishGoal::Cruise));
     const ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
     const int32* N = Counters.Signs;
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LIFE hour=%.1f fish=%d near=%d%s | signs rise %d bubbles %d swirl %d splash %d scatter %d jump %d | fry attacks %d pike strikes %d eaten %d"),
-        Weather ? Weather->Hours() : -1.0f, AllFish.Num(), Near, *Line, N[0], N[1], N[2], N[3], N[4], N[5], Counters.FryAttacks, Counters.PikeStrikes, Counters.Eaten);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LIFE hour=%.1f fish=%d near=%d%s | signs rise %d bubbles %d swirl %d splash %d scatter %d jump %d | fry attacks %d pike strikes %d eaten %d | into the bank %d (fry hunters %d), over their clearance now %d of %d"),
+        Weather ? Weather->Hours() : -1.0f, AllFish.Num(), Near, *Line, N[0], N[1], N[2], N[3], N[4], N[5], Counters.FryAttacks, Counters.PikeStrikes, Counters.Eaten, BankHits, PerchHits, High, Free);
     LogMotion();
     LogSpots();
     LogPrey();
@@ -1633,13 +1637,15 @@ void ALakeLife::AddRing(ELakeSign Kind, const FVector& Location, float Size)
         case ELakeSign::Rise:       // a sip: a small dimple, then rings
             Ripples->Splash(Location, 2.0f + 2.0f * S, 45.0f + 60.0f * S);
             break;
-        case ELakeSign::Swirl:      // a heave of water from below, then wide rings
-            Ripples->Splash(Location, 5.0f + 8.0f * S, -(50.0f + 70.0f * S));
-            Ripples->Splash(Location + FVector(Random.FRandRange(-8, 8) * S, Random.FRandRange(-8, 8) * S, 0), 4.0f + 4.0f * S, 30.0f * S, 0.12f);
+        // A fish's swirl and splash grow with the fish (the sign's size follows its weight): a small
+        // perch leaves a dimple and a few drops, a big pike a hole in the water.
+        case ELakeSign::Swirl:      // a heave of water from below, then rings
+            Ripples->Splash(Location, 3.0f + 7.0f * S, -(15.0f + 65.0f * S));
+            Ripples->Splash(Location + FVector(Random.FRandRange(-8, 8) * S, Random.FRandRange(-8, 8) * S, 0), 3.0f + 4.0f * S, 20.0f * S, 0.12f);
             break;
         case ELakeSign::Splash:     // a hole punched in the water, and the spray falling back around it
-            Ripples->Splash(Location, 4.0f + 5.0f * S, 110.0f + 120.0f * S);
-            Spray(FMath::RoundToInt(5 + 8 * S), 15.0f + 40.0f * S, 0.6f);
+            Ripples->Splash(Location, 3.0f + 5.0f * S, 30.0f + 110.0f * S);
+            Spray(FMath::RoundToInt(2 + 8 * S), 10.0f + 40.0f * S, 0.6f);
             break;
         case ELakeSign::Scatter:    // fry spraying out of the water over a metre or two
             Ripples->Splash(Location, 6.0f, 60.0f * S);
@@ -2322,18 +2328,19 @@ void ALakeLife::RunFishPreview()
     });
     At(86.4f, [Shot] { Shot(TEXT("Fish_Sizes.png")); });
 
-    // 9. Roach basking just under the surface on a warm still afternoon, seen from above the water.
+    // 9. Roach basking high in the water on a warm still afternoon (as high as their passport lets
+    // them: surfaceClearance), seen from above the water.
     At(88, [Weather] { Weather(14.0f); });
     FTimerHandle BaskTimer;
     GetWorldTimerManager().SetTimer(BaskTimer, [this, St, Show, Facing]
     {
         const float Now = GetWorld()->GetTimeSeconds();
         if (Now < 88 || Now > 98) return;
-        // Warm still afternoon: the school drifts in circles just under the top.
+        // Warm still afternoon: the school drifts in circles high in the water.
         if (ALakeFish* Lead = SchoolLeader(9000))
         {
             const FVector2D Circle = Show + Facing * 250 + FVector2D(FMath::Cos(Now * 0.25f), FMath::Sin(Now * 0.25f)) * 220;
-            Lead->RoamTarget = FVector(Circle, LakeFish::SurfaceZ - 12);
+            Lead->RoamTarget = FVector(Circle, LakeFish::CeilingAt(Lead->Species, Circle.X, Circle.Y, LakeFish::LengthCm(Lead->Species, Lead->WeightKg)));
             Lead->StateTime = 0;
         }
     }, 0.5f, true);

@@ -1336,6 +1336,38 @@ bool FLakeRipplesTest::RunTest(const FString& Parameters)
         }
         TestTrue(TEXT("No waves on the land"), Land == 0);
     }
+
+    // A fish just under the surface leaves a small wake that grows with the fish, much smaller than
+    // the old one (12 * sqrt(length / 20), fading over 12 cm); 25 cm down it leaves none.
+    {
+        auto Wake = [&](float Length, float Over, float Speed, bool bOld)
+        {
+            FLakeRippleSim Sim;
+            Sim.Init(256, 4.0f, FVector2D::ZeroVector, AllWater);
+            FVector2D Src(-300, 0);
+            float Peak = 0;
+            const float Push = bOld ? FMath::Exp(-Over / 12.0f) * Speed * FMath::Sqrt(Length / 20.0f) * 12.0f : LakeRipples::FishWake(Length, Over, Speed);
+            for (int32 I = 0; I < 180; ++I)
+            {
+                Src.X += Speed * Dt;
+                const float Width = FMath::Max(0.18f * Length, 2.5f);
+                Sim.Push(Src + FVector2D(0.35f * Length, 0), Width, Push * Dt);
+                Sim.Push(Src - FVector2D(0.1f * Length, 0), Width * 1.3f, -Push / 1.69f * Dt);
+                Sim.Step(Dt);
+                for (float X = -100; X <= 40; X += 4)
+                    for (float Y = -60; Y <= 60; Y += 4) Peak = FMath::Max(Peak, FMath::Abs(Sim.HeightAt(Src + FVector2D(X, Y))));
+            }
+            return Peak;
+        };
+        const float Small = Wake(10, 2, 30, false), Mid = Wake(25, 2, 30, false), Big = Wake(50, 2, 30, false), Old = Wake(25, 2, 30, true);
+        const float Dash = Wake(20, 0, 160, false), OldDash = Wake(20, 0, 160, true);
+        AddInfo(FString::Printf(TEXT("Fish wakes 2 cm under at 30 cm/s: 10 cm fish %.2f mm, 25 cm %.2f mm (old %.2f mm), 50 cm %.2f mm; a 20 cm perch dashing at the top %.2f mm (old %.2f mm)"),
+            Small * 10, Mid * 10, Old * 10, Big * 10, Dash * 10, OldDash * 10));
+        TestTrue(TEXT("A fish's wake grows with the fish"), Small < 0.6f * Mid && Mid < 0.6f * Big);
+        TestTrue(TEXT("A fish's wake is many times smaller than it was"), Mid < 0.1f * Old && Dash < 0.1f * OldDash);
+        TestTrue(TEXT("A fish's wake is millimetres high"), Mid < 0.35f && Big < 1.0f && Dash < 0.35f);
+        TestTrue(TEXT("25 cm down a fish leaves no wake"), LakeRipples::FishWake(40, 26, 100) == 0);
+    }
     return true;
 }
 
@@ -2809,3 +2841,148 @@ bool FLakeMixedSchoolsTest::RunTest(const FString& Parameters)
     return true;
 }
 #endif
+
+// Fish keep off the bank and under the surface: perch hunting fry by the bank and a roach bolting
+// towards it swim along it instead of into it; every species swims under its passport clearance
+// (surfaceClearance) except at its surface moments (a sip, a gulp of air, a rush at the fry).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeBanksAndDepthTest, "QuietLake.Fishing.BanksAndDepth", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeBanksAndDepthTest::RunTest(const FString& Parameters)
+{
+    using namespace LakeFish;
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    Life->SpawnFry();
+    FRandomStream Random(17);
+    TArray<ALakeFish*> All;
+    const float Dt = 0.05f;
+    float Closest = 1e9f;          // nearest any fish came to the water's edge (cm)
+    int32 Above = 0, Samples = 0;   // samples over its ceiling outside a surface moment
+    auto Run = [&](float Seconds)
+    {
+        for (int32 Step = 0; Step < Seconds / Dt; ++Step)
+        {
+            Life->Step(Dt);
+            for (ALakeFish* Fish : All)
+            {
+                if (!IsValid(Fish)) continue;
+                Fish->Simulate(Dt);
+                const FVector P = Fish->GetActorLocation();
+                Closest = FMath::Min(Closest, LakeMap::ShoreDistance(P.X, P.Y));
+                if (!Fish->AtSurfaceMoment())
+                {
+                    ++Samples;
+                    Above += P.Z > Fish->CeilingZ() + 3;
+                }
+            }
+        }
+    };
+    auto Hits = [&] { int32 N = 0; for (ALakeFish* Fish : All) N += IsValid(Fish) ? Fish->BankHits : 0; return N; };
+    auto Clear = [&] { for (ALakeFish* Fish : All) if (IsValid(Fish)) Fish->Destroy(); All.Reset(); Closest = 1e9f; Above = Samples = 0; };
+
+    // 1. Perch drive the fry shoals closest to the bank: they hunt, but never ram the bank.
+    TArray<FFryShoal> Shoals = Life->Fry;
+    Shoals.Sort([](const FFryShoal& A, const FFryShoal& B) { return LakeMap::ShoreDistance(A.Location.X, A.Location.Y) < LakeMap::ShoreDistance(B.Location.X, B.Location.Y); });
+    int32 Hunts = 0;
+    float PerchClosest = 1e9f;
+    for (int32 K = 0; K < FMath::Min(3, Shoals.Num()); ++K)
+    {
+        const FFryShoal Keep = Shoals[K];
+        Life->Fry.Reset();
+        Life->Fry.Add(Keep);
+        const FVector2D Out = -LakeMap::NearestShore(FVector2D(Keep.Location)).Outward;
+        const int32 Attacks = Life->Stats().FryAttacks;
+        for (int32 I = 0; I < 5; ++I)
+        {
+            const FVector2D P = FVector2D(Keep.Location) + Out * (350 + I * 40) + FVector2D(-Out.Y, Out.X) * (I - 2) * 40.0f;
+            ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.15f + 0.05f * I, FVector(P, FMath::Max(ALakeFish::BottomZ(P.X, P.Y) + 20, SurfaceZ - 60)), 20 + K);
+            Perch->Hunger = 1;
+            Perch->Energy = 1;
+            All.Add(Perch);
+        }
+        Life->Step(0);
+        if (ALakeFish* Lead = Life->SchoolLeader(20 + K)) Lead->SetGoal(EFishGoal::Feed, 600);
+        Run(90);
+        Hunts += Life->Stats().FryAttacks - Attacks;
+        AddInfo(FString::Printf(TEXT("Perch at fry %.0f cm from the bank: %d rushes, came within %.0f cm of the edge, %d times stopped by the bank, %.1f%% over their ceiling"),
+            LakeMap::ShoreDistance(Keep.Location.X, Keep.Location.Y), Life->Stats().FryAttacks - Attacks, Closest, Hits(), Samples ? 100.0f * Above / Samples : 0.0f));
+        TestEqual(TEXT("Perch hunting by the bank never swim into it"), Hits(), 0);
+        PerchClosest = FMath::Min(PerchClosest, Closest);
+        Clear();
+    }
+    TestTrue(TEXT("Perch still drive the fry by the bank"), Hunts >= 3);
+    TestTrue(TEXT("Perch keep half a metre of water off the bank"), PerchClosest > 50);
+
+    // 2. A roach frightened from the lake side bolts towards the bank: it turns along it.
+    {
+        const FVector2D Edge = FVector2D(LakeMap::Shoreline()[LakeMap::Shoreline().Num() / 3].Location);
+        FVector2D Out = -LakeMap::NearestShore(Edge).Outward;
+        FVector2D P = Edge + Out * 150;
+        for (float D = 150; D < 1500 && LakeMap::Depth(P.X, P.Y) < 60; D += 50) P = Edge + Out * D;
+        Out = -LakeMap::NearestShore(P).Outward;
+        ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, FVector(P, FMath::Max(ALakeFish::BottomZ(P.X, P.Y) + 15, SurfaceZ - 40)));
+        All.Add(Roach);
+        const float Start = LakeMap::ShoreDistance(P.X, P.Y);
+        Roach->Spook(FVector(P + Out * 120, Roach->GetActorLocation().Z), 4);
+        Run(5);
+        AddInfo(FString::Printf(TEXT("Roach bolting towards the bank from %.0f cm: came within %.0f cm, stopped by the bank %d times"), Start, Closest, Hits()));
+        TestEqual(TEXT("A fish bolting towards the bank does not swim into it"), Hits(), 0);
+        TestTrue(TEXT("A fish bolting towards the bank keeps off it"), Closest > 30);
+        Clear();
+    }
+
+    // 3. Every species under its clearance: the targets it picks, and where it swims for a minute
+    // and a half in open water (a fish put at the very top goes down to its layer).
+    for (int32 Index = 0; Index < NumSpecies(); ++Index)
+    {
+        const EFishSpecies Species = (EFishSpecies)Index;
+        const FFishSpeciesInfo& S = Info(Species);
+        int32 HighSpots = 0;
+        for (int32 I = 0; I < 200; ++I)
+        {
+            const FVector Spot = PickSpot(Species, Random, LakeMap::Centre, 0);
+            HighSpots += Spot.Z > CeilingAt(Species, Spot.X, Spot.Y, S.MeshLength) + 0.1f;
+        }
+        TestEqual(FString::Printf(TEXT("%s picks places under its clearance"), *S.Name), HighSpots, 0);
+        for (int32 I = 0; I < 6; ++I)
+        {
+            const FVector Spot = PickSpot(Species, Random, LakeMap::Centre, 0);
+            All.Add(SpawnFish(World, Species, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.15f * I), Spot));
+        }
+        const FVector Open(LakeMap::Centre, SurfaceZ - 5);
+        ALakeFish* Top = SpawnFish(World, Species, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.3f), Open);
+        Top->RoamTarget = FVector(LakeMap::Centre + FVector2D(1500, 0), SurfaceZ - 5);
+        All.Add(Top);
+        Run(10);
+        const float TopOver = Top->GetActorLocation().Z - Top->CeilingZ();
+        Run(80);
+        const float Over = Samples ? 100.0f * Above / Samples : 0.0f;
+        AddInfo(FString::Printf(TEXT("%s: clearance %.0f cm, ceiling in open water %.0f cm under; %.2f%% of the time over it; one put at the top is %.0f cm over it after 10 s"),
+            *S.Name, S.SurfaceClearance, SurfaceZ - CeilingAt(Species, LakeMap::Centre.X, LakeMap::Centre.Y, LengthCm(Species, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.3f))), Over, TopOver));
+        TestTrue(FString::Printf(TEXT("%s swims under its clearance"), *S.Name), Over < 1.0f);
+        TestTrue(FString::Printf(TEXT("%s put at the top goes down to its layer"), *S.Name), TopOver < 3);
+        TestEqual(FString::Printf(TEXT("%s in open water never meets the bank"), *S.Name), Hits(), 0);
+        Clear();
+    }
+
+    // 4. Surface moments: sipping insects or gulping air lets a fish up to the top; the bleak lives
+    // there, the bream far below.
+    {
+        ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, FVector(LakeMap::Centre, SurfaceZ - 60));
+        All.Add(Roach);
+        const float Usual = Roach->CeilingZ();
+        Roach->SetGoal(EFishGoal::Feed, 600);
+        Roach->FeedOn = EFishFood::Insects;
+        TestTrue(TEXT("A roach sipping insects may come up to the top"), Roach->AtSurfaceMoment() && Roach->CeilingZ() > Usual + 10);
+        Roach->FeedOn = EFishFood::Plankton;
+        Roach->SurfaceUntil = Roach->SimTime + 3;
+        TestTrue(TEXT("A fish gulping air may come up to the top"), Roach->AtSurfaceMoment());
+        Roach->SurfaceUntil = -1;
+        TestFalse(TEXT("Feeding on plankton is no surface moment"), Roach->AtSurfaceMoment());
+        auto Named = [](const TCHAR* Id) { for (int32 I = 0; I < NumSpecies(); ++I) if (Info((EFishSpecies)I).Id == Id) return (EFishSpecies)I; return EFishSpecies::Roach; };
+        const float Bleak = CeilingAt(Named(TEXT("bleak")), LakeMap::Centre.X, LakeMap::Centre.Y, 12), Bream = CeilingAt(Named(TEXT("bream")), LakeMap::Centre.X, LakeMap::Centre.Y, 40);
+        TestTrue(TEXT("The bleak keeps to the top, the bream well under it"), Bleak > SurfaceZ - 6 && Bream < SurfaceZ - 40);
+        Clear();
+    }
+    World->DestroyWorld(false);
+    return true;
+}

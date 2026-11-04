@@ -215,10 +215,11 @@ for name, rgb in palette.items():
         # red least, so the water is tea-amber over a sandy bottom and dark brown-green in the deep;
         # fine silt and plankton scatter a little light back (greenish-yellow). The engine takes the
         # coefficients per centimetre (scene depth); below they are written per metre / 100.
-        # Visibility is about 1.5-2 m: a fish 30 cm down is plain to see from above, 70 cm down a
-        # shadow, the bottom at 1.6 m barely. After long rain the runoff clouds it.
-        scatter = custom(mat, 'return (float3(0.04, 0.05, 0.022) * (1.0 + 3.0 * Wt) + float3(0.15, 0.14, 0.08) * Wt) / 100.0;', [('Wt', wetness)])
-        absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.008, 0.009, 0.024, 1))
+        # Visibility is about a metre: a fish 15 cm down is seen but already tinted, 40 cm down a dim
+        # shadow, 80 cm down next to nothing; the sandy shallows by the bank stay clear. (Much more
+        # scattering turns the lake into opaque green paint.) After long rain the runoff clouds it.
+        scatter = custom(mat, 'return (float3(0.08, 0.1, 0.045) * (1.0 + 3.0 * Wt) + float3(0.15, 0.14, 0.08) * Wt) / 100.0;', [('Wt', wetness)])
+        absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.012, 0.013, 0.032, 1))
         connect(scatter, '', out, 'ScatteringCoefficients')
         connect(absorb, '', out, 'AbsorptionCoefficients')
     elif name == 'M_Terrain':
@@ -249,7 +250,7 @@ return c;""", [('P', position), ('V', vertex)])
     unreal.EditorAssetLibrary.save_asset(path)
 
 # Under the water (post process, switched on by ALakeLife only while the camera is below the
-# surface): the lake swallows the view within a couple of metres, fading into olive-brown murk whose
+# surface): the lake swallows the view within a metre or two, fading into olive-brown murk whose
 # brightness follows what the camera sees (day, dusk, night). Extinction per centimetre.
 UNDERWATER = """
 float3 avg = 0;
@@ -259,7 +260,7 @@ for (int i = 0; i < 5; i++)
 avg /= 15.0;
 float lum = dot(avg, float3(0.3, 0.59, 0.11));
 float3 murk = float3(0.42, 0.5, 0.26) * lum;
-float3 t = exp(-float3(0.011, 0.010, 0.022) * D);
+float3 t = exp(-float3(0.016, 0.015, 0.03) * D);
 return C * t + murk * (1.0 - t);
 """
 if not only or 'M_Underwater' in only:
