@@ -5,9 +5,9 @@
   "description": "Стаи вдоль края тростника и кувшинок в толще воды. Пробует тычками, топит наискосок или ведёт в сторону и выплёвывает, почуяв сопротивление поплавка. На тихих зорьках берёт насекомых с поверхности. На крючке подвижна, часто меняет направление коротких потяжек.",
   "mesh": "/Game/Fish/SM_Fish_Meshy_Roach.SM_Fish_Meshy_Roach",
   "meshLength": 20.43641,
-  "condition": 1.1,
+  "condition": 1.4,
   "minWeight": 0.05,
-  "maxWeight": 0.4,
+  "maxWeight": 0.8,
   "girthGrowth": 0.14,
 
   "habitat":     { "shallows": 0.5, "reedEdge": 1.0, "dropOff": 0.3, "cover": 0.3, "deep": 0.0, "open": 0.4, "minDepthM": 0.6, "maxDepthM": 2.8 },
@@ -69,6 +69,15 @@
     "seriesMin": 1, "seriesMax": 2, "seriesGap": 0.23, "recovery": 0.15,
     "effortCost": 1.6
   },
-  "stock": { "count": 208, "schoolSize": 8, "schoolsWith": [ "rudd", "bleak", "bream" ] },
+  "stock": {
+    "count": 250, "schoolSize": 8, "schoolsWith": [ "rudd", "bleak", "bream" ],
+    "sizes": [ { "upTo": 0.1, "share": 0.45 }, { "upTo": 0.2, "share": 0.30 }, { "upTo": 0.35, "share": 0.17 },
+               { "upTo": 0.5, "share": 0.06 }, { "upTo": 0.8, "share": 0.02 } ],
+    "groups": [ { "upTo": 0.2, "min": 15, "max": 25, "drift": 700 },
+                { "upTo": 0.5, "min": 6, "max": 12, "drift": 800, "deeperM": 0.5 },
+                { "upTo": 0.8, "min": 3, "max": 5, "drift": 1000, "deeperM": 1.0 } ],
+    "spots": { "Исток": 30, "Мостки": 25, "Лагерь": 20, "Луговая бровка": 20, "Верховье": 20, "Ольхи": 15,
+               "Коряжник": 15, "Залив": 15, "Устье заводи": 15, "Отмель": 10, "Заводь": 10 }
+  },
   "signs": { "rise": "Плотва берёт с поверхности — круги", "jump": "Из воды выпрыгнула плотва" }
 }

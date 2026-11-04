@@ -312,7 +312,40 @@ struct FFishLearning
     UPROPERTY() float SchoolShare = 0.4f;
 };
 
-/** How many of the species the pond holds at the start (see ALakeLife::StockPond), in schools of SchoolSize (1: alone). */
+/** A weight band of the stock: fish from the band below (or minWeight) up to UpTo kg, Share of all of them. */
+USTRUCT()
+struct FFishSizeBand
+{
+    GENERATED_BODY()
+    UPROPERTY() float UpTo = 1;
+    UPROPERTY() float Share = 1;
+};
+
+/**
+ * How fish up to UpTo kg keep together: groups of Min..Max sharing one home within about Drift cm of
+ * it. A schooling species (schoolSize above 1): each group is a school following its leader, and its
+ * usual size is the middle of Min..Max. Otherwise a loose group: each fish swims on its own.
+ * DeeperM: how much deeper than the species' habitat these fish go (big fish keep deeper).
+ * Apart: how far (cm) the homes of the groups at one spot keep from each other (a pike its own patch).
+ */
+USTRUCT()
+struct FFishGroupSize
+{
+    GENERATED_BODY()
+    UPROPERTY() float UpTo = 1;
+    UPROPERTY() int32 Min = 1;
+    UPROPERTY() int32 Max = 1;
+    UPROPERTY() float Drift = 600;
+    UPROPERTY() float DeeperM = 0;
+    UPROPERTY() float Apart = 250;
+};
+
+/**
+ * How many of the species the pond holds at the start (see ALakeLife::StockPond), in schools of
+ * SchoolSize (1: alone). Sizes: shares by weight (empty: mostly small, the big ones rare). Groups:
+ * schools or loose groups by size (FFishGroupSize). Spots: how many live at each named fishing spot
+ * (with Groups); the rest live away from the other spots.
+ */
 USTRUCT()
 struct FFishStock
 {
@@ -320,6 +353,9 @@ struct FFishStock
     UPROPERTY() int32 Count = 0;
     UPROPERTY() int32 SchoolSize = 1;
     UPROPERTY() TArray<FString> SchoolsWith;   // ids of the species its schools mix with (either side naming the other is enough)
+    UPROPERTY() TArray<FFishSizeBand> Sizes;
+    UPROPERTY() TArray<FFishGroupSize> Groups;
+    UPROPERTY() TMap<FString, int32> Spots;
 };
 
 /** What the F3 panel says of the species' signs on the water (empty: a general note). */
@@ -472,11 +508,20 @@ namespace LakeFish
     /** What a fish of this size eats: the diet of the small ones blending into that of the biggest. */
     QUIETLAKE_API FFishDiet DietOf(EFishSpecies Species, float Size01);
     /** 0..1 how good this point of the lake is for the species to live at (now, if conditions are given). */
-    QUIETLAKE_API float HabitatScore(EFishSpecies Species, float X, float Y, const FFishConditions* Conditions = nullptr);
+    /** DeeperM: how much deeper than its habitat this fish goes (DeeperM below). */
+    QUIETLAKE_API float HabitatScore(EFishSpecies Species, float X, float Y, const FFishConditions* Conditions = nullptr, float DeeperM = 0);
     /** A good place for the species, near Near within Range cm (Range <= 0: anywhere in the lake), for what it is doing. */
     /** Weigh: an extra weight for each candidate place (the food there), or none. */
     QUIETLAKE_API FVector PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions = nullptr,
-                                   EFishGoal Goal = EFishGoal::Cruise, const TFunction<float(const FVector2D&)>& Weigh = nullptr);
+                                   EFishGoal Goal = EFishGoal::Cruise, const TFunction<float(const FVector2D&)>& Weigh = nullptr, float DeeperM = 0);
+    /** A stocked fish's weight by the passport's stock.sizes; Like >= 0: in the same band as that weight. */
+    QUIETLAKE_API float DrawWeight(EFishSpecies Species, FRandomStream& Random, float Like = -1);
+    /** The loose group a fish of this weight keeps (stock.groups), or none. */
+    QUIETLAKE_API const FFishGroupSize* GroupFor(EFishSpecies Species, float WeightKg);
+    /** How much deeper than its species' habitat a fish of this weight goes (stock.groups). */
+    QUIETLAKE_API float DeeperM(EFishSpecies Species, float WeightKg);
+    /** The usual size of a school led by a fish of this weight: the middle of its stock.groups size, or stock.schoolSize. */
+    QUIETLAKE_API int32 UsualSchool(EFishSpecies Species, float WeightKg);
     QUIETLAKE_API const FFishHabitat& HabitatFor(EFishSpecies Species, EFishGoal Goal);
     QUIETLAKE_API const TCHAR* GoalName(EFishSpecies Species, EFishGoal Goal);
     /**
@@ -709,6 +754,7 @@ private:
     FVector HomePoint, RoamTarget, Vel = FVector::ZeroVector;
     FVector HomeAnchor = FVector::ZeroVector;
     float HomeDrift = 2500;
+    float Deeper = 0;          // m deeper than its habitat it goes (LakeFish::DeeperM, by its weight)
     FVector FleeFrom;
     float StateTime = 0, FleeTime = 0, NextThink = 0, Hunger = 1, Effort = 0;
     float Stamina = 1, MaxStamina = 1, BurstTime = 0, Phase = 0;

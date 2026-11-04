@@ -7,9 +7,9 @@
   "mouthPoint": { "x": -0.0000985, "y": -0.0004053, "z": -0.0323819 },
   "mouthRadius": 0.018,
   "meshLength": 33.60962,
-  "condition": 1.9,
-  "minWeight": 0.15,
-  "maxWeight": 0.9,
+  "condition": 2.6,
+  "minWeight": 0.1,
+  "maxWeight": 2.5,
   "girthGrowth": 0.18,
 
   "habitat":     { "shallows": 1.0, "reedEdge": 0.4, "dropOff": 0.0, "cover": 0.2, "deep": 0.0, "open": 0.0, "minDepthM": 0.35, "maxDepthM": 1.8 },
@@ -69,6 +69,14 @@
     "pauseMax": 2.4, "burstChance": 0.32, "burstMin": 0.35, "burstMax": 0.7,
     "seriesMin": 1, "seriesMax": 1, "recovery": 0.24, "effortCost": 1.8
   },
-  "stock": { "count": 240, "schoolSize": 1 },
+  "stock": {
+    "count": 200, "schoolSize": 1,
+    "sizes": [ { "upTo": 0.3, "share": 0.60 }, { "upTo": 0.6, "share": 0.25 }, { "upTo": 1.0, "share": 0.10 },
+               { "upTo": 1.6, "share": 0.04 }, { "upTo": 2.5, "share": 0.01 } ],
+    "groups": [ { "upTo": 0.3, "min": 5, "max": 12, "drift": 500 },
+                { "upTo": 1.0, "min": 2, "max": 4, "drift": 700, "deeperM": 0.5 },
+                { "upTo": 2.5, "min": 1, "max": 2, "drift": 900, "deeperM": 1.2 } ],
+    "spots": { "Отмель": 40, "Заводь": 30, "Верховье": 30, "Залив": 30, "Луговая бровка": 15, "Лагерь": 10, "Устье заводи": 10 }
+  },
   "signs": { "bubbles": "Карась роется в иле — пузыри", "jump": "Из воды выпрыгнул карась" }
 }

@@ -77,8 +77,7 @@ void ALakeLife::BeginPlay()
     if (HasAuthority())
     {
         FoodField.Init();
-        SpawnFry();
-        // A game (not a test world): Live Fish stocks the pond.
+        // A game (not a test world): Live Fish stocks the pond (and the fry with it).
         if (GetWorld()->GetAuthGameMode<ALakeGameMode>()) StockPond();
     }
 #if !UE_BUILD_SHIPPING
@@ -344,7 +343,7 @@ void ALakeLife::BuildStockPlaces()
     }
 }
 
-bool ALakeLife::DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candidates, const TArray<FVector2D>& Taken, float Spacing, float Away, FVector2D& Out)
+bool ALakeLife::DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candidates, const TArray<FVector2D>& Taken, float Spacing, float Away, FVector2D& Out, float DeeperM)
 {
     // Weighted by the square of the score: most fish live in the water that suits them best, a few
     // in poorer water.
@@ -354,7 +353,12 @@ bool ALakeLife::DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candid
     TArray<double> Sum;
     Sum.SetNumUninitialized(Count);
     double Total = 0;
-    for (int32 I = 0; I < Count; ++I) Sum[I] = Total += FMath::Square(Place(I).Score[(int32)Species]);
+    for (int32 I = 0; I < Count; ++I)
+    {
+        const FStockPlace& At = Place(I);
+        const float Score = DeeperM > 0 ? LakeFish::HabitatScore(Species, At.P.X, At.P.Y, nullptr, DeeperM) : At.Score[(int32)Species];
+        Sum[I] = Total += FMath::Square(Score);
+    }
     if (Total <= 0) return false;
     for (int32 Try = 0; Try < 300; ++Try)
     {
@@ -373,31 +377,191 @@ bool ALakeLife::DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candid
 ALakeFish* ALakeLife::SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift, float Weight)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
-    // Most fish are small, big ones are rare; each keeps to its species' layer of the water.
-    if (Weight < 0) Weight = FMath::Lerp(S.MinWeight, S.MaxWeight, FMath::Pow(StockRandom.FRand(), 2.5f));
+    // By the passport's sizes (or most fish small, big ones rare); each keeps to its species' layer of the water.
+    if (Weight < 0) Weight = LakeFish::DrawWeight(Species, StockRandom);
     const float Z = FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(At.X, At.Y) + 8, StockRandom.FRandRange(S.DepthMin, S.DepthMax));
     ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(FVector(At, Z), FRotator(0, StockRandom.FRandRange(0, 360), 0));
     if (!Fish) return nullptr;
-    Fish->Setup(Species, Weight, School >= 0 ? Home : FVector(At, Z), School);
+    Fish->Setup(Species, Weight, School >= 0 || !Home.IsZero() ? Home : FVector(At, Z), School);
     Fish->SetHomeDrift(Drift);
     return Fish;
+}
+
+int32 ALakeLife::StockInGroups(EFishSpecies Species, int32 Count, int32& NextSchool, FString& Plan)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    const TConstArrayView<LakeMap::FSpot> Spots = LakeMap::Spots();
+    // Its spots (stock.spots) and how many live at each.
+    TArray<int32> Quota, Got, Groups;
+    TArray<bool> Listed;
+    Quota.Init(0, Spots.Num()); Got.Init(0, Spots.Num()); Groups.Init(0, Spots.Num()); Listed.Init(false, Spots.Num());
+    for (int32 I = 0; I < Spots.Num(); ++I)
+        if (const int32* N = S.Stock.Spots.Find(Spots[I].Name)) { Quota[I] = *N; Listed[I] = true; }
+    const bool bSpots = !S.Stock.Spots.IsEmpty();
+    // Each stocking place belongs to the nearest fishing spot whose water is within 9 m (or to none):
+    // the groups of a spot live within 6 m of its water; the rest away from the spots not listed.
+    TArray<TArray<int32>> Near;
+    Near.SetNum(Spots.Num());
+    TArray<int32> Elsewhere;
+    for (int32 P = 0; P < StockPlaces.Num(); ++P)
+    {
+        int32 Nearest = INDEX_NONE;
+        float Best = 900;
+        for (int32 I = 0; I < Spots.Num(); ++I)
+        {
+            const float Dist = ReachDistance(Spots[I], FVector(StockPlaces[P].P, 0));
+            if (Dist < Best) { Best = Dist; Nearest = I; }
+        }
+        if (Nearest != INDEX_NONE && Listed[Nearest] && Best < 600) Near[Nearest].Add(P);
+        if (!bSpots || Nearest == INDEX_NONE || Listed[Nearest]) Elsewhere.Add(P);
+    }
+    for (int32 I = 0; I < Spots.Num(); ++I)
+        if (Quota[I] > 0 && Near[I].IsEmpty())
+        {
+            UE_LOG(LogTemp, Warning, TEXT("QUIET_LAKE_STOCK %s: no water for it at %s, its fish live elsewhere"), SpeciesNoun(Species), Spots[I].Name);
+            Quota[I] = 0;
+        }
+
+    // Its groups: the fish of each weight band by its share (stock.sizes), shared out evenly (give or
+    // take a fifth) among as many groups of the band's size (stock.groups) as they make; fish of one
+    // group are of one band.
+    struct FGroupPlan { float Like; int32 Size; const FFishGroupSize* Group; };
+    TArray<FGroupPlan> Plans;
+    auto Cut = [&](float Like, int32 Fish)
+    {
+        const FFishGroupSize* G = LakeFish::GroupFor(Species, Like);
+        if (!G || Fish <= 0) return;
+        const int32 Made = FMath::Max(1, FMath::RoundToInt(Fish / (0.5f * (G->Min + G->Max))));
+        for (int32 K = 0, Left = Fish; K < Made; ++K)
+        {
+            const int32 Ahead = Made - K;
+            const float Even = float(Left) / Ahead;
+            const int32 Size = Ahead == 1 ? Left : FMath::Clamp(FMath::RoundToInt(Even * StockRandom.FRandRange(0.8f, 1.2f)), 1, Left - (Ahead - 1));
+            Plans.Add({ Like, Size, G });
+            Left -= Size;
+        }
+    };
+    const TArray<FFishSizeBand>& Bands = S.Stock.Sizes;
+    if (Bands.Num())
+    {
+        float Shares = 0;
+        for (const FFishSizeBand& B : Bands) Shares += FMath::Max(0.0f, B.Share);
+        TArray<int32> N;
+        TArray<float> Rest;
+        int32 Given = 0;
+        for (const FFishSizeBand& B : Bands)
+        {
+            const float Exact = Count * FMath::Max(0.0f, B.Share) / FMath::Max(0.001f, Shares);
+            N.Add(FMath::FloorToInt(Exact));
+            Rest.Add(Exact - N.Last());
+            Given += N.Last();
+        }
+        for (; Given < Count; ++Given)
+        {
+            int32 Most = 0;
+            for (int32 I = 1; I < Rest.Num(); ++I) if (Rest[I] > Rest[Most]) Most = I;
+            ++N[Most];
+            Rest[Most] = -1;
+        }
+        for (int32 I = 0; I < Bands.Num(); ++I)
+            Cut(0.5f * ((I ? Bands[I - 1].UpTo : S.MinWeight) + Bands[I].UpTo), N[I]);
+    }
+    else
+        for (int32 I = 0; I < Count; ++I) Cut(LakeFish::DrawWeight(Species, StockRandom), 1);
+    for (int32 I = Plans.Num() - 1; I > 0; --I) Plans.Swap(I, StockRandom.RandRange(0, I));
+
+    // The spot with the smallest share of its fish takes the next group (so every spot gets one
+    // before any gets two); once the spots have their number between them (and each a group at
+    // least), the lake.
+    TArray<FVector2D> Homes;
+    int32 AtSpots = 0, Placed = 0, AllQuotas = 0;
+    for (const int32 Q : Quota) AllQuotas += Q;
+    const bool bSchools = S.IsSchooling();
+    for (const FGroupPlan& G : Plans)
+    {
+        int32 Spot = INDEX_NONE;
+        for (int32 I = 0; I < Spots.Num(); ++I)
+        {
+            if (Got[I] >= Quota[I] || (AtSpots >= AllQuotas && Got[I] > 0)) continue;
+            const int64 Mine = (int64)Got[I] * FMath::Max(1, Spot == INDEX_NONE ? 1 : Quota[Spot]);
+            const int64 Theirs = Spot == INDEX_NONE ? 0 : (int64)Got[Spot] * Quota[I];
+            if (Spot == INDEX_NONE || Mine < Theirs || (Mine == Theirs && Quota[I] > Quota[Spot])) Spot = I;
+        }
+        const float Deeper = G.Group->DeeperM;
+        FVector2D Home;
+        // At a spot the groups keep Apart from each other, a little less if its water is short.
+        bool bPlaced = false;
+        if (Spot != INDEX_NONE)
+        {
+            for (float Spacing = G.Group->Apart; Spacing > 50 && !bPlaced; Spacing *= 0.8f) bPlaced = DrawStockPlace(Species, Near[Spot], Homes, Spacing, 0, Home, Deeper);
+            if (!bPlaced) bPlaced = DrawStockPlace(Species, Near[Spot], {}, 0, 0, Home, Deeper);
+        }
+        if (!bPlaced)
+        {
+            Spot = INDEX_NONE;
+            for (float Spacing = 1500; Spacing > 50 && !bPlaced; Spacing *= 0.7f) bPlaced = DrawStockPlace(Species, Elsewhere, Homes, Spacing, 0, Home, Deeper);
+            if (!bPlaced) bPlaced = DrawStockPlace(Species, Elsewhere, {}, 0, 0, Home, Deeper);
+        }
+        if (!bPlaced) continue;
+        Homes.Add(Home);
+        const FVector Home3(Home, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(Home.X, Home.Y) + 8, (S.DepthMin + S.DepthMax) * 0.5f));
+        // A school of a schooling species follows its leader; away from the spots it roams the lake.
+        const int32 School = bSchools ? NextSchool++ : -1;
+        const float Drift = bSchools && Spot == INDEX_NONE ? FMath::Max(G.Group->Drift, 2500.0f) : G.Group->Drift;
+        for (int32 K = 0; K < G.Size; ++K)
+        {
+            const FVector2D At = Home + FVector2D(StockRandom.FRandRange(-120, 120), StockRandom.FRandRange(-120, 120));
+            const bool bWater = LakeMap::IsWater(At.X, At.Y) && LakeMap::Depth(At.X, At.Y) > 30;
+            SpawnStocked(Species, bWater ? At : Home, Home3, School, Drift, LakeFish::DrawWeight(Species, StockRandom, G.Like));
+        }
+        Placed += G.Size;
+        if (Spot != INDEX_NONE) { Got[Spot] += G.Size; ++Groups[Spot]; AtSpots += G.Size; }
+    }
+    Plan += FString::Printf(TEXT(" | %s in %s: %d fish in %d,"), SpeciesNoun(Species), bSchools ? TEXT("schools by size") : TEXT("loose groups"), Placed, Plans.Num());
+    for (int32 I = 0; I < Spots.Num(); ++I)
+        if (Listed[I]) Plan += FString::Printf(TEXT(" %s %d (%d groups),"), Spots[I].Name, Got[I], Groups[I]);
+    Plan += FString::Printf(TEXT(" elsewhere %d"), Placed - AtSpots);
+    return AtSpots;
+}
+
+int32 ALakeLife::StockCount(EFishSpecies Species) const
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    const int32* Override = StockOverride.Find(S.Id);
+    return FMath::Max(0, Override ? *Override : S.Stock.Count);
 }
 
 void ALakeLife::StockPond()
 {
     const double Begin = FPlatformTime::Seconds();
+    // -Stock=roach:40,perch:12 stocks those counts instead of the passports' (trying a stage out).
+    FString StockArg;
+    if (FParse::Value(FCommandLine::Get(), TEXT("Stock="), StockArg, false))
+    {
+        TArray<FString> Items;
+        StockArg.ParseIntoArray(Items, TEXT(","));
+        for (const FString& Item : Items)
+        {
+            FString Id, Count;
+            if (Item.Split(TEXT(":"), &Id, &Count)) StockOverride.Add(Id.TrimStartAndEnd().ToLower(), FCString::Atoi(*Count));
+        }
+    }
     StockRandom.Initialize(20261027);
     BuildStockPlaces();
     // How many of each species, from the passports (stock.count, in schools of stock.schoolSize).
     const int32 Kinds = LakeFish::NumSpecies();
     TArray<int32> SchoolsLeft, LonersLeft, Resident;
     SchoolsLeft.Init(0, Kinds); LonersLeft.Init(0, Kinds); Resident.Init(0, Kinds);
-    TArray<EFishSpecies> Schooling, Ambushers, Loners;
+    TArray<EFishSpecies> Schooling, Ambushers, Loners, Grouped;
+    int32 Total = 0;
     for (int32 Sp = 0; Sp < Kinds; ++Sp)
     {
         const FFishSpeciesInfo& S = LakeFish::Info((EFishSpecies)Sp);
-        if (S.IsSchooling()) { SchoolsLeft[Sp] = S.Stock.Count / S.Stock.SchoolSize; Schooling.Add((EFishSpecies)Sp); }
-        else { LonersLeft[Sp] = S.Stock.Count; (S.Habitat.bAmbush ? Ambushers : Loners).Add((EFishSpecies)Sp); }
+        const int32 Count = StockCount((EFishSpecies)Sp);
+        Total += Count;
+        if (S.Stock.Groups.Num()) Grouped.Add((EFishSpecies)Sp);
+        else if (S.IsSchooling()) { SchoolsLeft[Sp] = Count / S.Stock.SchoolSize; Schooling.Add((EFishSpecies)Sp); }
+        else { LonersLeft[Sp] = Count; (S.Habitat.bAmbush ? Ambushers : Loners).Add((EFishSpecies)Sp); }
     }
     // Homes of the schools and the ambushers: schools keep apart, ambushers keep their own patch of water.
     TArray<FVector2D> SchoolHomes, LieHomes;
@@ -468,7 +632,7 @@ void ALakeLife::StockPond()
         // An ambusher where there is cover or a weed edge for its lie (at most about half of them live at the spots).
         for (const EFishSpecies Species : Ambushers)
         {
-            if (Fit(Species, Round) <= 0.6f || LonersLeft[(int32)Species] <= 0 || Resident[(int32)Species] >= (LakeFish::Info(Species).Stock.Count + 1) * 55 / 100) continue;
+            if (Fit(Species, Round) <= 0.6f || LonersLeft[(int32)Species] <= 0 || Resident[(int32)Species] >= (StockCount(Species) + 1) * 55 / 100) continue;
             if (!DrawStockPlace(Species, Round, LieHomes, 1500, 0, Home)) continue;
             SpawnStocked(Species, Home, FVector::ZeroVector, -1, 400);
             LieHomes.Add(Home);
@@ -518,10 +682,15 @@ void ALakeLife::StockPond()
             FVector2D Home;
             if (DrawStockPlace(Species, {}, {}, 0, 0, Home)) SpawnStocked(Species, Jitter(Home), FVector::ZeroVector, -1, 2500);
         }
+    // 3. The species with schools or loose groups by size, at their own spots (stock.spots).
+    for (const EFishSpecies Species : Grouped) Resident[(int32)Species] += StockInGroups(Species, StockCount(Species), NextSchool, Plan);
     FString Residents;
     for (int32 Sp = 0; Sp < Kinds; ++Sp) Residents += FString::Printf(TEXT("%s%s %d"), Sp ? TEXT(", ") : TEXT(""), SpeciesNoun((EFishSpecies)Sp), Resident[Sp]);
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_STOCK pond stocked from %d places in %.2f s; living at the spots (schools or fish): %s%s"),
-        StockPlaces.Num(), FPlatformTime::Seconds() - Begin, *Residents, *Plan);
+    // Fry shoals are the young of the pond's fish: none while it is empty.
+    Fry.Reset();
+    if (Total > 0) SpawnFry();
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_STOCK pond stocked with %d fish, %d fry shoals, from %d places in %.2f s; living at the spots (schools or fish): %s%s"),
+        Total, Fry.Num(), StockPlaces.Num(), FPlatformTime::Seconds() - Begin, *Residents, *Plan);
 }
 
 void ALakeLife::Restock(const ALakeFish* Gone)
@@ -530,7 +699,9 @@ void ALakeLife::Restock(const ALakeFish* Gone)
     // Fish from elsewhere in the lake fill the gap over a few game hours, the longer at a much-fished place.
     const float GameHour = ALakeWeather::DayMinutes * 60.0f / 24.0f;
     const float Delay = RestockHours * GameHour * (1 + 0.5f * FMath::Min(4.0f, PressureAt(Gone->GetActorLocation())));
-    RestockLater(Gone->Species, Gone->GetSchool(), Gone->GetHomeAnchor(), Gone->GetHomeDrift(), Delay, 0);
+    // A loose group gets a newcomer of its own size.
+    const float Like = Gone->GetSchool() < 0 && LakeFish::GroupFor(Gone->Species, Gone->WeightKg) ? Gone->WeightKg : -1.0f;
+    RestockLater(Gone->Species, Gone->GetSchool(), Gone->GetHomeAnchor(), Gone->GetHomeDrift(), Delay, 0, Like);
 }
 
 void ALakeLife::AddPressure(const FVector& At, float Amount)
@@ -549,10 +720,10 @@ float ALakeLife::PressureAt(const FVector& At) const
     return Sum;
 }
 
-void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries)
+void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries, float LikeWeight)
 {
     FTimerHandle Timer;
-    GetWorldTimerManager().SetTimer(Timer, FTimerDelegate::CreateWeakLambda(this, [this, Species, School, Anchor, Drift, Tries]
+    GetWorldTimerManager().SetTimer(Timer, FTimerDelegate::CreateWeakLambda(this, [this, Species, School, Anchor, Drift, Tries, LikeWeight]
     {
         // Out of the anglers' sight: back into its school beside a free member, or at its school's
         // (its own) place; if an angler is there, a little later; in the end somewhere else its kind likes.
@@ -560,7 +731,7 @@ void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor,
         FVector2D At(Anchor);
         bool bPlaced = false;
         // A newcomer to a school is of its size.
-        float Weight = -1;
+        float Weight = LikeWeight > 0 ? LakeFish::DrawWeight(Species, StockRandom, LikeWeight) : -1.0f;
         if (const ALakeFish* Mate = School >= 0 ? SchoolLeader(School) : nullptr)
             Weight = FMath::Clamp(Mate->WeightKg * StockRandom.FRandRange(0.8f, 1.2f), LakeFish::Info(Species).MinWeight, LakeFish::Info(Species).MaxWeight);
         if (School >= 0)
@@ -571,14 +742,16 @@ void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor,
                 if (!bPlaced) At = FVector2D(Anchor);
             }
         if (!bPlaced) bPlaced = LakeMap::IsWater(At.X, At.Y) && !IsNearPlayer(Anchor, Unseen);
-        if (!bPlaced && Tries < 5) { RestockLater(Species, School, Anchor, Drift, 20, Tries + 1); return; }
+        if (!bPlaced && Tries < 5) { RestockLater(Species, School, Anchor, Drift, 20, Tries + 1, LikeWeight); return; }
+        bool bMoved = false;
         if (!bPlaced)
         {
             if (StockPlaces.IsEmpty()) BuildStockPlaces();
             FVector2D Elsewhere;
-            if (DrawStockPlace(Species, {}, {}, 0, Unseen, Elsewhere)) At = Elsewhere;
+            if (DrawStockPlace(Species, {}, {}, 0, Unseen, Elsewhere)) { At = Elsewhere; bMoved = true; }
         }
-        SpawnStocked(Species, At, Anchor, School, Drift, Weight);
+        // A fish put elsewhere out of a school makes its home there.
+        SpawnStocked(Species, At, bMoved && School < 0 ? FVector::ZeroVector : Anchor, School, Drift, Weight);
     }), Delay, false);
 }
 
@@ -955,7 +1128,7 @@ void ALakeLife::UpdateSchools()
         All.Add(MoveTemp(S));
     }
     auto Calm = [](const ALakeFish* F) { return F->FearNow() < 0.3f; };
-    auto Usual = [](const FSchool& S) { return LakeFish::Info(S.Lead->Species).Stock.SchoolSize; };
+    auto Usual = [](const FSchool& S) { return LakeFish::UsualSchool(S.Lead->Species, S.Lead->WeightKg); };
     // Joining: schools that meet, of a size and doing the same.
     TSet<int32> Changed;
     for (int32 I = 0; I < All.Num(); ++I)

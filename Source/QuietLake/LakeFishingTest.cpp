@@ -652,7 +652,7 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     // letting go. Logged as QUIET_LAKE_BITE_SURVEY.
     struct FKind { EFishSpecies Species; EBait Bait; bool bBottom; float Weight; };
     const FKind Kinds[] = { { EFishSpecies::Roach, EBait::Maggot, false, 0.15f }, { EFishSpecies::Perch, EBait::Worm, false, 0.3f },
-                            { EFishSpecies::Crucian, EBait::Bread, true, 0.5f }, { EFishSpecies::Pike, EBait::Worm, false, 2.0f } };
+                            { EFishSpecies::Crucian, EBait::Bread, true, 1.2f }, { EFishSpecies::Pike, EBait::Worm, false, 2.0f } };
     struct FSurvey { int32 Trials = 0, Takes = 0, Returns = 0, LeftUntaken = 0; float Testing = 0, Window = 0, MinWindow = 1e9f, MaxWindow = 0; };
     FSurvey Survey[4];
     constexpr float Dt = 0.05f;
@@ -1195,7 +1195,8 @@ bool FLakeFishMotionTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("A splash right beside it: it bolts"), Shy->IsFree());
 
     // Sizes: the model follows the weight in length and build.
-    TestTrue(TEXT("A big crucian is deeper-bodied than a small one"), Girth(EFishSpecies::Crucian, 0.9f) > Girth(EFishSpecies::Crucian, 0.15f) + 0.1f);
+    const FFishSpeciesInfo& CrucianInfo = LakeFish::Info(EFishSpecies::Crucian);
+    TestTrue(TEXT("A big crucian is deeper-bodied than a small one"), Girth(EFishSpecies::Crucian, CrucianInfo.MaxWeight) > Girth(EFishSpecies::Crucian, CrucianInfo.MinWeight) + 0.1f);
     TestTrue(TEXT("Big fish are calmer"), SpawnFish(World, EFishSpecies::Perch, 0.8f, Open)->Agility < SpawnFish(World, EFishSpecies::Perch, 0.08f, Open + FVector(200, 0, 0))->Agility);
 
     // A feeding crucian roots nose down at the bottom.
@@ -1340,10 +1341,28 @@ bool FLakeRipplesTest::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeStockingTest, "QuietLake.Fishing.Stocking", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeStockingTest::RunTest(const FString& Parameters)
 {
+    // As the passports say (the pond is being restocked stage by stage: maybe empty yet); no fry without fish.
+    {
+        UWorld* Plain = UWorld::CreateWorld(EWorldType::Game, false);
+        ALakeLife* PlainLife = Plain->SpawnActor<ALakeLife>();
+        PlainLife->StockPond();
+        int32 Want = 0, Got = 0;
+        for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp) Want += LakeFish::Info((EFishSpecies)Sp).Stock.Count;
+        for (TActorIterator<ALakeFish> It(Plain); It; ++It) ++Got;
+        AddInfo(FString::Printf(TEXT("Stocked from the passports: %d fish of %d, %d fry shoals"), Got, Want, PlainLife->FryShoals().Num()));
+        TestTrue(TEXT("The passports' counts are stocked"), Got <= Want && Got >= Want * 9 / 10);
+        if (Want == 0) TestTrue(TEXT("No fry in an empty pond"), PlainLife->FryShoals().IsEmpty());
+        Plain->DestroyWorld(false);
+    }
+
+    // The whole old stock, set over the passports: how Live Fish lays out a full pond.
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    Life->StockOverride = { { TEXT("perch"), 144 }, { TEXT("roach"), 208 }, { TEXT("crucian"), 240 }, { TEXT("pike"), 30 },
+        { TEXT("bream"), 150 }, { TEXT("rudd"), 120 }, { TEXT("bleak"), 150 } };
     Life->StockPond();
     Life->Step(0);
+    TestTrue(FString::Printf(TEXT("Fry shoals come with the fish (%d)"), Life->FryShoals().Num()), Life->FryShoals().Num() >= 8);
     // By species (a species file added for a try counts too).
     TArray<int32> Count;
     Count.Init(0, LakeFish::NumSpecies());
@@ -1359,14 +1378,159 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         bInWater &= LakeMap::IsWater(Fish->GetActorLocation().X, Fish->GetActorLocation().Y);
     }
     AddInfo(FString::Printf(TEXT("Stocked: %d perch, %d roach, %d crucian, %d pike in %d schools"), Count[0], Count[1], Count[2], Count[3], Members.Num()));
-    TestEqual(TEXT("Perch: 24 schools of 6"), Count[(int32)EFishSpecies::Perch], 144);
-    TestEqual(TEXT("Roach: 26 schools of 8"), Count[(int32)EFishSpecies::Roach], 208);
+    TestEqual(TEXT("Perch: as many as set"), Count[(int32)EFishSpecies::Perch], 144);
+    TestEqual(TEXT("Roach: as many as set"), Count[(int32)EFishSpecies::Roach], 208);
     TestEqual(TEXT("Crucian"), Count[(int32)EFishSpecies::Crucian], 240);
-    TestEqual(TEXT("Pike"), Count[(int32)EFishSpecies::Pike], 24);
+    TestEqual(TEXT("Pike"), Count[(int32)EFishSpecies::Pike], 30);
     TestTrue(TEXT("Every fish is in the water"), bInWater);
 
-    // Every spot has a school in reach: within a perch's sense of the water its pole reaches
-    // (2-6 m out from the waterline; from the pier, beyond its end).
+    // Crucian keep in loose groups by size at their own spots (stock.sizes, stock.groups, stock.spots
+    // in the passport): small ones together, big ones alone or in twos; none at the other spots.
+    {
+        const FFishSpeciesInfo& C = LakeFish::Info(EFishSpecies::Crucian);
+        const TConstArrayView<LakeMap::FSpot> AllSpots = LakeMap::Spots();
+        auto ToWater = [](const LakeMap::FSpot& Spot, FVector2D P)
+        {
+            FVector2D A = Spot.Location - Spot.Outward * 200, B = Spot.Location - Spot.Outward * 600;
+            if (!Spot.bBoards)
+            {
+                const LakeMap::FPier& Pier = LakeMap::Pier();
+                A = Pier.Root + Pier.Dir * (Pier.Length + 200);
+                B = Pier.Root + Pier.Dir * (Pier.Length + 600);
+            }
+            const float T = FMath::Clamp(FVector2D::DotProduct(P - A, B - A) / (B - A).SizeSquared(), 0.0f, 1.0f);
+            return (float)FVector2D::Distance(P, A + (B - A) * T);
+        };
+        TArray<int32> AtSpot;
+        AtSpot.Init(0, AllSpots.Num());
+        TMap<FIntPoint, int32> SmallHomes, BigHomes;
+        int32 Crucians = 0, Small = 0, BigCount = 0;
+        bool bWeights = true;
+        for (const ALakeFish* Fish : All)
+        {
+            if (Fish->Species != EFishSpecies::Crucian) continue;
+            ++Crucians;
+            bWeights &= Fish->WeightKg >= C.MinWeight - 0.001f && Fish->WeightKg <= C.MaxWeight + 0.001f;
+            const FVector2D Home(Fish->GetHomeAnchor());
+            const FIntPoint Key(FMath::RoundToInt(Home.X), FMath::RoundToInt(Home.Y));
+            if (Fish->WeightKg < 0.3f) { ++Small; ++SmallHomes.FindOrAdd(Key); }
+            if (Fish->WeightKg > 1.0f) { ++BigCount; ++BigHomes.FindOrAdd(Key); }
+            int32 Owner = INDEX_NONE;
+            float Best = 600;
+            for (int32 I = 0; I < AllSpots.Num(); ++I)
+                if (const float D = ToWater(AllSpots[I], Home); D < Best) { Best = D; Owner = I; }
+            if (Owner != INDEX_NONE) ++AtSpot[Owner];
+        }
+        int32 BiggestBig = 0;
+        for (const TPair<FIntPoint, int32>& H : BigHomes) BiggestBig = FMath::Max(BiggestBig, H.Value);
+        FString Where, Stray;
+        for (int32 I = 0; I < AllSpots.Num(); ++I)
+        {
+            const bool bListed = C.Stock.Spots.Contains(AllSpots[I].Name);
+            if (bListed) Where += FString::Printf(TEXT(" %s %d,"), AllSpots[I].Name, AtSpot[I]);
+            if (bListed && AtSpot[I] < 3) Stray += FString::Printf(TEXT(" too few at %s (%d),"), AllSpots[I].Name, AtSpot[I]);
+            if (!bListed && AtSpot[I] > 0) Stray += FString::Printf(TEXT(" %d at %s,"), AtSpot[I], AllSpots[I].Name);
+        }
+        AddInfo(FString::Printf(TEXT("Crucian: %d, under 0.3 kg %d in %d groups, over 1 kg %d in %d groups; at its spots:%s"),
+            Crucians, Small, SmallHomes.Num(), BigCount, BigHomes.Num(), *Where));
+        TestEqual(TEXT("Crucian: as many as set"), Crucians, 240);
+        TestTrue(TEXT("Crucian: weights within the passport's"), bWeights);
+        TestTrue(FString::Printf(TEXT("Crucian: most are small, as the sizes say (%d of %d under 0.3 kg)"), Small, Crucians), Small >= Crucians * 50 / 100 && Small <= Crucians * 70 / 100);
+        TestTrue(TEXT("Crucian: the small ones keep in groups (at least 4 a group on average)"), SmallHomes.Num() * 4 <= Small);
+        TestTrue(TEXT("Crucian: the big ones alone or in twos"), BiggestBig <= 2);
+        TestTrue(FString::Printf(TEXT("Crucian: at its own spots only (%s)"), *Stray), Stray.IsEmpty());
+
+        // Schooling species keep in schools by size at their own spots (stock.groups, stock.spots):
+        // big schools of small fish, small schools of big ones; none at the other spots.
+        auto CheckSchools = [&](EFishSpecies Species, float SmallUpTo, float BigFrom, int32 BigMost)
+        {
+            const FFishSpeciesInfo& R = LakeFish::Info(Species);
+            TMap<int32, TArray<const ALakeFish*>> BySchool;
+            int32 Fish = 0, Schooled = 0;
+            bool bWeights = true;
+            for (const ALakeFish* F : All)
+            {
+                if (F->Species != Species) continue;
+                ++Fish;
+                bWeights &= F->WeightKg >= R.MinWeight - 0.001f && F->WeightKg <= R.MaxWeight + 0.001f;
+                if (F->GetSchool() >= 0) { BySchool.FindOrAdd(F->GetSchool()).Add(F); ++Schooled; }
+            }
+            TArray<int32> SchoolsAt;
+            SchoolsAt.Init(0, AllSpots.Num());
+            int32 SmallSchools = 0, SmallInThem = 0, BiggestOfBig = 0;
+            for (const TPair<int32, TArray<const ALakeFish*>>& It : BySchool)
+            {
+                float Lightest = 1e9f, Heaviest = 0;
+                for (const ALakeFish* F : It.Value) { Lightest = FMath::Min(Lightest, F->WeightKg); Heaviest = FMath::Max(Heaviest, F->WeightKg); }
+                if (Heaviest < SmallUpTo) { ++SmallSchools; SmallInThem += It.Value.Num(); }
+                if (Lightest >= BigFrom) BiggestOfBig = FMath::Max(BiggestOfBig, It.Value.Num());
+                const FVector2D Home(It.Value[0]->GetHomeAnchor());
+                int32 Nearest = INDEX_NONE;
+                float Best = 600;
+                for (int32 I = 0; I < AllSpots.Num(); ++I)
+                    if (const float D = ToWater(AllSpots[I], Home); D < Best) { Best = D; Nearest = I; }
+                if (Nearest != INDEX_NONE) ++SchoolsAt[Nearest];
+            }
+            FString At, Wrong;
+            for (int32 I = 0; I < AllSpots.Num(); ++I)
+            {
+                const bool bListed = R.Stock.Spots.Contains(AllSpots[I].Name);
+                if (bListed) At += FString::Printf(TEXT(" %s %d,"), AllSpots[I].Name, SchoolsAt[I]);
+                if (bListed && SchoolsAt[I] == 0) Wrong += FString::Printf(TEXT(" none at %s,"), AllSpots[I].Name);
+                if (!bListed && SchoolsAt[I] > 0) Wrong += FString::Printf(TEXT(" %d at %s,"), SchoolsAt[I], AllSpots[I].Name);
+            }
+            AddInfo(FString::Printf(TEXT("%s: %d in %d schools; small ones %d in %d schools, the biggest school of big ones %d; schools at its spots:%s"),
+                *R.Id, Fish, BySchool.Num(), SmallInThem, SmallSchools, BiggestOfBig, *At));
+            TestTrue(FString::Printf(TEXT("%s: weights within the passport's"), *R.Id), bWeights);
+            TestEqual(FString::Printf(TEXT("%s: every one in a school"), *R.Id), Schooled, Fish);
+            TestTrue(FString::Printf(TEXT("%s: the small ones in big schools (10 or more on average)"), *R.Id), SmallSchools > 0 && SmallInThem >= SmallSchools * 10);
+            TestTrue(FString::Printf(TEXT("%s: the big ones in small schools"), *R.Id), BiggestOfBig <= BigMost);
+            TestTrue(FString::Printf(TEXT("%s: schools at its own spots only (%s)"), *R.Id, *Wrong), Wrong.IsEmpty());
+        };
+        CheckSchools(EFishSpecies::Roach, 0.2f, 0.5f, 6);
+        CheckSchools(EFishSpecies::Perch, 0.15f, 0.35f, 5);
+        for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp)
+        {
+            const FString Id = LakeFish::Info((EFishSpecies)Sp).Id;
+            if (Id == TEXT("bream")) CheckSchools((EFishSpecies)Sp, 0.4f, 1.5f, 7);
+            if (Id == TEXT("rudd")) CheckSchools((EFishSpecies)Sp, 0.2f, 0.55f, 6);
+            if (Id == TEXT("bleak")) CheckSchools((EFishSpecies)Sp, 0.035f, 0.035f, 24);
+        }
+        // Pike: each alone, its own patch at a spot (stock.groups apart), only at its own spots.
+        {
+            const FFishSpeciesInfo& P = LakeFish::Info(EFishSpecies::Pike);
+            TArray<FVector2D> PikeHomes;
+            TArray<int32> PikeAt;
+            PikeAt.Init(0, AllSpots.Num());
+            for (const ALakeFish* F : All)
+                if (F->Species == EFishSpecies::Pike) PikeHomes.Add(FVector2D(F->GetHomeAnchor()));
+            float Closest = 1e9f;
+            for (int32 I = 0; I < PikeHomes.Num(); ++I)
+            {
+                for (int32 J = I + 1; J < PikeHomes.Num(); ++J) Closest = FMath::Min(Closest, (float)FVector2D::Distance(PikeHomes[I], PikeHomes[J]));
+                int32 Nearest = INDEX_NONE;
+                float Best = 600;
+                for (int32 K = 0; K < AllSpots.Num(); ++K)
+                    if (const float D = ToWater(AllSpots[K], PikeHomes[I]); D < Best) { Best = D; Nearest = K; }
+                if (Nearest != INDEX_NONE) ++PikeAt[Nearest];
+            }
+            FString At, Wrong;
+            for (int32 I = 0; I < AllSpots.Num(); ++I)
+            {
+                const bool bListed = P.Stock.Spots.Contains(AllSpots[I].Name);
+                if (bListed) At += FString::Printf(TEXT(" %s %d,"), AllSpots[I].Name, PikeAt[I]);
+                if (bListed && PikeAt[I] == 0) Wrong += FString::Printf(TEXT(" none at %s,"), AllSpots[I].Name);
+                if (!bListed && PikeAt[I] > 0) Wrong += FString::Printf(TEXT(" %d at %s,"), PikeAt[I], AllSpots[I].Name);
+            }
+            AddInfo(FString::Printf(TEXT("pike: %d, the closest two %.0f cm apart; at its spots:%s"), PikeHomes.Num(), Closest, *At));
+            TestTrue(TEXT("pike: each keeps its own patch (6 m apart, a little less where a spot's water is short)"), Closest >= 450);
+            TestTrue(FString::Printf(TEXT("pike: at its own spots only (%s)"), *Wrong), Wrong.IsEmpty());
+        }
+    }
+
+    // Every spot has fish in reach - a school, a loose group or a lone pike (each species keeps to its
+    // own spots): within a perch's sense of the water its pole reaches (2-6 m out from the waterline;
+    // from the pier, beyond its end).
     FString Empty;
     for (const LakeMap::FSpot& Spot : LakeMap::Spots())
     {
@@ -1382,11 +1546,11 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
         {
             const FVector2D P(Fish->GetActorLocation());
             const float T = FMath::Clamp(FVector2D::DotProduct(P - A, B - A) / (B - A).SizeSquared(), 0.0f, 1.0f);
-            bSchool |= Fish->GetSchool() >= 0 && FVector2D::Distance(P, A + (B - A) * T) < 650;
+            bSchool |= FVector2D::Distance(P, A + (B - A) * T) < 650;
         }
         if (!bSchool) Empty += FString(TEXT(" ")) + Spot.Name;
     }
-    TestTrue(FString::Printf(TEXT("A school in reach of every fishing spot (none at:%s)"), *Empty), Empty.IsEmpty());
+    TestTrue(FString::Printf(TEXT("Fish in reach of every fishing spot (none at:%s)"), *Empty), Empty.IsEmpty());
 
     // A fish caught out of a school: a few game hours later another of its kind swims with the same school.
     ALakeFish* Caught = nullptr;
@@ -1766,7 +1930,7 @@ bool FLakeSpeciesFilesTest::RunTest(const FString& Parameters)
         for (const TPair<FString, float>& Bait : S.Baits) bBaits &= Bait.Value >= 0 && Bait.Value <= 1;
         TestTrue(FString::Printf(TEXT("%s: likes for its baits, 0..1"), *S.Id), bBaits);
         TestTrue(FString::Printf(TEXT("%s: a whole bite"), *S.Id), !S.Bite.Take.IsEmpty() && S.Bite.Take.ContainsByPredicate([](const FFishBiteMove& M) { return M.bTake; }));
-        TestTrue(FString::Printf(TEXT("%s: the pond holds some"), *S.Id), S.Stock.Count > 0 && S.Stock.SchoolSize >= 1);
+        TestTrue(FString::Printf(TEXT("%s: a stock count (0: not in the pond yet) and a school size"), *S.Id), S.Stock.Count >= 0 && S.Stock.SchoolSize >= 1);
     }
     // A bream, as one would add it: the example in the species README, read as its file alone (so the
     // example always works).

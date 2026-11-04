@@ -7,9 +7,9 @@
   "mouthPoint": { "x": 0.0000567, "y": 0.0017069, "z": -0.0321237 },
   "mouthRadius": 0.018,
   "meshLength": 29.36509,
-  "condition": 1.25,
-  "minWeight": 0.08,
-  "maxWeight": 0.8,
+  "condition": 1.45,
+  "minWeight": 0.05,
+  "maxWeight": 1.2,
   "girthGrowth": 0.14,
 
   "habitat":     { "shallows": 0.1, "reedEdge": 0.3, "dropOff": 1.0, "cover": 0.9, "deep": 0.5, "open": 0.3, "minDepthM": 1.2, "maxDepthM": 4.8 },
@@ -63,6 +63,15 @@
     "seriesMin": 3, "seriesMax": 5, "seriesGap": 0.18, "recovery": 0.16,
     "effortCost": 1.7
   },
-  "stock": { "count": 144, "schoolSize": 6 },
+  "stock": {
+    "count": 200, "schoolSize": 6,
+    "sizes": [ { "upTo": 0.1, "share": 0.40 }, { "upTo": 0.2, "share": 0.30 }, { "upTo": 0.35, "share": 0.18 },
+               { "upTo": 0.6, "share": 0.09 }, { "upTo": 1.2, "share": 0.03 } ],
+    "groups": [ { "upTo": 0.15, "min": 12, "max": 25, "drift": 800 },
+                { "upTo": 0.4, "min": 5, "max": 10, "drift": 900, "deeperM": 0.5 },
+                { "upTo": 1.2, "min": 2, "max": 4, "drift": 1000, "deeperM": 1.0 } ],
+    "spots": { "Омут": 20, "Сосновый яр": 20, "Плёс": 20, "Исток": 15, "Под яром": 15, "Коряжник": 15, "Мостки": 15,
+               "Луговая бровка": 15, "Берёзовая гряда": 10, "Устье заводи": 10, "Лагерь": 10 }
+  },
   "signs": { "splash": "Окунь бьёт малька", "scatter": "Окуни гоняют малька — «котёл»", "jump": "Из воды выпрыгнул окунь" }
 }

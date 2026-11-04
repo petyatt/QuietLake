@@ -76,8 +76,13 @@ public:
      * Stock the pond at the start of a game (BeginPlay with ALakeGameMode): first the fish living
      * at each fishing spot (a school of perch or roach, a pike by cover, crucian at the weedy
      * spots), then the rest of each species spread over the lake as well as its water suits it.
+     * How many of each: StockCount. Fry shoals come with the fish (none in an empty pond).
      */
     void StockPond();
+    /** How many of a species the pond is stocked with: StockOverride if it names the species, otherwise its passport (stock.count). */
+    int32 StockCount(EFishSpecies Species) const;
+    /** Counts by species id replacing the passports' stock.count: tests, and -Stock=roach:40,perch:12 on the command line. */
+    TMap<FString, int32> StockOverride;
     /** A fish was caught or eaten: after a while another of its species takes its place, in its school and its water. */
     void Restock(const ALakeFish* Gone);
     /** Advance the pond: rebuild the grid, move the fry, update detail levels (Tick calls it; tests call it directly). */
@@ -171,11 +176,14 @@ private:
     /** Water fish can be stocked in, on a 3 m grid, and how well it suits each species (LakeFish::HabitatScore). */
     struct FStockPlace { FVector2D P; TArray<float, TInlineAllocator<8>> Score; };
     void BuildStockPlaces();
-    /** A stocking place for Species, drawn by how well the water suits it, among Candidates (all if empty), at least Spacing from Taken and Away from every player. */
-    bool DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candidates, const TArray<FVector2D>& Taken, float Spacing, float Away, FVector2D& Out);
-    /** Weight < 0: drawn for the species (most fish small, big ones rare). */
+    /** A stocking place for Species, drawn by how well the water suits it, among Candidates (all if empty), at least Spacing from Taken and Away from every player. DeeperM: for fish that go deeper than the species' habitat. */
+    bool DrawStockPlace(EFishSpecies Species, const TArray<int32>& Candidates, const TArray<FVector2D>& Taken, float Spacing, float Away, FVector2D& Out, float DeeperM = 0);
+    /** Weight < 0: drawn by the passport (LakeFish::DrawWeight). Home: the school's home, or a loose group's (zero: where it is put). */
     ALakeFish* SpawnStocked(EFishSpecies Species, FVector2D At, FVector Home, int32 School, float Drift, float Weight = -1);
-    void RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries);
+    /** LikeWeight > 0: a newcomer of that size band (a loose group keeps its size). */
+    void RestockLater(EFishSpecies Species, int32 School, FVector Anchor, float Drift, float Delay, int32 Tries, float LikeWeight = -1);
+    /** A species with stock.groups: its schools or loose groups at its spots (stock.spots), the rest away from the other spots. Returns how many live at the spots. */
+    int32 StockInGroups(EFishSpecies Species, int32 Count, int32& NextSchool, FString& Plan);
     TArray<FStockPlace> StockPlaces;
     TArray<float> StockRef;   // a good score for each species (80th percentile), to compare species
     FRandomStream StockRandom;

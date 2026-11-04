@@ -5,9 +5,9 @@
   "description": "Мелкая серебристая рыбка открытой воды. Большими стаями держится у самой поверхности, ест планктон и насекомых, днём в солнце бойкая. Хватает наживку мгновенно и часто обрывает её. Корм для окуня и щуки. Ходит вместе с плотвой.",
   "mesh": "/Game/Fish/SM_Fish_Meshy_Bleak.SM_Fish_Meshy_Bleak",
   "meshLength": 21.6308,
-  "condition": 0.85,
+  "condition": 0.75,
   "minWeight": 0.01,
-  "maxWeight": 0.05,
+  "maxWeight": 0.06,
   "girthGrowth": 0.08,
 
   "habitat":     { "shallows": 0.2, "reedEdge": 0.4, "dropOff": 0.3, "cover": 0.0, "deep": 0.2, "open": 1.0, "minDepthM": 0.8, "maxDepthM": 6.0 },
@@ -56,6 +56,13 @@
   "strength": 0.6,
   "stamina": 3,
   "runBurst": 0.3,
-  "stock": { "count": 120, "schoolSize": 20, "schoolsWith": [ "roach" ] },
+  "stock": {
+    "count": 150, "schoolSize": 20, "schoolsWith": [ "roach" ],
+    "sizes": [ { "upTo": 0.02, "share": 0.35 }, { "upTo": 0.035, "share": 0.40 }, { "upTo": 0.05, "share": 0.20 },
+               { "upTo": 0.06, "share": 0.05 } ],
+    "groups": [ { "upTo": 0.035, "min": 25, "max": 40, "drift": 1200 },
+                { "upTo": 0.06, "min": 10, "max": 20, "drift": 1200 } ],
+    "spots": { "Мостки": 25, "Исток": 20, "Устье заводи": 15, "Плёс": 15, "Луговая бровка": 15 }
+  },
   "signs": { "rise": "Уклейка хватает с поверхности — мелкие круги", "jump": "Из воды выскочила уклейка" }
 }
