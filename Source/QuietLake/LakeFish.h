@@ -326,6 +326,7 @@ struct FFishSizeBand
  * it. A schooling species (schoolSize above 1): each group is a school following its leader, and its
  * usual size is the middle of Min..Max. Otherwise a loose group: each fish swims on its own.
  * DeeperM: how much deeper than the species' habitat these fish go (big fish keep deeper).
+ * Apart: how far (cm) the homes of the groups at one spot keep from each other (a pike its own patch).
  */
 USTRUCT()
 struct FFishGroupSize
@@ -336,6 +337,7 @@ struct FFishGroupSize
     UPROPERTY() int32 Max = 1;
     UPROPERTY() float Drift = 600;
     UPROPERTY() float DeeperM = 0;
+    UPROPERTY() float Apart = 250;
 };
 
 /**

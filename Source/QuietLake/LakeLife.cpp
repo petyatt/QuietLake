@@ -489,8 +489,13 @@ int32 ALakeLife::StockInGroups(EFishSpecies Species, int32 Count, int32& NextSch
         }
         const float Deeper = G.Group->DeeperM;
         FVector2D Home;
-        bool bPlaced = Spot != INDEX_NONE
-            && (DrawStockPlace(Species, Near[Spot], Homes, 250, 0, Home, Deeper) || DrawStockPlace(Species, Near[Spot], {}, 0, 0, Home, Deeper));
+        // At a spot the groups keep Apart from each other, a little less if its water is short.
+        bool bPlaced = false;
+        if (Spot != INDEX_NONE)
+        {
+            for (float Spacing = G.Group->Apart; Spacing > 50 && !bPlaced; Spacing *= 0.8f) bPlaced = DrawStockPlace(Species, Near[Spot], Homes, Spacing, 0, Home, Deeper);
+            if (!bPlaced) bPlaced = DrawStockPlace(Species, Near[Spot], {}, 0, 0, Home, Deeper);
+        }
         if (!bPlaced)
         {
             Spot = INDEX_NONE;

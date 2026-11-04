@@ -169,8 +169,8 @@ bool LakeFish::ReadSpecies(const FString& Text, const FString& File, FFishSpecie
         Below = 0;
         for (const FFishGroupSize& G : St.Groups)
         {
-            if (G.UpTo <= Below || G.Min < 1 || G.Max < G.Min || G.Drift <= 0 || G.DeeperM < 0)
-                Problems.Add(FString::Printf(TEXT("%s: stock.groups: upTo must grow, 1 <= min <= max, drift above 0, deeperM 0 or more"), *File));
+            if (G.UpTo <= Below || G.Min < 1 || G.Max < G.Min || G.Drift <= 0 || G.DeeperM < 0 || G.Apart < 0)
+                Problems.Add(FString::Printf(TEXT("%s: stock.groups: upTo must grow, 1 <= min <= max, drift above 0, deeperM and apart 0 or more"), *File));
             Below = G.UpTo;
         }
         if (St.Spots.Num() && St.Groups.IsEmpty()) Problems.Add(FString::Printf(TEXT("%s: stock.spots need stock.groups"), *File));

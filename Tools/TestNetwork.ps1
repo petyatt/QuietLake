@@ -7,8 +7,7 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 $processes = @()
 try {
     $serverLog = Join-Path $logs 'Server.log'
-    # The pond may be empty while it is restocked stage by stage: stock a few schools for the test.
-    $processes += Start-Process $engine -ArgumentList "`"$project`" /Engine/Maps/Entry -server -port=17777 -Stock=roach:80,perch:36 -unattended -NullRHI -nosound -nop4 -abslog=`"$serverLog`"" -WindowStyle Hidden -PassThru
+    $processes += Start-Process $engine -ArgumentList "`"$project`" /Engine/Maps/Entry -server -port=17777 -unattended -NullRHI -nosound -nop4 -abslog=`"$serverLog`"" -WindowStyle Hidden -PassThru
     $ready = $false
     for ($i = 0; $i -lt 90; $i++) {
         if ((Test-Path $serverLog) -and (Select-String -Path $serverLog -Pattern 'listening on port 17777' -Quiet)) { $ready = $true; break }

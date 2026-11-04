@@ -1358,7 +1358,7 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
     // The whole old stock, set over the passports: how Live Fish lays out a full pond.
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     ALakeLife* Life = World->SpawnActor<ALakeLife>();
-    Life->StockOverride = { { TEXT("perch"), 144 }, { TEXT("roach"), 208 }, { TEXT("crucian"), 240 }, { TEXT("pike"), 24 },
+    Life->StockOverride = { { TEXT("perch"), 144 }, { TEXT("roach"), 208 }, { TEXT("crucian"), 240 }, { TEXT("pike"), 30 },
         { TEXT("bream"), 150 }, { TEXT("rudd"), 120 }, { TEXT("bleak"), 150 } };
     Life->StockPond();
     Life->Step(0);
@@ -1381,7 +1381,7 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Perch: as many as set"), Count[(int32)EFishSpecies::Perch], 144);
     TestEqual(TEXT("Roach: as many as set"), Count[(int32)EFishSpecies::Roach], 208);
     TestEqual(TEXT("Crucian"), Count[(int32)EFishSpecies::Crucian], 240);
-    TestEqual(TEXT("Pike"), Count[(int32)EFishSpecies::Pike], 24);
+    TestEqual(TEXT("Pike"), Count[(int32)EFishSpecies::Pike], 30);
     TestTrue(TEXT("Every fish is in the water"), bInWater);
 
     // Crucian keep in loose groups by size at their own spots (stock.sizes, stock.groups, stock.spots
@@ -1495,6 +1495,36 @@ bool FLakeStockingTest::RunTest(const FString& Parameters)
             if (Id == TEXT("bream")) CheckSchools((EFishSpecies)Sp, 0.4f, 1.5f, 7);
             if (Id == TEXT("rudd")) CheckSchools((EFishSpecies)Sp, 0.2f, 0.55f, 6);
             if (Id == TEXT("bleak")) CheckSchools((EFishSpecies)Sp, 0.035f, 0.035f, 24);
+        }
+        // Pike: each alone, its own patch at a spot (stock.groups apart), only at its own spots.
+        {
+            const FFishSpeciesInfo& P = LakeFish::Info(EFishSpecies::Pike);
+            TArray<FVector2D> PikeHomes;
+            TArray<int32> PikeAt;
+            PikeAt.Init(0, AllSpots.Num());
+            for (const ALakeFish* F : All)
+                if (F->Species == EFishSpecies::Pike) PikeHomes.Add(FVector2D(F->GetHomeAnchor()));
+            float Closest = 1e9f;
+            for (int32 I = 0; I < PikeHomes.Num(); ++I)
+            {
+                for (int32 J = I + 1; J < PikeHomes.Num(); ++J) Closest = FMath::Min(Closest, (float)FVector2D::Distance(PikeHomes[I], PikeHomes[J]));
+                int32 Nearest = INDEX_NONE;
+                float Best = 600;
+                for (int32 K = 0; K < AllSpots.Num(); ++K)
+                    if (const float D = ToWater(AllSpots[K], PikeHomes[I]); D < Best) { Best = D; Nearest = K; }
+                if (Nearest != INDEX_NONE) ++PikeAt[Nearest];
+            }
+            FString At, Wrong;
+            for (int32 I = 0; I < AllSpots.Num(); ++I)
+            {
+                const bool bListed = P.Stock.Spots.Contains(AllSpots[I].Name);
+                if (bListed) At += FString::Printf(TEXT(" %s %d,"), AllSpots[I].Name, PikeAt[I]);
+                if (bListed && PikeAt[I] == 0) Wrong += FString::Printf(TEXT(" none at %s,"), AllSpots[I].Name);
+                if (!bListed && PikeAt[I] > 0) Wrong += FString::Printf(TEXT(" %d at %s,"), PikeAt[I], AllSpots[I].Name);
+            }
+            AddInfo(FString::Printf(TEXT("pike: %d, the closest two %.0f cm apart; at its spots:%s"), PikeHomes.Num(), Closest, *At));
+            TestTrue(TEXT("pike: each keeps its own patch (6 m apart, a little less where a spot's water is short)"), Closest >= 450);
+            TestTrue(FString::Printf(TEXT("pike: at its own spots only (%s)"), *Wrong), Wrong.IsEmpty());
         }
     }
 
