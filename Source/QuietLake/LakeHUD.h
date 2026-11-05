@@ -18,7 +18,18 @@ public:
     bool bShowLife = false;
     /** M: the whole lake over the screen, about 70% of it, with the places and the angler on it. */
     bool bShowMap = false;
+    /** The case window (LMB pressed / released over it): picks up the rod under the mouse, drops it on a slot. */
+    void CaseWindowPress();
+    /** True with a move to ask the server for: Rod (ERodKind) to Target (0..2 a compartment, 3 the hands). */
+    bool CaseWindowRelease(int32& OutRod, int32& OutTarget);
 private:
+    /** The case window, the prompt over the thing under the crosshair, the ghost's hint, the held R. */
+    void DrawCaseWindow(class ALakeCharacter* Fisher, float S);
+    void DrawInteraction(class ALakeCharacter* Fisher, float S);
+    /** Which window slot is under the mouse (0..2 compartments, 3 the hands, -1 none). */
+    int32 SlotUnderMouse() const;
+    FBox2D SlotRects[4];
+    int32 DragRod = -1;
     void DrawLifePanel(float S);
     /** The minimap in the top-right corner and the big map on M. */
     void DrawMinimap(float ScreenScale);

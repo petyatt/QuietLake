@@ -12,9 +12,12 @@ Custom Primitive Data — but takes the colour, the normal and the roughness fro
 textures and reads the wave coordinate from the vertex red channel.
 """
 import os
+import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import unreal
+import FishLook
 
 lib = unreal.MaterialEditingLibrary
 assets = unreal.AssetToolsHelpers.get_asset_tools()
@@ -125,13 +128,11 @@ connect(wave, '', to_world, '')
 lib.connect_material_property(to_world, '', unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
 
 colour = texture_node(mat, tex_base, 'BaseColour', unreal.MaterialSamplerType.SAMPLERTYPE_COLOR)
-lib.connect_material_property(colour, 'RGB', unreal.MaterialProperty.MP_BASE_COLOR)
 normal = texture_node(mat, tex_normal, 'NormalMap', unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL)
 lib.connect_material_property(normal, 'RGB', unreal.MaterialProperty.MP_NORMAL)
 rough = texture_node(mat, tex_rough, 'Roughness', unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
-lib.connect_material_property(rough, 'R', unreal.MaterialProperty.MP_ROUGHNESS)
-spec = node(mat, unreal.MaterialExpressionConstant, r=0.55)
-lib.connect_material_property(spec, '', unreal.MaterialProperty.MP_SPECULAR)
+# Colour, roughness and specular: the fish's own above the water, darker and duller under it.
+FishLook.apply(mat, colour, 'RGB', rough, 'R')
 lib.recompile_material(mat)
 unreal.EditorAssetLibrary.save_asset(MAT_PATH)
 

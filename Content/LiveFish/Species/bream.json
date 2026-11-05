@@ -8,7 +8,7 @@
   "habitat":     { "dropOff": 0.8, "deep": 1.0, "open": 0.5, "minDepthM": 2.0, "maxDepthM": 6.0 },
   "feedHabitat": { "shallows": 0.2, "dropOff": 1.0, "deep": 0.6, "minDepthM": 1.2, "maxDepthM": 4.5 },
   "restHabitat": { "deep": 1.0, "open": 0.6, "minDepthM": 2.5, "maxDepthM": 7.0 },
-  "depthMin": 0.7, "depthMax": 1.0,
+  "depthMin": 0.7, "depthMax": 1.0, "surfaceClearance": 40,
   "cruiseSpeed": 16, "burstSpeed": 90, "turnRate": 120, "acceleration": 180, "tailBeat": 7,
   "gait": { "hoverTurn": 30, "turnRadius": 0.7, "turnAccel": 220, "response": 0.55, "wanderDeg": 14, "wanderHz": 0.06, "spacing": 1.6 },
   "senseRadius": 500,

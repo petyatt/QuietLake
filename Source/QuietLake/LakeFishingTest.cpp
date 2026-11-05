@@ -323,23 +323,28 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     DrawOut();
     Fisher->FloatDepth = 100;
 
-    // Rod on the stand: allowed while waiting; a take must be struck from next to the stand.
+    // Rod on the stand: allowed while waiting, its tackle goes on fishing; a take must be struck from next to the stand.
     Cast();
     Fisher->ServerToggleRod_Implementation();
-    TestTrue(TEXT("Rod goes onto the stand while waiting"), Fisher->bRodOnStand);
+    const int32 OnStand = (int32)Fisher->RodKind;
+    TestTrue(TEXT("Rod goes onto the stand while waiting"), Fisher->Rods[OnStand].Place == ERodPlace::Stand && !Fisher->HasRodInHands());
+    TestTrue(TEXT("The tackle on the stand goes on fishing"), Fisher->HasBaitInWater(OnStand));
     Fisher->ConsumeMovementInputVector();
     Fisher->Forward(1);
     TestTrue(TEXT("Angler may walk away from a rod on the stand"), !Fisher->ConsumeMovementInputVector().IsNearlyZero());
-    ALakeFish* Taker = SpawnFish(World, EFishSpecies::Perch, 0.2f, Fisher->BaitLocation());
+    ALakeFish* Taker = SpawnFish(World, EFishSpecies::Perch, 0.2f, Fisher->BaitLocation(OnStand));
+    Taker->TargetRig = OnStand;
     Fisher->OnFishTake(Taker);
-    Fisher->SetActorLocation(Fisher->StandBase + FVector(-600, 0, 100));
+    TestTrue(TEXT("A take on the stand"), Fisher->Rods[OnStand].State == EFishingState::Bite);
+    const FVector StandBase = Fisher->Rods[OnStand].Base;
+    Fisher->SetActorLocation(StandBase + FVector(-600, 0, 100));
     Fisher->NextActionTime = 0;
     Fisher->ServerCancel_Implementation();
-    TestTrue(TEXT("Cannot strike from far away"), Fisher->FishingState == EFishingState::Bite);
-    Fisher->SetActorLocation(Fisher->StandBase + FVector(-80, 0, 100));
+    TestTrue(TEXT("Cannot strike from far away"), Fisher->Rods[OnStand].State == EFishingState::Bite && !Fisher->HasRodInHands());
+    Fisher->SetActorLocation(StandBase + FVector(-80, 0, 100));
     StrikeHome(Taker);
     TestTrue(TEXT("Grabbing the rod from the stand strikes"), Fisher->FishingState == EFishingState::Fight);
-    TestFalse(TEXT("Rod is back in the hands"), Fisher->bRodOnStand);
+    TestTrue(TEXT("Rod is back in the hands"), Fisher->HasRodInHands() && Fisher->Rods[OnStand].Place == ERodPlace::Hands);
     Fisher->ServerCancel_Implementation();
     World->DestroyWorld(false);
     return true;
@@ -1336,6 +1341,38 @@ bool FLakeRipplesTest::RunTest(const FString& Parameters)
         }
         TestTrue(TEXT("No waves on the land"), Land == 0);
     }
+
+    // A fish just under the surface leaves a small wake that grows with the fish, much smaller than
+    // the old one (12 * sqrt(length / 20), fading over 12 cm); 25 cm down it leaves none.
+    {
+        auto Wake = [&](float Length, float Over, float Speed, bool bOld)
+        {
+            FLakeRippleSim Sim;
+            Sim.Init(256, 4.0f, FVector2D::ZeroVector, AllWater);
+            FVector2D Src(-300, 0);
+            float Peak = 0;
+            const float Push = bOld ? FMath::Exp(-Over / 12.0f) * Speed * FMath::Sqrt(Length / 20.0f) * 12.0f : LakeRipples::FishWake(Length, Over, Speed);
+            for (int32 I = 0; I < 180; ++I)
+            {
+                Src.X += Speed * Dt;
+                const float Width = FMath::Max(0.18f * Length, 2.5f);
+                Sim.Push(Src + FVector2D(0.35f * Length, 0), Width, Push * Dt);
+                Sim.Push(Src - FVector2D(0.1f * Length, 0), Width * 1.3f, -Push / 1.69f * Dt);
+                Sim.Step(Dt);
+                for (float X = -100; X <= 40; X += 4)
+                    for (float Y = -60; Y <= 60; Y += 4) Peak = FMath::Max(Peak, FMath::Abs(Sim.HeightAt(Src + FVector2D(X, Y))));
+            }
+            return Peak;
+        };
+        const float Small = Wake(10, 2, 30, false), Mid = Wake(25, 2, 30, false), Big = Wake(50, 2, 30, false), Old = Wake(25, 2, 30, true);
+        const float Dash = Wake(20, 0, 160, false), OldDash = Wake(20, 0, 160, true);
+        AddInfo(FString::Printf(TEXT("Fish wakes 2 cm under at 30 cm/s: 10 cm fish %.2f mm, 25 cm %.2f mm (old %.2f mm), 50 cm %.2f mm; a 20 cm perch dashing at the top %.2f mm (old %.2f mm)"),
+            Small * 10, Mid * 10, Old * 10, Big * 10, Dash * 10, OldDash * 10));
+        TestTrue(TEXT("A fish's wake grows with the fish"), Small < 0.6f * Mid && Mid < 0.6f * Big);
+        TestTrue(TEXT("A fish's wake is many times smaller than it was"), Mid < 0.1f * Old && Dash < 0.1f * OldDash);
+        TestTrue(TEXT("A fish's wake is millimetres high"), Mid < 0.35f && Big < 1.0f && Dash < 0.35f);
+        TestTrue(TEXT("25 cm down a fish leaves no wake"), LakeRipples::FishWake(40, 26, 100) == 0);
+    }
     return true;
 }
 
@@ -1890,9 +1927,14 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
         return Elevation;
     };
     const float BeforeLift = TargetElevation(Angler->ServerNow());
-    Angler->bRodOnStand = true; Angler->StandBase = Angler->GetActorLocation();
+    // The same take on the rod left on its stand: LMB beside it takes the rod and lifts.
+    Angler->FishingState = EFishingState::Waiting; Angler->BaitFish = nullptr;
+    const int32 StandRod = (int32)Angler->RodKind;
+    Angler->ParkHandRod(ERodPlace::Stand, Angler->GetActorLocation(), Angler->GetActorRotation().Yaw);
+    F->TargetRig = StandRod;
+    Angler->OnFishTake(F, 60);
     Angler->ServerFish_Implementation();
-    TestTrue(TEXT("LMB takes a nearby rod from the stand during a bite"), !Angler->bRodOnStand && Angler->bReeling);
+    TestTrue(TEXT("LMB takes a nearby rod from the stand during a bite"), Angler->HasRodInHands() && Angler->FishingState == EFishingState::Bite && Angler->bReeling);
     TestFalse(TEXT("LMB itself does not hook the fish"), F->IsHooked());
     Angler->Tick(0.5f);
     TestTrue(TEXT("Held LMB raises the physical rod target during a bite"),
@@ -2805,6 +2847,335 @@ bool FLakeMixedSchoolsTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Perch never join roach, nor small roach big rudd"), PerchRoach == 2 && SmallBig == 2);
     Gone(Small);
     Gone(BigRed);
+    World->DestroyWorld(false);
+    return true;
+}
+#endif
+
+// Fish keep off the bank and under the surface: perch hunting fry by the bank and a roach bolting
+// towards it swim along it instead of into it; every species swims under its passport clearance
+// (surfaceClearance) except at its surface moments (a sip, a gulp of air, a rush at the fry).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeBanksAndDepthTest, "QuietLake.Fishing.BanksAndDepth", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeBanksAndDepthTest::RunTest(const FString& Parameters)
+{
+    using namespace LakeFish;
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    Life->SpawnFry();
+    FRandomStream Random(17);
+    TArray<ALakeFish*> All;
+    const float Dt = 0.05f;
+    float Closest = 1e9f;          // nearest any fish came to the water's edge (cm)
+    int32 Above = 0, Samples = 0;   // samples over its ceiling outside a surface moment
+    auto Run = [&](float Seconds)
+    {
+        for (int32 Step = 0; Step < Seconds / Dt; ++Step)
+        {
+            Life->Step(Dt);
+            for (ALakeFish* Fish : All)
+            {
+                if (!IsValid(Fish)) continue;
+                Fish->Simulate(Dt);
+                const FVector P = Fish->GetActorLocation();
+                Closest = FMath::Min(Closest, LakeMap::ShoreDistance(P.X, P.Y));
+                if (!Fish->AtSurfaceMoment())
+                {
+                    ++Samples;
+                    Above += P.Z > Fish->CeilingZ() + 3;
+                }
+            }
+        }
+    };
+    auto Hits = [&] { int32 N = 0; for (ALakeFish* Fish : All) N += IsValid(Fish) ? Fish->BankHits : 0; return N; };
+    auto Clear = [&] { for (ALakeFish* Fish : All) if (IsValid(Fish)) Fish->Destroy(); All.Reset(); Closest = 1e9f; Above = Samples = 0; };
+
+    // 1. Perch drive the fry shoals closest to the bank: they hunt, but never ram the bank.
+    TArray<FFryShoal> Shoals = Life->Fry;
+    Shoals.Sort([](const FFryShoal& A, const FFryShoal& B) { return LakeMap::ShoreDistance(A.Location.X, A.Location.Y) < LakeMap::ShoreDistance(B.Location.X, B.Location.Y); });
+    int32 Hunts = 0;
+    float PerchClosest = 1e9f;
+    for (int32 K = 0; K < FMath::Min(3, Shoals.Num()); ++K)
+    {
+        const FFryShoal Keep = Shoals[K];
+        Life->Fry.Reset();
+        Life->Fry.Add(Keep);
+        const FVector2D Out = -LakeMap::NearestShore(FVector2D(Keep.Location)).Outward;
+        const int32 Attacks = Life->Stats().FryAttacks;
+        for (int32 I = 0; I < 5; ++I)
+        {
+            const FVector2D P = FVector2D(Keep.Location) + Out * (350 + I * 40) + FVector2D(-Out.Y, Out.X) * (I - 2) * 40.0f;
+            ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.15f + 0.05f * I, FVector(P, FMath::Max(ALakeFish::BottomZ(P.X, P.Y) + 20, SurfaceZ - 60)), 20 + K);
+            Perch->Hunger = 1;
+            Perch->Energy = 1;
+            All.Add(Perch);
+        }
+        Life->Step(0);
+        if (ALakeFish* Lead = Life->SchoolLeader(20 + K)) Lead->SetGoal(EFishGoal::Feed, 600);
+        Run(90);
+        Hunts += Life->Stats().FryAttacks - Attacks;
+        AddInfo(FString::Printf(TEXT("Perch at fry %.0f cm from the bank: %d rushes, came within %.0f cm of the edge, %d times stopped by the bank, %.1f%% over their ceiling"),
+            LakeMap::ShoreDistance(Keep.Location.X, Keep.Location.Y), Life->Stats().FryAttacks - Attacks, Closest, Hits(), Samples ? 100.0f * Above / Samples : 0.0f));
+        TestEqual(TEXT("Perch hunting by the bank never swim into it"), Hits(), 0);
+        PerchClosest = FMath::Min(PerchClosest, Closest);
+        Clear();
+    }
+    TestTrue(TEXT("Perch still drive the fry by the bank"), Hunts >= 3);
+    TestTrue(TEXT("Perch keep half a metre of water off the bank"), PerchClosest > 50);
+
+    // 2. A roach frightened from the lake side bolts towards the bank: it turns along it.
+    {
+        const FVector2D Edge = FVector2D(LakeMap::Shoreline()[LakeMap::Shoreline().Num() / 3].Location);
+        FVector2D Out = -LakeMap::NearestShore(Edge).Outward;
+        FVector2D P = Edge + Out * 150;
+        for (float D = 150; D < 1500 && LakeMap::Depth(P.X, P.Y) < 60; D += 50) P = Edge + Out * D;
+        Out = -LakeMap::NearestShore(P).Outward;
+        ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, FVector(P, FMath::Max(ALakeFish::BottomZ(P.X, P.Y) + 15, SurfaceZ - 40)));
+        All.Add(Roach);
+        const float Start = LakeMap::ShoreDistance(P.X, P.Y);
+        Roach->Spook(FVector(P + Out * 120, Roach->GetActorLocation().Z), 4);
+        Run(5);
+        AddInfo(FString::Printf(TEXT("Roach bolting towards the bank from %.0f cm: came within %.0f cm, stopped by the bank %d times"), Start, Closest, Hits()));
+        TestEqual(TEXT("A fish bolting towards the bank does not swim into it"), Hits(), 0);
+        TestTrue(TEXT("A fish bolting towards the bank keeps off it"), Closest > 30);
+        Clear();
+    }
+
+    // 3. Every species under its clearance: the targets it picks, and where it swims for a minute
+    // and a half in open water (a fish put at the very top goes down to its layer).
+    for (int32 Index = 0; Index < NumSpecies(); ++Index)
+    {
+        const EFishSpecies Species = (EFishSpecies)Index;
+        const FFishSpeciesInfo& S = Info(Species);
+        int32 HighSpots = 0;
+        for (int32 I = 0; I < 200; ++I)
+        {
+            const FVector Spot = PickSpot(Species, Random, LakeMap::Centre, 0);
+            HighSpots += Spot.Z > CeilingAt(Species, Spot.X, Spot.Y, S.MeshLength) + 0.1f;
+        }
+        TestEqual(FString::Printf(TEXT("%s picks places under its clearance"), *S.Name), HighSpots, 0);
+        for (int32 I = 0; I < 6; ++I)
+        {
+            const FVector Spot = PickSpot(Species, Random, LakeMap::Centre, 0);
+            All.Add(SpawnFish(World, Species, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.15f * I), Spot));
+        }
+        const FVector Open(LakeMap::Centre, SurfaceZ - 5);
+        ALakeFish* Top = SpawnFish(World, Species, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.3f), Open);
+        Top->RoamTarget = FVector(LakeMap::Centre + FVector2D(1500, 0), SurfaceZ - 5);
+        All.Add(Top);
+        Run(10);
+        const float TopOver = Top->GetActorLocation().Z - Top->CeilingZ();
+        Run(80);
+        const float Over = Samples ? 100.0f * Above / Samples : 0.0f;
+        AddInfo(FString::Printf(TEXT("%s: clearance %.0f cm, ceiling in open water %.0f cm under; %.2f%% of the time over it; one put at the top is %.0f cm over it after 10 s"),
+            *S.Name, S.SurfaceClearance, SurfaceZ - CeilingAt(Species, LakeMap::Centre.X, LakeMap::Centre.Y, LengthCm(Species, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.3f))), Over, TopOver));
+        TestTrue(FString::Printf(TEXT("%s swims under its clearance"), *S.Name), Over < 1.0f);
+        TestTrue(FString::Printf(TEXT("%s put at the top goes down to its layer"), *S.Name), TopOver < 3);
+        TestEqual(FString::Printf(TEXT("%s in open water never meets the bank"), *S.Name), Hits(), 0);
+        Clear();
+    }
+
+    // 4. Surface moments: sipping insects or gulping air lets a fish up to the top; the bleak lives
+    // there, the bream far below.
+    {
+        ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, FVector(LakeMap::Centre, SurfaceZ - 60));
+        All.Add(Roach);
+        const float Usual = Roach->CeilingZ();
+        Roach->SetGoal(EFishGoal::Feed, 600);
+        Roach->FeedOn = EFishFood::Insects;
+        TestTrue(TEXT("A roach sipping insects may come up to the top"), Roach->AtSurfaceMoment() && Roach->CeilingZ() > Usual + 10);
+        Roach->FeedOn = EFishFood::Plankton;
+        Roach->SurfaceUntil = Roach->SimTime + 3;
+        TestTrue(TEXT("A fish gulping air may come up to the top"), Roach->AtSurfaceMoment());
+        Roach->SurfaceUntil = -1;
+        TestFalse(TEXT("Feeding on plankton is no surface moment"), Roach->AtSurfaceMoment());
+        auto Named = [](const TCHAR* Id) { for (int32 I = 0; I < NumSpecies(); ++I) if (Info((EFishSpecies)I).Id == Id) return (EFishSpecies)I; return EFishSpecies::Roach; };
+        const float Bleak = CeilingAt(Named(TEXT("bleak")), LakeMap::Centre.X, LakeMap::Centre.Y, 12), Bream = CeilingAt(Named(TEXT("bream")), LakeMap::Centre.X, LakeMap::Centre.Y, 40);
+        TestTrue(TEXT("The bleak keeps to the top, the bream well under it"), Bleak > SurfaceZ - 6 && Bream < SurfaceZ - 40);
+        Clear();
+    }
+    World->DestroyWorld(false);
+    return true;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+// The rod case: on the back it stays shut; laid on land within reach (not in the water, not far), it
+// opens; a rod goes in only with its rig in the free hand, one comes out into empty hands or swaps
+// with the one held; walking away closes it; a rod is laid on the ground and picked up again.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeRodCaseTest, "QuietLake.Fishing.RodCase", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeRodCaseTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FVector2D Facing;
+    const FVector2D Edge = LakeMap::StartSpot(&Facing) + Facing * 90;
+    const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+    auto OnLand = [&](float Back, float Side = 0)
+    {
+        const FVector2D P = Edge - Facing * Back + FVector2D(-Facing.Y, Facing.X) * Side;
+        return FVector(P, LakeMap::Ground(P.X, P.Y));
+    };
+    ALakeCharacter* A = World->SpawnActor<ALakeCharacter>(OnLand(150) + FVector(0, 0, 95), FRotator(0, Yaw, 0));
+    APlayerController* PC = World->SpawnActor<APlayerController>();
+    PC->Possess(A);
+    PC->SetControlRotation(FRotator(0, Yaw, 0));
+    const int32 Light = (int32)ERodKind::Light, Medium = (int32)ERodKind::Medium, Heavy = (int32)ERodKind::Heavy;
+    auto Place = [A](int32 Rod) { return A->Rods[Rod].Place; };
+    TestTrue(TEXT("Starts with the medium rod in the hands, the light and heavy ones in the case on the back"),
+        A->HasRodInHands() && A->RodKind == ERodKind::Medium && Place(Light) == ERodPlace::Case && Place(Heavy) == ERodPlace::Case && A->CasePlace == ECasePlace::Back);
+
+    // On the back it cannot be opened, nor rods moved.
+    A->ServerCaseAction_Implementation(0);
+    TestFalse(TEXT("The case does not open on the back"), A->bCaseOpen);
+    A->ServerMoveRod_Implementation(Medium, 1);
+    TestTrue(TEXT("No rod goes into a shut case"), Place(Medium) == ERodPlace::Hands);
+    // Not into the water, not too far.
+    const FVector Water(Edge + Facing * 250, LakeFish::SurfaceZ);
+    TestTrue(TEXT("(the test point is water)"), LakeMap::IsWater(Water.X, Water.Y));
+    A->ServerPlaceCase_Implementation(Water, Yaw + 90);
+    TestTrue(TEXT("The case is not laid in the water"), A->CasePlace == ECasePlace::Back);
+    A->ServerPlaceCase_Implementation(OnLand(150 + 600), Yaw + 90);
+    TestTrue(TEXT("The case is not laid out of reach"), A->CasePlace == ECasePlace::Back);
+    A->ServerPlaceCase_Implementation(OnLand(150 + 110), Yaw + 90);
+    TestTrue(TEXT("The case is laid on the ground within reach, shut"), A->CasePlace == ECasePlace::Ground && !A->bCaseOpen && FVector::Dist2D(A->CaseBase, OnLand(260)) < 5);
+    A->ServerCaseAction_Implementation(0);
+    TestTrue(TEXT("On the ground it opens"), A->bCaseOpen);
+
+    // A rod goes in only with its rig in the free hand.
+    FLakeFishingFixture::ImmersedRig(A);
+    A->ServerMoveRod_Implementation(Medium, 1);
+    TestTrue(TEXT("Not with the tackle in the water"), Place(Medium) == ERodPlace::Hands && A->FishingState == EFishingState::Waiting);
+    A->FinishFishing(TEXT("out"));
+    A->bCharging = true;
+    A->ServerMoveRod_Implementation(Medium, 1);
+    TestTrue(TEXT("Not during the cast"), Place(Medium) == ERodPlace::Hands);
+    A->bCharging = false;
+    A->bRigInHand = false;
+    A->ServerMoveRod_Implementation(Medium, 1);
+    TestTrue(TEXT("Not with the rig swinging on the line"), Place(Medium) == ERodPlace::Hands);
+    A->bRigInHand = true;
+    A->ServerMoveRod_Implementation(Medium, 1);
+    TestTrue(TEXT("Put away into the middle compartment"), !A->HasRodInHands() && Place(Medium) == ERodPlace::Case && A->Rods[Medium].CaseSlot == 1);
+    A->NextActionTime = 0;
+    A->ServerFish_Implementation();
+    TestTrue(TEXT("LMB with empty hands does not cast"), !A->bCharging && A->FishingState == EFishingState::Idle && !A->HasRodInHands());
+
+    // Out into empty hands; dropped on the hands, the one held swaps into its compartment.
+    A->ServerMoveRod_Implementation(Heavy, 3);
+    TestTrue(TEXT("The heavy rod comes out of the third compartment"), A->HasRodInHands() && A->RodKind == ERodKind::Heavy && A->bRigInHand);
+    A->ServerMoveRod_Implementation(Light, 3);
+    TestTrue(TEXT("Dragged onto the hands, the light rod swaps with the heavy one"),
+        A->RodKind == ERodKind::Light && Place(Heavy) == ERodPlace::Case && A->Rods[Heavy].CaseSlot == 0);
+    int32 InHands = 0;
+    for (const FLakeRodSlot& Slot : A->Rods) InHands += Slot.Place == ERodPlace::Hands;
+    TestEqual(TEXT("Only one rod is ever in the hands"), InHands, 1);
+    A->ServerMoveRod_Implementation(Medium, 0);
+    TestTrue(TEXT("Inside the case two rods change compartments"), A->Rods[Medium].CaseSlot == 0 && A->Rods[Heavy].CaseSlot == 1);
+    TestTrue(TEXT("The case holds the other two in different compartments"), A->Rods[Medium].CaseSlot != A->Rods[Heavy].CaseSlot);
+
+    // Walking away closes it; put on the back it is shut.
+    A->SetActorLocation(OnLand(150 + 900) + FVector(0, 0, 95));
+    A->UpdateParkedRods(0.1f);
+    TestFalse(TEXT("Walking away closes the case"), A->bCaseOpen);
+    A->SetActorLocation(OnLand(150) + FVector(0, 0, 95));
+    A->ServerCaseAction_Implementation(0);
+    A->ServerCaseAction_Implementation(2);
+    TestTrue(TEXT("Put on the back, shut"), A->CasePlace == ECasePlace::Back && !A->bCaseOpen);
+
+    // R held: the rod laid on the ground, then picked up; not with the tackle in the water.
+    A->ServerLayRod_Implementation(OnLand(150 + 80, 60), Yaw);
+    TestTrue(TEXT("The rod is laid on the ground"), Place(Light) == ERodPlace::Ground && !A->HasRodInHands());
+    A->SetActorLocation(OnLand(150 + 900) + FVector(0, 0, 95));
+    A->ServerTakeRod_Implementation(Light);
+    TestTrue(TEXT("A rod on the ground is not taken from afar"), Place(Light) == ERodPlace::Ground);
+    A->SetActorLocation(OnLand(150) + FVector(0, 0, 95));
+    A->ServerTakeRod_Implementation(Light);
+    TestTrue(TEXT("Picked up, the rig in the free hand"), A->HasRodInHands() && A->RodKind == ERodKind::Light && A->bRigInHand);
+    FLakeFishingFixture::ImmersedRig(A);
+    A->ServerLayRod_Implementation(OnLand(150 + 80, 60), Yaw);
+    TestTrue(TEXT("Not onto the ground with the tackle in the water"), A->HasRodInHands() && A->FishingState == EFishingState::Waiting);
+    World->DestroyWorld(false);
+    return true;
+}
+
+// Three rods out at once: cast, onto its stand, the next from the case. Each stand rod fishes on
+// its own: a fish tries or takes one bait while the others wait; a take not struck is let go and the
+// rig fishes on; RMB beside the stand takes that rod (its fish with it) and strikes; a fish looking
+// for food finds a bait on a stand by itself.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeThreeRodsTest, "QuietLake.Fishing.ThreeRods", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeThreeRodsTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FVector2D Facing;
+    const FVector2D Edge = LakeMap::StartSpot(&Facing) + Facing * 90;
+    const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+    const FVector Stand(Edge, 100);
+    ALakeCharacter* A = World->SpawnActor<ALakeCharacter>(Stand, FRotator(0, Yaw, 0));
+    APlayerController* PC = World->SpawnActor<APlayerController>();
+    PC->Possess(A);
+    const int32 Light = (int32)ERodKind::Light, Medium = (int32)ERodKind::Medium, Heavy = (int32)ERodKind::Heavy;
+    // Each cast a little further round, so the floats lie apart.
+    auto CastAndStand = [&](float Turn)
+    {
+        A->SetActorRotation(FRotator(0, Yaw + Turn, 0));
+        PC->SetControlRotation(FRotator(0, Yaw + Turn, 0));
+        FLakeFishingFixture::ImmersedRig(A);
+        A->ServerToggleRod_Implementation();
+    };
+    const FVector2D Behind = Edge - Facing * 120;
+    A->ServerPlaceCase_Implementation(FVector(Behind, LakeMap::Ground(Behind.X, Behind.Y)), Yaw + 90);
+    CastAndStand(-25);
+    TestTrue(TEXT("The first rod fishes on its stand, the hands are free"), A->IsParkedRig(Medium) && A->HasBaitInWater(Medium) && !A->HasRodInHands());
+    A->ServerCaseAction_Implementation(0);
+    A->ServerMoveRod_Implementation(Light, 3);
+    CastAndStand(0);
+    A->ServerMoveRod_Implementation(Heavy, 3);
+    CastAndStand(25);
+    int32 Fishing = 0;
+    for (int32 Rod = 0; Rod < ALakeCharacter::NumRods; ++Rod) Fishing += A->IsParkedRig(Rod) && A->HasBaitInWater(Rod);
+    TestEqual(TEXT("Three rods fish on their stands"), Fishing, 3);
+    TestTrue(TEXT("Each on its own stand"), FVector::Dist2D(A->Rods[Light].Base, A->Rods[Medium].Base) > 40 && FVector::Dist2D(A->Rods[Light].Base, A->Rods[Heavy].Base) > 40
+        && FVector::Dist2D(A->Rods[Medium].Base, A->Rods[Heavy].Base) > 40);
+    TestTrue(TEXT("Three floats apart on the water"), FVector::Dist2D(A->BaitLocation(Light), A->BaitLocation(Medium)) > 100 && FVector::Dist2D(A->BaitLocation(Light), A->BaitLocation(Heavy)) > 100);
+
+    // One bait taken, the others wait; a fish may try another one at the same time.
+    ALakeFish* Taker = SpawnFish(World, EFishSpecies::Perch, 0.3f, A->BaitLocation(Light));
+    Taker->TargetRig = Light;
+    A->OnFishTake(Taker);
+    TestTrue(TEXT("A take on one stand leaves the others waiting"),
+        A->Rods[Light].State == EFishingState::Bite && A->Rods[Medium].State == EFishingState::Waiting && A->Rods[Heavy].State == EFishingState::Waiting);
+    ALakeFish* Trier = SpawnFish(World, EFishSpecies::Roach, 0.2f, A->BaitLocation(Heavy));
+    Trier->TargetRig = Heavy;
+    TestTrue(TEXT("Another fish may try a bait on another stand"), A->ClaimBait(Trier) && A->Rods[Heavy].BaitFish.Get() == Trier);
+    A->ReleaseBaitClaim(Trier);
+    TestTrue(TEXT("and let it be"), !A->Rods[Heavy].BaitFish.IsValid());
+    // Not struck in time: the fish lets go, the rig fishes on.
+    A->Rods[Light].EscapeAt = A->ServerNow() - 1;
+    A->UpdateParkedRods(0.05f);
+    TestTrue(TEXT("A take not struck: the fish lets go, the rig fishes on"), A->Rods[Light].State == EFishingState::Waiting && A->HasBaitInWater(Light) && Taker->IsFree());
+
+    // RMB beside the stand with a take: that rod comes to the hands, its fish on the bait, and strikes.
+    ALakeFish* Second = SpawnFish(World, EFishSpecies::Perch, 0.3f, A->BaitLocation(Light));
+    Second->TargetRig = Light;
+    A->OnFishTake(Second);
+    A->SetActorLocation(FVector(A->Rods[Light].Base) + FVector(0, 0, 95) - FRotator(0, Yaw, 0).Vector() * 60);
+    A->NextActionTime = 0;
+    A->ServerCancel_Implementation();
+    TestTrue(TEXT("RMB beside the stand takes the rod with the take on"), A->HasRodInHands() && A->RodKind == ERodKind::Light && A->FishingState == EFishingState::Bite && A->BaitFish.Get() == Second);
+    TestTrue(TEXT("and strikes"), A->StrikeUntil > 0);
+    TestTrue(TEXT("The other two go on fishing"), A->HasBaitInWater(Medium) && A->HasBaitInWater(Heavy));
+    A->Escape();
+    A->ServerToggleRod_Implementation();
+    TestTrue(TEXT("Back on its stand, fishing"), A->IsParkedRig(Light) && A->HasBaitInWater(Light));
+
+    // A perch looking for food finds one of the baits on the stands and takes it by itself.
+    ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.35f, A->BaitLocation(Medium) + FVector(320, 120, 0));
+    bool bTaken = false;
+    for (int32 Step = 0; Step < 6000 && !bTaken; ++Step)
+    {
+        Perch->Simulate(0.05f);
+        A->UpdateParkedRods(0.05f);
+        for (const FLakeRodSlot& Slot : A->Rods) bTaken |= Slot.State == EFishingState::Bite;
+    }
+    TestTrue(TEXT("A perch finds a bait on a stand by itself and takes it"), bTaken);
     World->DestroyWorld(false);
     return true;
 }

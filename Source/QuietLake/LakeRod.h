@@ -24,6 +24,8 @@ struct FRodInput
     float BiteElapsed = 0, BiteDuration = 1, BiteAmount = 0;
     bool bReeling = false;
     bool bOnStand = false;
+    /** Lying on the ground: the blank rests on it instead of sagging through. */
+    bool bOnGround = false;
     FVector StandBase = FVector::ZeroVector;
     float StandYaw = 0;
     class ALakeFish* LineFish = nullptr;          // fish holding the bait or hooked
@@ -52,6 +54,8 @@ public:
     ALakeRod();
     virtual void Tick(float DeltaSeconds) override;
     void UpdateRod(const FRodInput& In, float DeltaSeconds);
+    /** Start again from the hold next frame (the rod taken out of the case). */
+    void ResetSim() { bInitialised = false; }
 
     // A 6 m pole rod (Russian "makhovaya") with a fixed 6 m line and no reel.
     static constexpr float HandleLength = 44.0f;
@@ -146,6 +150,8 @@ private:
     TArray<float> BlankW;                         // inverse masses: the first two points are in the hand
     TArray<float> BlankAlpha;                     // bending compliance at each joint
     TArray<FVector> BlankLambda;                  // XPBD multipliers, per substep
+    TArray<float> BlankFloor;                     // lying on the ground: the lowest each point may go (empty otherwise)
+    bool bLyingDown = false;
     FTransform HoldFrom, HoldTo;                  // the hands at the start and at the end of this frame
     FVector TipForce = FVector::ZeroVector;       // this frame's load on the tip (a fish, the cast draw), dyn
     float BlankDamp = 11;                         // 1/s

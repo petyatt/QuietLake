@@ -245,14 +245,183 @@ def stand():
     return bm
 
 
+# --- rod case ------------------------------------------------------------------------------
+# A soft olive canvas bag for three folded pole rods, 150 x 22 x 10 cm. X runs along it, Y across,
+# Z up from its bottom. The lower half (tray) has three compartments; the upper half (lid) is hinged
+# along the +Y edge at half height and opens over to +Y.
+CASE_L, CASE_W, CASE_H = 1.50, 0.22, 0.10
+CASE_R = 0.022                       # rounding of the cross-section corners
+CANVAS, LINING = (0.15, 0.14, 0.045), (0.028, 0.03, 0.024)
+WEBBING, ZIPPER = (0.035, 0.038, 0.03), (0.06, 0.06, 0.06)
+CASE_LANES = (-0.0733, 0.0, 0.0733)  # Y of the three compartments (the game places rods by these)
+
+
+def arc(cy, cz, r, a0, a1, n=5):
+    return [(cy + r * math.cos(a0 + (a1 - a0) * i / n), cz + r * math.sin(a0 + (a1 - a0) * i / n)) for i in range(n + 1)]
+
+
+def extrude(bm, col, profile, x0, x1, colour, closed=False, cap=True):
+    """Sweep a (y, z) profile along X from x0 to x1; caps close it at both ends."""
+    a = [bm.verts.new((x0, y, z)) for y, z in profile]
+    b = [bm.verts.new((x1, y, z)) for y, z in profile]
+    n = len(profile)
+    for i in range(n if closed else n - 1):
+        j = (i + 1) % n
+        face(bm, col, [a[i], a[j], b[j], b[i]], colour)
+    if cap:
+        face(bm, col, a[::-1], colour)
+        face(bm, col, b, colour)
+    return a, b
+
+
+def u_profile(w, h, r, inset=0.0):
+    """Half of the case's rounded cross-section: open at the top (z = h), bottom at z = 0."""
+    y, z0 = w / 2 - inset, inset
+    rr = max(r - inset, 0.004)
+    return ([(y, h)] + arc(y - rr, z0 + rr, rr, 0, -math.pi / 2) +
+            arc(-y + rr, z0 + rr, rr, -math.pi / 2, -math.pi) + [(-y, h)])
+
+
+def shell(bm, col, profile_out, profile_in, x_half, wall, outer, inner):
+    """An open-topped half shell: outside, lining inside, the rim between them."""
+    oa, ob = extrude(bm, col, profile_out, -x_half, x_half, outer)
+    ia, ib = extrude(bm, col, profile_in, -x_half + wall, x_half - wall, inner)
+    # Rim strips along both long top edges and across the ends.
+    for (o0, o1, i0, i1) in ((oa[0], ob[0], ia[0], ib[0]), (oa[-1], ob[-1], ia[-1], ib[-1])):
+        face(bm, col, [o0, o1, i1, i0], outer)
+    face(bm, col, [oa[0], ia[0], ia[-1], oa[-1]], outer)
+    face(bm, col, [ob[0], ob[-1], ib[-1], ib[0]], outer)
+
+
+def rod_case():
+    bm, col = new_bm()
+    half = CASE_H / 2
+    shell(bm, col, u_profile(CASE_W, half, CASE_R), u_profile(CASE_W, half, CASE_R, 0.006),
+          CASE_L / 2, 0.006, CANVAS, LINING)
+    # Two dividers make three compartments.
+    for y in (-0.0366, 0.0366):
+        extrude(bm, col, [(y - 0.002, 0.006), (y + 0.002, 0.006), (y + 0.002, half - 0.004), (y - 0.002, half - 0.004)],
+                -CASE_L / 2 + 0.006, CASE_L / 2 - 0.006, LINING, closed=True)
+    # Zipper round the three free edges of the rim (the hinge side has none).
+    z = half + 0.001
+    tube(bm, col, [Vector((-CASE_L / 2 + 0.01, CASE_W / 2 - 0.02, z)), Vector((-CASE_L / 2 + 0.01, -CASE_W / 2 + 0.004, z)),
+                   Vector((CASE_L / 2 - 0.01, -CASE_W / 2 + 0.004, z)), Vector((CASE_L / 2 - 0.01, CASE_W / 2 - 0.02, z))],
+         0.0035, ZIPPER, 6, alpha=0.0)
+    # Webbing loops for the strap at both ends, and stitched bands round the bag.
+    for sx in (-1, 1):
+        x = sx * (CASE_L / 2 + 0.008)
+        tube(bm, col, [Vector((x - sx * 0.01, 0, half - 0.02)) + Vector((sx * 0.012 * math.sin(a), 0, 0.018 * math.cos(a)))
+                       for a in [math.pi * k / 8 for k in range(9)]], 0.004, WEBBING, 6)
+        for x in (sx * 0.52,):
+            prof = u_profile(CASE_W + 0.004, half, CASE_R + 0.002)
+            extrude(bm, col, prof, x - 0.018, x + 0.018, WEBBING, cap=False)
+    return bm
+
+
+def rod_case_lid():
+    """The lid in its own frame: origin on the hinge line (case Y = +W/2, Z = H/2), the lid towards -Y."""
+    bm, col = new_bm()
+    half = CASE_H / 2
+
+    def lid_profile(inset):
+        p = u_profile(CASE_W, half, CASE_R, inset)
+        # Flip the tray's U upside down and move it into the hinge frame.
+        return [(y - CASE_W / 2, half - z) for y, z in p]
+
+    shell(bm, col, lid_profile(0.0), lid_profile(0.006), CASE_L / 2, 0.006, CANVAS, LINING)
+    # Carry handle on the top, over the middle.
+    top, mid = half + 0.002, -CASE_W / 2
+    tube(bm, col, [Vector((-0.11, mid, top)), Vector((-0.08, mid, top + 0.028)), Vector((0.08, mid, top + 0.028)), Vector((0.11, mid, top))],
+         0.007, WEBBING, 8)
+    for x in (-0.52, 0.52):
+        prof = [(y - CASE_W / 2, half - z) for y, z in u_profile(CASE_W + 0.004, half, CASE_R + 0.002)]
+        extrude(bm, col, prof, x - 0.018, x + 0.018, WEBBING, cap=False)
+    return bm
+
+
+def band(bm, col, points, width, thick, colour):
+    """A flat strap along a polyline in the XZ plane, its width across Y."""
+    rings = []
+    n = len(points)
+    for i, p in enumerate(points):
+        d = (points[min(i + 1, n - 1)] - points[max(i - 1, 0)]).normalized()
+        nrm = Vector((0, 1, 0)).cross(d).normalized()
+        w, t = Vector((0, width / 2, 0)), nrm * (thick / 2)
+        rings.append([bm.verts.new(p - w - t), bm.verts.new(p + w - t), bm.verts.new(p + w + t), bm.verts.new(p - w + t)])
+    for i in range(n - 1):
+        for k in range(4):
+            face(bm, col, [rings[i][k], rings[i][(k + 1) % 4], rings[i + 1][(k + 1) % 4], rings[i + 1][k]], colour)
+
+
+def rod_case_strap():
+    """Shoulder strap, in the case's frame as it hangs on the back: the bottom of the case lies on the
+    angler's back, the strap goes from the loop at the top end over the shoulder, across the chest
+    (Z below the case) and back to the loop at the bottom end. Shown only on the back."""
+    bm, col = new_bm()
+    L, chest = CASE_L / 2, -0.30
+    pts = [Vector((L + 0.01, 0, 0.035)), Vector((L + 0.06, 0, 0.0)), Vector((L + 0.05, 0, -0.10)),
+           Vector((L - 0.04, 0, -0.22)), Vector((L - 0.20, 0, chest)), Vector((-L + 0.20, 0, chest)),
+           Vector((-L + 0.04, 0, -0.22)), Vector((-L - 0.05, 0, -0.10)), Vector((-L - 0.06, 0, 0.0)), Vector((-L - 0.01, 0, 0.035))]
+    band(bm, col, smooth_path(pts, 4), 0.038, 0.004, WEBBING)
+    return bm
+
+
+# Folded 6 m pole rods (about 1.4 m), butt at the origin along +X, one per kind.
+PACKED_LEN = 1.40
+PACKED_COLOURS = {'Light': (0.018, 0.02, 0.019), 'Medium': (0.11, 0.065, 0.028), 'Heavy': (0.42, 0.30, 0.05)}
+PACKED_RADIUS = {'Light': 0.0115, 'Medium': 0.0125, 'Heavy': 0.0138}
+
+
+def packed_rod(kind):
+    def build():
+        bm, col = new_bm()
+        cork, cap, ring = (0.62, 0.45, 0.28), (0.04, 0.04, 0.04), (0.55, 0.55, 0.5)
+        blank, r = PACKED_COLOURS[kind], PACKED_RADIUS[kind]
+        xs = [0.0, 0.006, 0.02, 0.30, 0.31, 0.33, 0.62, 0.63, 0.95, 0.96, 1.25, 1.26, 1.36, 1.38, PACKED_LEN]
+        pts = [Vector((x, 0, 0)) for x in xs]
+
+        def radius(t):
+            x = t * PACKED_LEN
+            if x < 0.006: return 0.85
+            if x < 0.30: return 1.08
+            if x > 1.36: return 0.62
+            return 1.0 - 0.12 * (x - 0.3) / 1.06
+
+        def colour(t):
+            x = t * PACKED_LEN
+            if x < 0.02 or x > 1.36: return cap
+            if x < 0.30: return cork
+            for c in (0.62, 0.95, 1.25):
+                if c - 0.005 < x < c + 0.015: return ring
+            return blank
+
+        # Sample densely so the colour bands and the taper follow the stations.
+        fine = []
+        for a, b in zip(pts, pts[1:]):
+            for k in range(3):
+                fine.append(a.lerp(b, k / 3))
+        fine.append(pts[-1])
+        tube(bm, col, fine, r, blank, 14, radius_fn=radius, colour_fn=colour)
+        return bm
+    return build
+
+
 PARTS = {'Bobber': bobber, 'Hook': hook, 'Worm': worm, 'Maggot': maggot, 'Bread': bread,
-         'Sinker': sinker, 'Reel': reel, 'RodHandle': handle, 'RodStand': stand}
+         'Sinker': sinker, 'Reel': reel, 'RodHandle': handle, 'RodStand': stand,
+         'RodCase': rod_case, 'RodCaseLid': rod_case_lid, 'RodCaseStrap': rod_case_strap,
+         'RodPacked_Light': packed_rod('Light'), 'RodPacked_Medium': packed_rod('Medium'), 'RodPacked_Heavy': packed_rod('Heavy')}
+# Case parts are canvas: the importer gives them M_TackleCloth.
+CLOTH = {'RodCase', 'RodCaseLid', 'RodCaseStrap'}
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
     bpy.ops.wm.read_factory_settings(use_empty=True)
+    # QUIETLAKE_TACKLE=RodCase,RodCaseLid builds only those parts.
+    only = [p for p in os.environ.get('QUIETLAKE_TACKLE', '').split(',') if p]
     for name, build in PARTS.items():
+        if only and name not in only:
+            continue
         for o in list(bpy.context.scene.objects):
             bpy.data.objects.remove(o, do_unlink=True)
         bm = build()

@@ -429,6 +429,7 @@ struct FFishSpeciesInfo
     UPROPERTY() FFishHabitat RestHabitat; // where it rests
     UPROPERTY() float DepthMin = 0.3f;    // preferred band in the water column, 0 = surface, 1 = bottom
     UPROPERTY() float DepthMax = 0.7f;
+    UPROPERTY() float SurfaceClearance = 20; // cm of water it keeps over its back; only surface moments (sipping, gulping air, a rush at fry, a bait) bring it higher
     UPROPERTY() float CruiseSpeed = 20;
     UPROPERTY() float BurstSpeed = 120;
     UPROPERTY() float TurnRate = 200;     // deg/s at cruise
@@ -514,6 +515,17 @@ namespace LakeFish
     /** Weigh: an extra weight for each candidate place (the food there), or none. */
     QUIETLAKE_API FVector PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions = nullptr,
                                    EFishGoal Goal = EFishGoal::Cruise, const TFunction<float(const FVector2D&)>& Weigh = nullptr, float DeeperM = 0);
+    /**
+     * P moved straight out from the bank until it is at least Margin cm from the water's edge and
+     * MinDepth cm deep (at most 6 m); Z kept. For targets next to the bank (fry, a dash).
+     */
+    /**
+     * The highest a fish of this length should swim at a point outside its surface moments: its
+     * clearance (passport surfaceClearance) of water over its back; in water too shallow for that,
+     * the middle of the water column.
+     */
+    QUIETLAKE_API float CeilingAt(EFishSpecies Species, float X, float Y, float LengthCm);
+    QUIETLAKE_API FVector OffTheBank(FVector P, float Margin = 100, float MinDepth = 30);
     /** A stocked fish's weight by the passport's stock.sizes; Like >= 0: in the same band as that weight. */
     QUIETLAKE_API float DrawWeight(EFishSpecies Species, FRandomStream& Random, float Like = -1);
     /** The loose group a fish of this weight keeps (stock.groups), or none. */
@@ -713,6 +725,14 @@ private:
     /** School mates: keep apart, line up, stay together, follow the leader. bFollow: steering of a follower. */
     FVector SteerSchool(bool bFollow) const;
     FVector SteerBounds() const;
+    /** Looks ahead along the wish: a course into the bank or a shoal is turned along it instead. */
+    FVector AvoidBank(const FVector& Desired) const;
+    /** True while it has business at the very surface (sipping, gulping air, a rush at fry, at a bait). */
+    bool AtSurfaceMoment() const;
+    /** Where a perch hunting a fry shoal holds: under it at its own depth, off the bank. */
+    FVector FryChaseTarget(FVector Fry) const;
+    /** The highest its position may go now: below its clearance, unless at a surface moment. */
+    float CeilingZ() const;
     /** Slow off-course meandering, as a rotation of the wished direction. */
     FVector Meander(const FVector& Desired) const;
     /** Pick the spot a pike lies at and which way it faces (out into open water from its cover). */
@@ -761,6 +781,7 @@ private:
     float Stamina = 1, MaxStamina = 1, BurstTime = 0, Phase = 0;
     int32 NibblesLeft = 0;
     TWeakObjectPtr<ALakeCharacter> TargetAngler;
+    int32 TargetRig = -1;             // which of the angler's rods (ERodKind); -1: the one in his hands
     TMap<TWeakObjectPtr<ALakeCharacter>, float> IgnoreBaitUntil;
     FVector PendingLineForce = FVector::ZeroVector;
     float SimTime = 0;
@@ -798,6 +819,7 @@ private:
     float BiteStepEnd = 0;
     int32 BaitVisits = 0;             // times it came to this angler's bait in a row
     TWeakObjectPtr<ALakeCharacter> ReturnTo;   // let go of this bait meaning to come back to it
+    int32 ReturnRig = -1;
     // Fear of predators.
     float Fear = 0, NextThreatLook = 0;
     TWeakObjectPtr<ALakeFish> Threat;
@@ -818,6 +840,10 @@ private:
     // Dash at fry (perch rushing in with the school).
     FVector DashTarget = FVector::ZeroVector;
     float DashUntil = -1;
+    float SurfaceUntil = -1;          // SimTime until which it may stay at the surface (a sip, a gulp)
+public:
+    int32 BankHits = 0;               // times it swam into the bank and was stopped (tests)
+private:
     // Crucian rooting in the silt; pike lying in ambush.
     bool bRooting = false;
     float PhaseUntil = 0;             // rooting / shuffling switches at this SimTime
@@ -837,6 +863,7 @@ private:
     float BaitLike(const class ALakeCharacter* Angler) const;
     friend class FLakePondLifeTest;
     friend class FLakeFishMotionTest;
+    friend class FLakeBanksAndDepthTest;
     friend class FLakeBitePatternsTest;
     friend class FLakeInteractionsTest;
     friend class FLakeFoodTest;
@@ -847,6 +874,8 @@ private:
     friend class FLakeFightProfilesTest;
     friend class FLakeContactPhysicsTest;
     friend class FLakeFishingTest;   // the strike scenarios put a fish on the bait directly
+    friend class FLakeRodCaseTest;
+    friend class FLakeThreeRodsTest;
     friend class ALakeCharacter; // live rig preview seeds approach only
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */
