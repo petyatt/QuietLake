@@ -24,12 +24,14 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Sound/SoundWave.h"
+#include "Kismet/GameplayStatics.h"
 #include "DynamicWindParameters.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "UnrealClient.h"
 #include "TimerManager.h"
+#include "Camera/CameraActor.h"
 
 namespace
 {
@@ -84,6 +86,8 @@ void ALakeWeather::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLife
     DOREPLIFETIME(ALakeWeather, WaterTemp);
     DOREPLIFETIME(ALakeWeather, Pressure);
     DOREPLIFETIME(ALakeWeather, Trend);
+    DOREPLIFETIME(ALakeWeather, ChangeAt);
+    DOREPLIFETIME(ALakeWeather, SkyAtChange);
 }
 
 ALakeWeather* ALakeWeather::Get(const UWorld* World)
@@ -222,8 +226,114 @@ FVector ALakeWeather::WindVelocity() const
     return FRotator(0, Current().WindYaw, 0).Vector() * WindSpeed() * 100 * Gust;
 }
 
+namespace
+{
+    /** How fast the clouds sail (km/s, x y) and reshape (z) in a weather. Up there the wind is
+     *  stronger than by the water: 3 m/s in a calm, ~18 m/s in a gale. The noise is sampled against
+     *  the drift, so the clouds go downwind. */
+    FVector SkyVelocity(const FLakeWeatherState& W)
+    {
+        const FVector Dir = FRotator(0, W.WindYaw, 0).Vector();
+        const float Speed = (3.0f + 15.0f * W.Wind) / 1000.0f;
+        return FVector(-Dir.X * Speed, -Dir.Y * Speed, 0.4f + 0.8f * W.Wind);
+    }
+}
+
+FVector ALakeWeather::SkyAt(float Now) const
+{
+    // The velocity follows the weather blend (smoothstep), so its integral is exact: the same drift
+    // on every machine at the same server time, from replicated numbers only.
+    const FVector V0 = SkyVelocity(From), V1 = SkyVelocity(To);
+    const float Ends = BlendStart + BlendSeconds;
+    FVector Sky = SkyAtChange + V0 * (FMath::Min(Now, BlendStart) - ChangeAt);
+    if (Now > BlendStart)
+    {
+        const float U = FMath::Min((Now - BlendStart) / FMath::Max(0.01f, BlendSeconds), 1.0f);
+        Sky += V0 * BlendSeconds * U + (V1 - V0) * BlendSeconds * (U * U * U - 0.5f * U * U * U * U);
+    }
+    if (Now > Ends) Sky += V1 * (Now - Ends);
+    return Sky;
+}
+
+ALakeWeather::FCloudSky ALakeWeather::CloudSkyAt(float Now) const
+{
+    FCloudSky Sky;
+    const FVector D = SkyAt(Now);
+    Sky.Drift = FVector2D(D.X, D.Y);
+    Sky.Phase = D.Z;
+    // The front comes with the new wind: from FrontStartKm upwind when the change is set, over the
+    // lake halfway through the blend. Its width matches the blend, so the clouds overhead turn into
+    // the new ones just as the rain and the light do down by the water.
+    const FVector Dir = FRotator(0, To.WindYaw, 0).Vector();
+    Sky.FrontDir = FVector2D(Dir.X, Dir.Y);
+    const float Middle = BlendStart + 0.5f * BlendSeconds;
+    const float Speed = FrontStartKm / FMath::Max(1.0f, Middle - ChangeAt);
+    Sky.FrontKm = Speed * (Now - Middle);
+    Sky.FrontWidthKm = FMath::Clamp(Speed * 0.5f * BlendSeconds, 0.5f, 15.0f);
+    return Sky;
+}
+
+float ALakeWeather::StormAmount() const
+{
+    const FLakeWeatherState W = Current();
+    return S(0.6f, 0.95f, W.Rain) * S(0.6f, 0.9f, W.Cloud);
+}
+
+bool ALakeWeather::StrikeAt(float Now, FStrike& Out) const
+{
+    if (PreviewStrikeAt > 0 && Now >= PreviewStrikeAt && Now < PreviewStrikeAt + 1.0f)
+    {
+        Out.Time = PreviewStrikeAt; Out.DistanceKm = 2.0f; Out.Yaw = 30; Out.Seed = 7;
+        return true;
+    }
+    if (PreviewStrikeAt > 0) return false;
+    const float Storm = StormAmount();
+    if (Storm <= 0) return false;
+    // Half-second slots, each with its own seeded roll: a strike or none, and when in the slot.
+    const int32 Slot = FMath::FloorToInt(Now / 0.5f);
+    for (int32 J = Slot; J >= Slot - 2; --J)
+    {
+        FRandomStream R((int32)((uint32)J * 2654435761u ^ 0x5eed1234u));
+        if (R.FRand() >= StrikeRate * 0.5f * Storm) continue;
+        const float Time = J * 0.5f + R.FRand() * 0.5f;
+        if (Time > Now || Now - Time >= 1.0f) continue;
+        Out.Time = Time;
+        Out.DistanceKm = FMath::Lerp(1.5f, 14.0f, R.FRand() * R.FRand() < 0.5f ? 0.6f + 0.4f * R.FRand() : R.FRand());
+        Out.Yaw = R.FRandRange(0, 360);
+        Out.Seed = R.RandHelper(1 << 20);
+        return true;
+    }
+    return false;
+}
+
+float ALakeWeather::FlashAt(float Now) const
+{
+    FStrike Strike;
+    if (!StrikeAt(Now, Strike)) return 0;
+    // A stroke flickers: the first return, then one to three more along the same channel.
+    FRandomStream R(Strike.Seed);
+    const float T = Now - Strike.Time;
+    float Light = 0, Delay = 0;
+    const int32 Strokes = 2 + R.RandHelper(3);
+    for (int32 I = 0; I < Strokes; ++I)
+    {
+        const float Amp = I == 0 ? 1.0f : R.FRandRange(0.35f, 0.9f);
+        if (T >= Delay) Light += Amp * FMath::Exp(-(T - Delay) / 0.09f);
+        Delay += R.FRandRange(0.05f, 0.16f);
+    }
+    return FMath::Min(1.5f, Light) * FMath::Clamp(3.0f / (Strike.DistanceKm + 1.0f), 0.15f, 1.0f);
+}
+
+void ALakeWeather::MarkChange()
+{
+    const float Now = ServerNow();
+    SkyAtChange = SkyAt(Now);
+    ChangeAt = Now;
+}
+
 void ALakeWeather::SetWeatherNow(const FLakeWeatherState& State)
 {
+    MarkChange();
     From = To = State;
     BlendStart = ServerNow() - 1;
     BlendSeconds = 0.01f;
@@ -233,6 +343,7 @@ void ALakeWeather::SetWeatherNow(const FLakeWeatherState& State)
 
 void ALakeWeather::SetWeather(const FLakeWeatherState& State, float Seconds, float Delay)
 {
+    MarkChange();
     From = Current();
     To = State;
     BlendStart = ServerNow() + FMath::Max(0.0f, Delay);
@@ -287,16 +398,77 @@ void ALakeWeather::BeginPlay()
         ClockOriginServer = ServerNow();
         ClockOriginHours = 5.5f;
         From = To = FLakeWeatherState();
-        BlendStart = ClockOriginServer;
+        BlendStart = ChangeAt = ClockOriginServer;
         NextChange = ClockOriginServer + Random.FRandRange(300, 480);
     }
 #if !UE_BUILD_SHIPPING
     // -WeatherPreview: a fixed set of times and weathers seen from the start spot, HUD on.
     // -NightPreview: only the night, at once — no waiting for the day to run through.
     const bool bNightOnly = FParse::Param(FCommandLine::Get(), TEXT("NightPreview"));
-    if (HasAuthority() && (bNightOnly || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview"))))
+    const bool bCloudsOnly = FParse::Param(FCommandLine::Get(), TEXT("CloudPreview"));
+    // -FrontPreview: a fair noon, then a downpour comes in over the lake from the far shore; frames
+    // looking upwind as the front nears, passes overhead, and after.
+    if (HasAuthority() && FParse::Param(FCommandLine::Get(), TEXT("FrontPreview")))
     {
-        struct FShot { float Hours, Cloud, Fog, Rain, Wind; const TCHAR* File; float Turn = -25, Pitch = -4, Back = 250; bool bMoon = false; };
+        auto Look = [this](float Pitch, float Turn)
+        {
+            if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
+                if (APawn* Pawn = PC->GetPawn())
+                {
+                    FVector2D Facing;
+                    const FVector2D Spot = LakeMap::StartSpot(&Facing) - Facing * 250;
+                    Pawn->SetActorLocation(FVector(Spot, LakeMap::Ground(Spot.X, Spot.Y) + 100));
+                    PC->SetControlRotation(FRotator(Pitch, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)) + Turn, 0));
+                }
+        };
+        FTimerHandle Start, Front;
+        GetWorldTimerManager().SetTimer(Start, [this, Look]
+        {
+            FVector2D Facing;
+            LakeMap::StartSpot(&Facing);
+            FLakeWeatherState Fair;
+            Fair.Cloud = 0.35f; Fair.Fog = 0.0f; Fair.Rain = 0.0f; Fair.Wind = 0.3f;
+            // The wind blows from across the lake towards the angler.
+            Fair.WindYaw = FMath::RadiansToDegrees(FMath::Atan2(-Facing.Y, -Facing.X));
+            SetHours(12.0f);
+            SetWeatherNow(Fair);
+            NextChange = ServerNow() + 1e6f;
+            Wetness = 0;
+            Look(12, 0);
+        }, 12.0f, false);
+        GetWorldTimerManager().SetTimer(Front, [this]
+        {
+            FLakeWeatherState Storm = To;
+            Storm.Cloud = 1.0f; Storm.Fog = 0.3f; Storm.Rain = 0.9f; Storm.Wind = 0.75f;
+            SetWeather(Storm, 60.0f, 50.0f);
+            NextChange = ServerNow() + 1e6f;
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FRONT set: blend from %.0f s for 60 s"), ServerNow() + 50.0f);
+        }, 20.0f, false);
+        // Seconds after the front was set: at the horizon, nearing, over the lake, past.
+        const float Shots[] = { 4, 25, 45, 60, 72, 82, 95, 120 };
+        for (int32 I = 0; I < UE_ARRAY_COUNT(Shots); ++I)
+        {
+            FTimerHandle Measure, Snap;
+            const float At = 20.0f + Shots[I];
+            GetWorldTimerManager().SetTimer(Measure, [this] { PreviewFrameSeconds = 0; PreviewFrames = 0; bMeasureFrames = true; }, At - 3.0f, false);
+            GetWorldTimerManager().SetTimer(Snap, [this, I, Look]
+            {
+                const FString File = FString::Printf(TEXT("Front_%d.png"), I + 1);
+                FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / File, true, false);
+                const FCloudSky Sky = CloudSkyAt(ServerNow());
+                const FLakeWeatherState W = Current();
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FRONT %s front %.1f km (width %.1f) | %s cloud %.2f rain %.2f | frame %.1f ms"), *File,
+                    Sky.FrontKm, Sky.FrontWidthKm, *Describe(), W.Cloud, W.Rain, PreviewFrames > 0 ? PreviewFrameSeconds / PreviewFrames * 1000.0f : 0.0f);
+                // The last frames look up at the storm overhead.
+                if (I == UE_ARRAY_COUNT(Shots) - 3) Look(35, 0);
+            }, At, false);
+        }
+        FTimerHandle Exit;
+        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 20.0f + Shots[UE_ARRAY_COUNT(Shots) - 1] + 2.0f, false);
+    }
+    if (HasAuthority() && (bNightOnly || bCloudsOnly || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview"))))
+    {
+        struct FShot { float Hours, Cloud, Fog, Rain, Wind; const TCHAR* File; float Turn = -25, Pitch = -4, Back = 250; bool bMoon = false; bool bStrike = false; bool bAir = false; };
         TArray<FShot> Shots = {
             { 5.8f,  0.3f, 0.7f, 0.0f, 0.05f, TEXT("Weather_Dawn.png") },
             { 12.5f, 0.15f, 0.0f, 0.0f, 0.3f, TEXT("Weather_Noon.png") },
@@ -313,6 +485,24 @@ void ALakeWeather::BeginPlay()
                 // Straight at the moon: the camera turns to the lunar light, stars and the disk around it.
                 { 23.5f, 0.02f, 0.00f, 0.0f, 0.02f, TEXT("Night_Moon.png"), 0, 22, 250, true },
                 { 1.5f,  0.5f,  0.9f,  0.0f, 0.0f,  TEXT("Night_Fog.png") },
+            };
+        // -CloudPreview: the sky, the camera tilted up over the lake: every kind of cloud the weather
+        // brings, and the low sun lighting them.
+        if (bCloudsOnly)
+            Shots = {
+                { 11.0f, 0.25f, 0.0f, 0.0f, 0.2f,  TEXT("Clouds_FairCumulus.png"), -25, 30 },
+                { 13.0f, 0.5f,  0.0f, 0.0f, 0.35f, TEXT("Clouds_Cumulus.png"), 60, 30 },
+                { 14.0f, 0.8f,  0.1f, 0.0f, 0.4f,  TEXT("Clouds_Broken.png"), -25, 30 },
+                { 15.0f, 0.95f, 0.15f, 0.0f, 0.6f, TEXT("Clouds_Overcast.png"), -25, 30 },
+                { 14.0f, 0.9f,  0.25f, 0.25f, 0.2f, TEXT("Clouds_Drizzle.png"), -25, 30 },
+                { 16.0f, 1.0f,  0.3f, 1.0f, 0.85f, TEXT("Clouds_Storm.png"), -25, 30 },
+                { 20.4f, 0.4f,  0.05f, 0.0f, 0.15f, TEXT("Clouds_Sunset.png"), 0, 15 },
+                { 6.2f,  0.35f, 0.3f, 0.0f, 0.1f,  TEXT("Clouds_Dawn.png"), 0, 15 },
+                // From 400 m up: the shadows of fair-weather cumulus on the water and the woods.
+                { 12.5f, 0.35f, 0.0f, 0.0f, 0.3f,  TEXT("Clouds_Shadows.png"), 150, -38, 300, false, false, true },
+                { 16.0f, 1.0f,  0.3f, 1.0f, 0.85f, TEXT("Clouds_Lightning.png"), -25, 20, 250, false, true },
+                { 23.0f, 1.0f,  0.2f, 0.9f, 0.7f,  TEXT("Clouds_NightLightning.png"), -25, 15, 250, false, true },
+                { 23.5f, 0.45f, 0.05f, 0.0f, 0.1f, TEXT("Clouds_Night.png"), 0, 25 },
             };
         if (FParse::Param(FCommandLine::Get(), TEXT("GrassLightPreview")))
             Shots = {
@@ -333,18 +523,34 @@ void ALakeWeather::BeginPlay()
             const FShot Shot = Shots[I];
             const float At = First + I * Gap;
             FTimerHandle Pose, Snap;
-            GetWorldTimerManager().SetTimer(Pose, [this, Shot]
+            GetWorldTimerManager().SetTimer(Pose, [this, Shot, PoseLead]
             {
                 FLakeWeatherState W;
                 W.Cloud = Shot.Cloud; W.Fog = Shot.Fog; W.Rain = Shot.Rain; W.Wind = Shot.Wind; W.WindYaw = 60;
+                MarkChange();
                 From = To = W;
                 BlendStart = ServerNow();
                 NextChange = BlendStart + 1e6f;
                 SetHours(Shot.Hours);
                 Wetness = Shot.Rain > 0 ? 0.8f : 0.0f;
+                // A close strike right as the frame is taken; no other strikes meanwhile.
+                PreviewStrikeAt = Shot.bStrike ? ServerNow() + PoseLead - 0.12f : -1.0f;
                 if (APlayerController* PC = GetWorld()->GetFirstPlayerController())
                     if (APawn* Pawn = PC->GetPawn())
                     {
+                        if (Shot.bAir)
+                        {
+                            // A camera high over the shore behind the angler, looking out over the lake.
+                            FVector2D Facing;
+                            const FVector2D Spot = LakeMap::StartSpot(&Facing) - Facing * Shot.Back;
+                            FActorSpawnParameters Params;
+                            Params.ObjectFlags |= RF_Transient;
+                            ACameraActor* Camera = GetWorld()->SpawnActor<ACameraActor>(FVector(Spot, 40000),
+                                FRotator(Shot.Pitch, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)) + Shot.Turn, 0), Params);
+                            PC->SetViewTarget(Camera);
+                            return;
+                        }
+                        if (PC->GetViewTarget() != Pawn) PC->SetViewTarget(Pawn);
                         FVector2D Facing;
                         const FVector2D Spot = LakeMap::StartSpot(&Facing) - Facing * Shot.Back;
                         Pawn->SetActorLocation(FVector(Spot, LakeMap::Ground(Spot.X, Spot.Y) + 100));
@@ -359,13 +565,17 @@ void ALakeWeather::BeginPlay()
                         PC->SetControlRotation(View);
                     }
             }, At - PoseLead, false);
+            // Frame time over the last 4 s before the shot (logged with it).
+            FTimerHandle Measure;
+            GetWorldTimerManager().SetTimer(Measure, [this] { PreviewFrameSeconds = 0; PreviewFrames = 0; bMeasureFrames = true; }, At - 4.0f, false);
             GetWorldTimerManager().SetTimer(Snap, [this, Shot]
             {
                 FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Shot.File, true, false);
                 const FFishConditions C = FishConditions();
                 FString Bite;
                 for (int32 Sp = 0; Sp < LakeFish::NumSpecies(); ++Sp) Bite += FString::Printf(TEXT(" %s %.2f"), *LakeFish::Info((EFishSpecies)Sp).Id, LakeFish::Activity((EFishSpecies)Sp, C));
-                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WEATHER_SHOT %s %s %.0f C | bite:%s"), Shot.File, *Describe(), TemperatureC(), *Bite);
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WEATHER_SHOT %s %s %.0f C | frame %.1f ms | bite:%s"), Shot.File, *Describe(), TemperatureC(),
+                    PreviewFrames > 0 ? PreviewFrameSeconds / PreviewFrames * 1000.0f : 0.0f, *Bite);
             }, At, false);
         }
         FTimerHandle Exit;
@@ -377,7 +587,18 @@ void ALakeWeather::BeginPlay()
 void ALakeWeather::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+    if (bMeasureFrames) { PreviewFrameSeconds += DeltaSeconds; ++PreviewFrames; }
     if (HasAuthority() && ServerNow() >= NextChange) PickNextWeather();
+    // Every half minute of server time each machine logs the sky at that exact moment: the lines
+    // of the server and the clients must agree (Tools/TestNetwork.ps1 logs).
+    const int32 Half = FMath::FloorToInt(ServerNow() / 30.0f);
+    if (Half != LastSyncLog && Half > 0)
+    {
+        LastSyncLog = Half;
+        const FCloudSky Sky = CloudSkyAt(Half * 30.0f);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CLOUD_SYNC t=%d drift=%.4f,%.4f phase=%.3f front=%.3f km width=%.2f"),
+            Half * 30, Sky.Drift.X, Sky.Drift.Y, Sky.Phase, Sky.FrontKm, Sky.FrontWidthKm);
+    }
     if (HasAuthority())
     {
         // Pressure heads for the level of the weather that is coming (so it falls before the rain),
@@ -410,6 +631,27 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         for (TActorIterator<ASkyLight> It(World); It; ++It) SkyLight = It->GetLightComponent();
         for (TActorIterator<AExponentialHeightFog> It(World); It; ++It) Fog = It->GetComponent();
         for (TActorIterator<AVolumetricCloud> It(World); It; ++It) Clouds = It->FindComponentByClass<UVolumetricCloudComponent>();
+        // The sun casts the clouds' shadows on the ground and the water: the default 512 map over
+        // 25 km, ~50 m a texel, fine enough for the shadow of a single cumulus.
+        Sun->bCastCloudShadows = true;
+        Sun->CloudShadowExtent = 25.0f;
+        Sun->MarkRenderStateDirty();
+        // Lightning: the clouds glow from within (the material's Flash), and this light gives the
+        // ground its blink: shown only while it flashes; no shadows. Not an atmosphere light: as
+        // one it lit the whole atmosphere and the sky flashed clear blue.
+        Lightning = NewObject<UDirectionalLightComponent>(this);
+        Lightning->SetupAttachment(RootComponent);
+        Lightning->SetMobility(EComponentMobility::Movable);
+        Lightning->SetAtmosphereSunLight(false);
+        Lightning->SetForwardShadingPriority(-1);
+        Lightning->SetCastShadows(false);
+        Lightning->SetLightColor(FLinearColor(0.78f, 0.84f, 1.0f));
+        Lightning->SetLightSourceAngle(10.0f);
+        Lightning->SetIntensity(0);
+        Lightning->SetVisibility(false);
+        Lightning->RegisterComponent();
+        for (const TCHAR* Name : { TEXT("A_ThunderNear"), TEXT("A_ThunderMid"), TEXT("A_ThunderFar") })
+            ThunderSounds.Add(LoadObject<USoundWave>(nullptr, *FString::Printf(TEXT("/Game/Audio/%s.%s"), Name, Name)));
         for (TActorIterator<APostProcessVolume> It(World); It; ++It) Post = *It;
         for (TActorIterator<ALakeEnvironment> It(World); It; ++It)
         {
@@ -449,10 +691,26 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         }
         if (Clouds)
         {
-            if (UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst")))
+            // Our own cloud material (Tools/CreateCloudMaterial.py): cumulus, stratus and storm
+            // clouds mixed by the weather, drifting with the wind. The layer starts at 0.8 km and is
+            // 9 km thick, room for storm towers; light reaching every sample is reddened by the
+            // atmosphere, so the clouds glow at sunset.
+            UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Weather/M_LakeClouds.M_LakeClouds"));
+            if (!Base) Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst"));
+            if (Base)
             {
                 CloudMaterial = UMaterialInstanceDynamic::Create(Base, this);
                 Clouds->SetMaterial(CloudMaterial);
+                bOwnClouds = Base->GetName() == TEXT("M_LakeClouds");
+            }
+            if (bOwnClouds)
+            {
+                Clouds->SetLayerBottomAltitude(0.8f);
+                Clouds->SetLayerHeight(9.0f);
+                Clouds->SetbUsePerSampleAtmosphericLightTransmittance(true);
+                // More steps through the cloud than the default: smooth billows instead of grain.
+                Clouds->SetViewSampleCountScale(2.5f);
+                Clouds->SetShadowViewSampleCountScale(2.0f);
             }
         }
         WeatherParameters = LoadObject<UMaterialParameterCollection>(nullptr, TEXT("/Game/Weather/MPC_Weather.MPC_Weather"));
@@ -547,6 +805,7 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
     {
         Moon->SetIntensity(LastMoon);
         Moon->SetVisibility(LastMoon > 0.003f);
+        if (CloudMaterial && bOwnClouds) CloudMaterial->SetScalarParameterValue(TEXT("NightGlow"), LastMoon * 0.12f);
     }
     // Under a thick cloud the whole sky is dimmer, more so in rain. At night the sky is only the
     // moon: left at daylight strength it lit the fog and the whole valley like day
@@ -630,11 +889,89 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
             Atmosphere->SetSkyLuminanceFactor(FLinearColor(Lift, Lift, Lift));
         }
     }
-    if (CloudMaterial && Changed(LastCloud, W.Cloud + 2.0f * W.Rain, 0.004f))
+    if (CloudMaterial && bOwnClouds)
+    {
+        // Which clouds a weather brings: fair-weather cumulus in a clear to cloudy sky, growing by
+        // day and settling at night; a grey stratus deck when it is overcast or raining; dark storm
+        // towers in heavy rain. Ahead of the front the sky keeps the old weather's clouds, behind
+        // it the new one's.
+        auto Kinds = [Day](const FLakeWeatherState& K)
+        {
+            return FVector4f(
+                S(0.05f, 0.45f, K.Cloud) * (1 - S(0.75f, 0.95f, K.Cloud)) * FMath::Lerp(0.6f, 1.0f, Day) * (1 - 0.6f * S(0.3f, 0.8f, K.Rain)),
+                FMath::Min(1.0f, S(0.55f, 0.9f, K.Cloud) + 0.6f * S(0.1f, 0.6f, K.Rain)),
+                S(0.45f, 0.9f, K.Rain) * S(0.5f, 0.9f, K.Cloud),
+                0.02f * (1 + 0.5f * K.Rain));
+        };
+        const FVector4f Old = Kinds(From), New = Kinds(To);
+        if (Changed(LastCloud, Old.X + 3 * Old.Y + 9 * Old.Z + 27 * New.X + 81 * New.Y + 243 * New.Z, 0.003f))
+        {
+            CloudMaterial->SetScalarParameterValue(TEXT("Cumulus"), Old.X);
+            CloudMaterial->SetScalarParameterValue(TEXT("Stratus"), Old.Y);
+            CloudMaterial->SetScalarParameterValue(TEXT("Storm"), Old.Z);
+            CloudMaterial->SetScalarParameterValue(TEXT("Density"), Old.W);
+            CloudMaterial->SetScalarParameterValue(TEXT("Cumulus2"), New.X);
+            CloudMaterial->SetScalarParameterValue(TEXT("Stratus2"), New.Y);
+            CloudMaterial->SetScalarParameterValue(TEXT("Storm2"), New.Z);
+            CloudMaterial->SetScalarParameterValue(TEXT("Density2"), New.W);
+        }
+        const FCloudSky Sky = CloudSkyAt(ServerNow());
+        CloudMaterial->SetVectorParameterValue(TEXT("WindOffset"), FLinearColor(Sky.Drift.X, Sky.Drift.Y, Sky.Phase, 0));
+        CloudMaterial->SetVectorParameterValue(TEXT("Front"), FLinearColor(Sky.FrontDir.X, Sky.FrontDir.Y, Sky.FrontKm, Sky.FrontWidthKm));
+    }
+    else if (CloudMaterial && Changed(LastCloud, W.Cloud + 2.0f * W.Rain, 0.004f))
     {
         CloudMaterial->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), FMath::Lerp(-0.7f, 1.2f, W.Cloud));
         CloudMaterial->SetScalarParameterValue(TEXT("Cloud_GlobalDensity"), FMath::Lerp(0.004f, 0.035f, W.Cloud));
         CloudMaterial->SetScalarParameterValue(TEXT("StormClouds"), S(0.3f, 1.0f, W.Rain));
+    }
+
+    // Cloud shadows: full under a broken sky, fainter as it closes over (the sun is dimmed then
+    // anyway, and a fully shadowed overcast would turn the day to dusk).
+    if (Changed(LastCloudShadow, 1.0f - 0.7f * S(0.6f, 0.95f, Overcast), 0.05f))
+    {
+        Sun->CloudShadowOnSurfaceStrength = LastCloudShadow;
+        Sun->MarkRenderStateDirty();
+    }
+    // Lightning: the flash lights the storm from high above the strike, the thunder follows after
+    // the time the sound takes to come (343 m/s), louder and sharper the closer the strike.
+    if (Lightning)
+    {
+        const float Now = ServerNow();
+        FStrike Strike;
+        const bool bStrike = StrikeAt(Now, Strike);
+        if (bStrike && Strike.Time != LastStrikeTime)
+        {
+            LastStrikeTime = Strike.Time;
+            const int32 Kind = Strike.DistanceKm < 3.5f ? 0 : Strike.DistanceKm < 8.0f ? 1 : 2;
+            PendingThunder.Add({ Strike.Time + Strike.DistanceKm / 0.343f, FMath::Clamp(2.5f / (Strike.DistanceKm + 0.5f), 0.2f, 1.0f),
+                FMath::FRandRange(0.9f, 1.1f), Kind });
+            Lightning->SetWorldRotation(FRotator(-55.0f, Strike.Yaw + 180.0f, 0));
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LIGHTNING at %.2f s, %.1f km"), Strike.Time, Strike.DistanceKm);
+        }
+        const float Flash = FlashAt(Now);
+        const bool bFlash = Flash > 0.003f;
+        if (bFlash || Lightning->IsVisible())
+        {
+            Lightning->SetVisibility(bFlash);
+            Lightning->SetIntensity(Flash * 0.8f);
+            if (SkyLight) SkyLight->SetIntensity(LastSky * (1 + Flash));
+            if (CloudMaterial && bOwnClouds)
+            {
+                const FVector2D At = FVector2D(FRotator(0, Strike.Yaw, 0).Vector()) * Strike.DistanceKm;
+                // The eye is used to the dark at night: the same flash is far brighter to it then.
+                CloudMaterial->SetVectorParameterValue(TEXT("Flash"), FLinearColor(At.X, At.Y, Flash * FMath::Lerp(0.8f, 0.5f, Day), 0));
+            }
+        }
+        for (int32 I = PendingThunder.Num() - 1; I >= 0; --I)
+            if (Now >= PendingThunder[I].At)
+            {
+                const FThunder T = PendingThunder[I];
+                PendingThunder.RemoveAtSwap(I);
+                if (ThunderSounds.IsValidIndex(T.Kind) && ThunderSounds[T.Kind])
+                    UGameplayStatics::PlaySound2D(this, ThunderSounds[T.Kind], T.Volume, T.Pitch);
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_THUNDER kind %d volume %.2f"), T.Kind, T.Volume);
+            }
     }
 
     // Wind for the Megaplants trees and reeds, the materials and the rain.
