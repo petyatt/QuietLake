@@ -10,6 +10,46 @@
 UENUM()
 enum class ERodKind : uint8 { Light, Medium, Heavy, Count UMETA(Hidden) };
 
+/** Where one of the angler's rods is. */
+UENUM()
+enum class ERodPlace : uint8 { Case, Hands, Stand, Ground };
+/** The rod case: carried on the back, or laid on the ground (and then it can be opened). */
+UENUM()
+enum class ECasePlace : uint8 { Back, Ground };
+
+/**
+ * One of the angler's three rods (index = ERodKind). The rod in the hands fishes with the angler's
+ * own fields (FishingState, FloatPosition...); a rod put on its stand keeps its tackle here and goes
+ * on fishing: the float on the water, fish trying and taking the bait.
+ */
+USTRUCT()
+struct FLakeRodSlot
+{
+    GENERATED_BODY()
+    UPROPERTY() ERodPlace Place = ERodPlace::Case;
+    UPROPERTY() int8 CaseSlot = -1;                 // compartment 0..2 while in the case
+    UPROPERTY() FVector_NetQuantize10 Base;         // the stand's foot, or the butt on the ground
+    UPROPERTY() float Yaw = 0;                      // the way the stand or the rod on the ground faces
+    UPROPERTY() float Pitch = 0;                    // lying on a slope: butt to tip
+    // The tackle of a rod on its stand.
+    UPROPERTY() EFishingState State = EFishingState::Idle;   // Idle, Waiting or Bite
+    UPROPERTY() FVector_NetQuantize10 FloatPosition;
+    UPROPERTY() float HookDepth = 100;
+    UPROPERTY() float FloatDepth = 100;
+    UPROPERTY() EBait Bait = EBait::Worm;
+    UPROPERTY() uint8 Nibbles = 0;
+    UPROPERTY() EBiteMotion BiteMotion = EBiteMotion::None;
+    UPROPERTY() float BiteStart = 0;
+    UPROPERTY() float BiteDuration = 1;
+    UPROPERTY() float BiteAmount = 0;
+    UPROPERTY() TObjectPtr<ALakeFish> LineFish;
+    // Server only.
+    FVector BaitPoint = FVector::ZeroVector;
+    float BaitActiveTime = 0;
+    float EscapeAt = -1;                            // a take not struck: when the fish lets go
+    TWeakObjectPtr<ALakeFish> BaitFish;
+};
+
 UCLASS()
 class QUIETLAKE_API ALakeCharacter : public ACharacter
 {
@@ -141,17 +181,66 @@ public:
     UPROPERTY(Replicated) bool bReeling = false;            // fighting: LMB held = lifting the rod, pulling
     UPROPERTY(Replicated) float RodLift = 0;                // fighting: 0 = rod lowered towards the fish, 1 = raised high
     float RodLiftShown = 0;   // the lift the pose shows: follows RodLift, then eases out when the fish leaves
-    UPROPERTY(Replicated) bool bRodOnStand = false;
-    UPROPERTY(Replicated) FVector_NetQuantize10 StandBase;
-    UPROPERTY(Replicated) float StandYaw = 0;
+    // --- the three rods and the case ---
+    static constexpr int32 NumRods = (int32)ERodKind::Count;
+    /** Every rod: in the case, in the hands, on its stand (fishing) or lying on the ground. */
+    UPROPERTY(Replicated) TArray<FLakeRodSlot> Rods;
+    UPROPERTY(Replicated) ECasePlace CasePlace = ECasePlace::Back;
+    UPROPERTY(Replicated) FVector_NetQuantize10 CaseBase;
+    UPROPERTY(Replicated) float CaseYaw = 0;
+    /** The case on the ground with its lid open (its window shows for the angler who opened it). */
+    UPROPERTY(Replicated) bool bCaseOpen = false;
+    /** How near the angler must be to a rod or the case to use it, and how far he lays things down (cm). */
+    static constexpr float Reach = 260.0f;
+    static constexpr float PlaceReach = 250.0f;
+    /** Seconds R is held to lay the rod on the ground, and F to do what the prompt shows. */
+    static constexpr float LayHold = 2.0f;
+    static constexpr float InteractHold = 0.5f;
+    bool HasRodInHands() const { return Rods.IsValidIndex((int32)RodKind) && Rods[(int32)RodKind].Place == ERodPlace::Hands; }
+    /** The rod in the hands can go into the case or onto the ground: its rig held in the free hand, nothing going on. */
+    bool CanPutRodAway() const;
+    /** Where a rod on its stand rests (butt on the ground behind the fork). */
+    static FTransform StandHoldAt(FVector Base, float Yaw);
+    /** A rod lying on the ground, butt at Base. */
+    static FTransform GroundHoldAt(FVector Base, float Yaw, float Pitch);
+    /** The rod on a stand or the ground nearest the angler within reach (-1: none); with bBiteOnly, only a take. */
+    int32 NearestParkedRod(bool bBiteOnly) const;
+    /** How far the angler is from where a rod on its stand or the ground can be taken (cm). */
+    float DistanceToRod(int32 Rod) const;
+
+    // --- local interface (the owner only, not replicated) ---
+    enum class EPlacing : uint8 { None, Case, Rod };
+    /** B, or R held: a blue ghost follows the aim; LMB lays it there, RMB cancels. */
+    EPlacing Placing = EPlacing::None;
+    bool bPlaceValid = false;
+    FVector PlaceAt = FVector::ZeroVector;
+    float PlaceYaw = 0;
+    FString PlaceProblem;
+    /** What the crosshair is on: the case lying near (Open / Put on the back), or a rod on the ground. */
+    bool bAimCase = false;
+    int32 AimRod = -1;
+    TArray<FString> AimOptions;
+    int32 AimChoice = 0;
+    /** Real time F / R went down (-1: up). */
+    float InteractDown = -1, LayDown = -1;
+    bool bLayDone = false;
+    /** The case window: three compartments and the hand, the rods dragged between them with the mouse. */
+    bool bCaseWindow = false;
+    float CaseWindowAsked = 0;
+    bool bWindowInput = false;
+    bool IsCaseWindowOpen() const { return bCaseWindow && bCaseOpen && CasePlace == ECasePlace::Ground; }
+    void CloseCaseWindow();
     UPROPERTY(Replicated) TObjectPtr<ALakeFish> LineFish;  // fish holding the bait or hooked
     bool bThirdPerson = false;
     /** Server world time, the same clock on every machine. */
     float ServerNow() const;
 
     // --- used by the fish (server) ---
-    bool HasBaitInWater() const;
-    FVector BaitLocation() const { return BaitPoint; }
+    // Rig: which rod's tackle (index = ERodKind); -1 is the rod in the hands. A fish keeps the rig it
+    // goes for in ALakeFish::TargetRig, so the calls taking a fish find it there.
+    bool HasBaitInWater(int32 Rig = -1) const;
+    FVector BaitLocation(int32 Rig = -1) const;
+    EBait BaitOf(int32 Rig = -1) const;
     /** Only one fish at a time may test the bait; returns false if another fish is on it. */
     bool ClaimBait(ALakeFish* Fish);
     void ReleaseBaitClaim(ALakeFish* Fish);
@@ -167,11 +256,11 @@ public:
      * (anything above ~15 deg/s), or the rig being drawn out. A fish testing the bait backs off; one
      * holding it feels it and spits it sooner.
      */
-    float RigDisturbance() const;
+    float RigDisturbance(int32 Rig = -1) const;
     /** The float starts a new motion of the bite. */
     void OnBiteMotion(ALakeFish* Fish, const FBiteStep& Step);
     /** The fish holding the bait lets go of it without being struck (as when the time to strike runs out). */
-    void OnFishLetGo(ALakeFish* Fish) { if (BaitFish.Get() == Fish) Escape(); }
+    void OnFishLetGo(ALakeFish* Fish);
 private:
     friend class FLakeFishingTest;
     friend struct FLakeFishingFixture;
@@ -183,6 +272,54 @@ private:
     friend class FLakeWindDriftTest;
     friend class FLakeRodControlTest;
     friend class FLakeGroundbaitTest;
+    friend class FLakeRodCaseTest;
+    friend class FLakeThreeRodsTest;
+    friend class ALakeHUD;
+    /** The rig a fish is after: its own TargetRig, or the rod in the hands. */
+    int32 RigOf(const ALakeFish* Fish) const;
+    /** The rig is the rod in the hands (its tackle lives in the angler's own fields). */
+    bool IsHandRig(int32 Rig) const { return Rig < 0 || (HasRodInHands() && Rig == (int32)RodKind); }
+    bool IsParkedRig(int32 Rig) const { return Rig >= 0 && Rig < Rods.Num() && Rods[Rig].Place == ERodPlace::Stand && Rods[Rig].State != EFishingState::Idle; }
+    /** The rod in the hands goes onto its stand (its tackle goes on fishing) or onto the ground. */
+    void ParkHandRod(ERodPlace Place, FVector Base, float Yaw, float Pitch = 0);
+    /** Take a rod in the free hands: from the case, its stand or the ground (its tackle comes with it). */
+    void TakeRodInHands(int32 Rod);
+    /** Server, each frame: the tackle of the rods on their stands. */
+    void UpdateParkedRods(float DeltaSeconds);
+    void EscapeParked(int32 Rod);
+    void PlaceBaitFor(FLakeRodSlot& Slot) const;
+    /** Each rod's look: in the hands, on its stand, on the ground, or hidden in the case. */
+    void UpdateRodVisuals(float DeltaSeconds);
+    UPROPERTY() TArray<TObjectPtr<class ALakeRod>> RodVisuals;
+    TArray<FTransform> RodShownHold;     // last frame's hold of each rod, for the blend to a new place
+    TArray<float> RodBlend;              // 1 -> 0: easing from the old place to the new one
+    TArray<ERodPlace> RodShownPlace;
+    float HandsAlpha = 1;
+    UPROPERTY() TObjectPtr<class ALakeRodCase> CaseVisual;
+    bool bCaseSeenLogged = false;
+    UPROPERTY() TObjectPtr<class ALakeGhost> Ghost;
+    void UpdateCaseVisual(float DeltaSeconds);
+    /** Local: the ghost under the aim, the thing under the crosshair, the held keys. */
+    void UpdateLocalInterface(float DeltaSeconds);
+    bool AimGround(FVector& OutPoint, FVector& OutNormal) const;
+    /** The ground (or the pier's deck) under a point; false over water. */
+    static bool GroundAt(const UWorld* World, FVector2D At, float NearZ, FVector& OutPoint, FVector* OutNormal = nullptr);
+    void SetCaseWindowInput(bool bOpen);
+    // Keys.
+    void CaseKey();
+    void InteractPressed();
+    void InteractReleased();
+    void LayPressed();
+    void LayReleased();
+    void WheelUp();
+    void WheelDown();
+    UFUNCTION(Server, Reliable) void ServerPlaceCase(FVector_NetQuantize10 At, float Yaw);
+    /** 0 open, 1 close, 2 put it on the back. */
+    UFUNCTION(Server, Reliable) void ServerCaseAction(uint8 Action);
+    /** Move a rod in the open case: Target 0..2 a compartment, 3 the hands. */
+    UFUNCTION(Server, Reliable) void ServerMoveRod(uint8 Rod, uint8 Target);
+    UFUNCTION(Server, Reliable) void ServerLayRod(FVector_NetQuantize10 At, float Yaw);
+    UFUNCTION(Server, Reliable) void ServerTakeRod(uint8 Rod);
     void SelectBait(EBait NewBait);
     void BaitWorm() { SelectBait(EBait::Worm); }
     void BaitMaggot() { SelectBait(EBait::Maggot); }
@@ -208,11 +345,10 @@ private:
     /** 7 (development only): the next weather in a short ring, to look at rain, fog and wind. */
     void CycleDevWeather() { ServerDevWeather(); }
     UFUNCTION(Server, Reliable) void ServerDevWeather();
-    void NextRod() { ServerNextRod(); }
-    /** Q: take the next rod (only with no line out). */
-    UFUNCTION(Server, Reliable) void ServerNextRod();
     /** -LakePreview, -BitePreview, -LandPreview: scripted scenes, filmed and logged (LakePreviews.cpp). */
     void RunPreviews();
+    /** Previews: this rod in the hands at once, the one held put into its compartment. */
+    void UseRod(ERodKind Kind);
     void RunRodDiagnostics(float DeltaSeconds);
     float RodDiagnosticTime = 0, NextRodDiagnosticLog = 0;
     int32 RodDiagnosticStage = 0;
@@ -245,7 +381,6 @@ private:
     void RodPoseTarget(float Pitch, float Now, float& OutElevation, FVector& OutGrip, float& OutStiffness, float& OutYaw) const;
     void UpdateRodPose(float DeltaSeconds);
     FTransform RodHold() const;
-    FTransform StandHold() const;
     void ConstrainFloat();
     /** Server: the wind drifts a free-hanging rig downwind until the line holds it. */
     void DriftFloat(float DeltaSeconds);
@@ -256,7 +391,7 @@ private:
     bool bRodPoseReady = false;
     void UpdateVisuals(float DeltaSeconds);
     float BaitActiveTime = 0;
-    float StandAlpha = 0;
+    /** The simulation of the rod in the hands (one of RodVisuals; null with empty hands or in tests). */
     UPROPERTY() TObjectPtr<class ALakeRod> RodVisual;
     UPROPERTY() TObjectPtr<class USpringArmComponent> ThirdPersonArm;
     UPROPERTY() TObjectPtr<class UCameraComponent> ThirdPersonCamera;
@@ -285,7 +420,8 @@ private:
     /** Lift the tired fish out of the water: it hangs on the line and swings to the angler's hand. */
     void StartLanding(class ALakeFish* Fish);
     void UpdateLanding();
-    bool TakeRodFromStand();
+    /** No rod in the hands: take the nearest one from its stand (a take first) or the ground; false if none in reach. */
+    bool TakeNearestRod(bool bBiteOnly);
     FString RetrieveEndMessage;
     /** Server: what the catch line says once the fish is in the hand. */
     FString CatchMessage;

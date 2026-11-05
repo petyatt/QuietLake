@@ -59,6 +59,25 @@ try {
         if ($turn99 -gt 1500) { throw "Fish turns on a client are jerky (p99 turn acceleration $turn99 deg/s2)" }
     }
     Write-Output 'PASS: fish swim smoothly on both clients'
+    # Each client sees the other angler's rod case on his back, the medium rod in his hands and the
+    # light and heavy ones in the first and third compartments (LakeRods.cpp, QUIET_LAKE_CASE_SEEN).
+    $cases = $null
+    for ($i = 0; $i -lt 30; $i++) {
+        $cases = foreach ($number in 1,2) {
+            Select-String -Path (Join-Path $logs "Client$number.log") -Pattern 'QUIET_LAKE_CASE_SEEN .* case=(\d+) rods=(\d+)/(\d+)/(\d+) slots=(-?\d+)/(-?\d+)/(-?\d+)' | Select-Object -Last 1
+        }
+        if (@($cases | Where-Object { $_ }).Count -eq 2) { break }
+        Start-Sleep -Seconds 1
+    }
+    if (@($cases | Where-Object { $_ }).Count -ne 2) { throw 'A client logged no other angler''s rod case; inspect Saved/NetworkTest logs' }
+    foreach ($line in $cases) {
+        Write-Output ('Client sees: ' + ($line.Line -replace '^.*QUIET_LAKE_CASE_SEEN ', ''))
+        $g = $line.Matches[0].Groups
+        if ($g[1].Value -ne '0' -or $g[2].Value -ne '0' -or $g[3].Value -ne '1' -or $g[4].Value -ne '0' -or $g[5].Value -ne '0' -or $g[7].Value -ne '2') {
+            throw 'The other angler''s case and rods did not replicate as expected'
+        }
+    }
+    Write-Output 'PASS: both clients see the other angler''s rod case and rods'
 } finally {
     foreach ($process in $processes) {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }

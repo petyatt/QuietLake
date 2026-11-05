@@ -110,6 +110,170 @@ void ALakeCharacter::RunPreviews()
         GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 14.0f + UE_ARRAY_COUNT(Shots) * 2.5f + 1.0f, false);
         return;
     }
+    // -CasePreview: the rod case on the back, its ghost (B), laid on the ground, the prompt over it, the
+    // lid open with its window, a rod put away and taken out, a rod laid on the ground (R held), then
+    // three rods cast one after another and left fishing on their stands. Frames Saved/Case_*.png,
+    // the state at each step in QUIET_LAKE_CASE lines.
+    if (FParse::Param(FCommandLine::Get(), TEXT("CasePreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        // bUI: with the HUD (the prompt, the window).
+        auto Shot = [this](const TCHAR* Name, bool bUI)
+        {
+            if (const APlayerController* PC = Cast<APlayerController>(GetController())) if (PC->MyHUD) PC->MyHUD->bShowHUD = bUI;
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, bUI, false);
+        };
+        TSharedRef<TWeakObjectPtr<ACameraActor>> Cam = MakeShared<TWeakObjectPtr<ACameraActor>>();
+        // A camera placed relative to the angler: Back cm behind him, Side to his right, Up; looking at a point Ahead of him at Height.
+        auto LookFrom = [this, Cam](float Back, float Side, float Up, float Ahead, float Height, float Fov)
+        {
+            const FVector Fwd = FRotator(0, GetActorRotation().Yaw, 0).Vector(), Right = FRotator(0, GetActorRotation().Yaw + 90, 0).Vector();
+            const FVector Feet = GetActorLocation() - FVector(0, 0, 90);
+            const FVector From = Feet - Fwd * Back + Right * Side + FVector(0, 0, Up);
+            const FVector Target = Feet + Fwd * Ahead + FVector(0, 0, Height);
+            ACameraActor* Camera = Cam->Get();
+            if (!Camera) { Camera = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation()); *Cam = Camera; }
+            Camera->SetActorLocationAndRotation(From, (Target - From).Rotation());
+            Camera->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Camera);
+        };
+        auto Log = [this](const TCHAR* Step)
+        {
+            FString Rods_;
+            for (int32 Rod = 0; Rod < Rods.Num(); ++Rod)
+                Rods_ += FString::Printf(TEXT(" rod%d=%d/slot%d/state%d"), Rod, (int32)Rods[Rod].Place, (int32)Rods[Rod].CaseSlot, (int32)Rods[Rod].State);
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CASE %s case=%d open=%d window=%d hands=%d kind=%d fishing=%d placing=%d valid=%d%s status=%s"), Step, (int32)CasePlace, bCaseOpen,
+                IsCaseWindowOpen(), HasRodInHands(), (int32)RodKind, (int32)FishingState, (int32)Placing, bPlaceValid, *Rods_, *Status);
+        };
+        At(4.0f, [this, LookFrom]
+        {
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Calm;
+                Calm.Cloud = 0.2f; Calm.Fog = 0.05f; Calm.Rain = 0; Calm.Wind = 0.03f; Calm.WindYaw = 40;
+                Weather->SetWeatherNow(Calm);
+                Weather->SetHours(12.0f);
+            }
+            FVector2D Facing;
+            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
+            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            // Facing the bank for the case (it goes on the land behind him once he turns to the water).
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(-12, FMath::RadiansToDegrees(FMath::Atan2(-Facing.Y, -Facing.X)), 0));
+            bThirdPerson = true;
+            FloatDepth = 40;
+            LookFrom(-60, 330, 150, 0, 110, 50);   // from behind his right, the case across the back
+        });
+        At(5.0f, [LookFrom] { LookFrom(260, 140, 170, 0, 110, 45); });
+        At(6.5f, [Log] { Log(TEXT("back")); });
+        At(7.0f, [Shot] { Shot(TEXT("Case_Back.png"), false); });
+        // In the first person the case on the back stays out of the view.
+        At(7.3f, [this]
+        {
+            bThirdPerson = false;
+            FishingCamera->SetActive(true);
+            ThirdPersonCamera->SetActive(false);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) { PC->SetControlRotation(FRotator(-35, GetActorRotation().Yaw + 40, 0)); PC->SetViewTarget(this); }
+        });
+        At(7.7f, [Shot] { Shot(TEXT("Case_FirstPerson.png"), false); });
+        At(7.9f, [this] { bThirdPerson = true; if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(-12, GetActorRotation().Yaw - 40, 0)); });
+        // B: the ghost under the aim (the camera looks down at the ground in front of him).
+        At(8.0f, [this, LookFrom] { CaseKey(); LookFrom(230, -60, 230, 120, 0, 55); });
+        At(9.5f, [Log] { Log(TEXT("ghost")); });
+        At(10.0f, [Shot] { Shot(TEXT("Case_Ghost.png"), true); });
+        At(10.5f, [this] { Fish(); });   // LMB: laid there
+        At(11.5f, [this, LookFrom] { LookFrom(160, -170, 130, 110, 0, 55); });
+        At(12.5f, [Log] { Log(TEXT("ground")); });
+        At(13.0f, [Shot] { Shot(TEXT("Case_Ground.png"), false); });
+        // Looking at it: the prompt; open it.
+        At(13.5f, [this]
+        {
+            // Look at the case from the angler's own eyes (first person, as in play).
+            bThirdPerson = false;
+            FishingCamera->SetActive(true);
+            ThirdPersonCamera->SetActive(false);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                const FVector Eye = FishingCamera->GetComponentLocation();
+                PC->SetControlRotation((FVector(CaseBase) + FVector(0, 0, 5) - Eye).Rotation());
+                PC->SetViewTarget(this);
+            }
+        });
+        At(14.5f, [Shot] { Shot(TEXT("Case_Prompt.png"), true); });
+        At(15.0f, [this] { InteractPressed(); });
+        At(15.7f, [this, Log] { InteractReleased(); Log(TEXT("open")); });
+        At(16.5f, [this, LookFrom]
+        {
+            bThirdPerson = true;
+            LookFrom(100, 0, 100, 0, 0, 50);   // back to a camera of its own
+            // The open lid and the rods inside, close up from the side.
+            const FVector Case = FVector(CaseBase);
+            const FVector Across = FRotator(0, CaseYaw + 90, 0).Vector();
+            const FVector From = Case + Across * 45 + FVector(0, 0, 150);   // above it from the angler's side: the lid opens away from him
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+                if (AActor* View = PC->GetViewTarget()) View->SetActorLocationAndRotation(From, (Case - From).Rotation());
+        });
+        At(17.2f, [Shot] { Shot(TEXT("Case_OpenLid.png"), false); });
+        At(17.8f, [Shot] { Shot(TEXT("Case_Open.png"), true); });
+        // The medium rod into the middle compartment: three in the case, the hands empty.
+        At(18.5f, [this, Log] { ServerMoveRod_Implementation((uint8)ERodKind::Medium, 1); Log(TEXT("stowed")); });
+        At(19.5f, [Shot] { Shot(TEXT("Case_Stowed.png"), true); });
+        // The light one out; the case closed.
+        At(20.5f, [this, Log] { ServerMoveRod_Implementation((uint8)ERodKind::Light, 3); CloseCaseWindow(); Log(TEXT("light out")); });
+        // R held: the rod's ghost on the ground, laid there, and picked up again.
+        At(21.5f, [this, LookFrom] { LookFrom(-60, 520, 260, 170, 0, 65); LayPressed(); });   // from the side: the rod's ghost lies across the view
+        At(23.8f, [this, Log] { Log(TEXT("rod ghost")); });
+        At(24.0f, [Shot] { Shot(TEXT("Case_RodGhost.png"), true); });
+        At(24.3f, [this] { LayReleased(); Fish(); });
+        At(25.5f, [this, Log, LookFrom] { LookFrom(-60, 520, 260, 170, 0, 65); Log(TEXT("rod on the ground")); });
+        At(26.0f, [Shot] { Shot(TEXT("Case_RodGround.png"), false); });
+        At(26.5f, [this, Log] { ServerTakeRod_Implementation((uint8)ERodKind::Light); Log(TEXT("rod picked up")); });
+        // Three casts, each rod onto its own stand; the next one from the case.
+        const float CastAt[] = { 28.0f, 37.0f, 46.0f };
+        const ERodKind Next[] = { ERodKind::Medium, ERodKind::Heavy, ERodKind::Count };
+        const float Turn[] = { -14.0f, 0.0f, 14.0f };
+        for (int32 C = 0; C < 3; ++C)
+        {
+            const float T = CastAt[C];
+            At(T - 0.6f, [this, C, Turn]
+            {
+                FVector2D Facing;
+                LakeMap::StartSpot(&Facing);
+                if (APlayerController* PC = Cast<APlayerController>(GetController()))
+                    PC->SetControlRotation(FRotator(-12, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)) + Turn[C], 0));
+                SwingPitch = 0;
+            });
+            for (int32 I = 0; I <= 100; ++I)
+                At(T + I * 0.025f, [this, I]
+                {
+                    const float U = I * 0.025f;
+                    const float Target = U < 0.3f ? 0.0f : U < 0.65f ? 35 * FMath::SmoothStep(0.3f, 0.65f, U) : U < 1.0f ? 35.0f : FMath::Lerp(35.0f, -30.0f, FMath::SmoothStep(1.0f, 1.6f, U));
+                    const float ViewOffset = FMath::FindDeltaAngleDegrees(-12.0f, GetControlRotation().Pitch);
+                    MoveRodAxis(Target - SwingPitch - ViewOffset, true);
+                });
+            At(T, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+            At(T + 0.4f, [this] { ServerRelease_Implementation(); });
+            At(T + 5.0f, [this, Log] { Log(TEXT("cast")); ServerToggleRod_Implementation(); Log(TEXT("on its stand")); });
+            if (Next[C] != ERodKind::Count)
+                At(T + 6.0f, [this, Next, C, Log]
+                {
+                    ServerCaseAction_Implementation(0);
+                    ServerMoveRod_Implementation((uint8)Next[C], 3);
+                    ServerCaseAction_Implementation(1);
+                    Log(TEXT("next rod"));
+                });
+        }
+        At(52.5f, [LookFrom] { LookFrom(380, 260, 330, 300, 0, 65); });
+        At(54.0f, [Log] { Log(TEXT("three stands")); });
+        At(54.5f, [Shot] { Shot(TEXT("Case_ThreeStands.png"), true); });
+        // The case back on the back.
+        At(55.0f, [this, Log] { ServerCaseAction_Implementation(2); Log(TEXT("worn")); });
+        At(56.5f, [] { FPlatformMisc::RequestExit(false); });
+        return;
+    }
     // -LakePreview: after the environment shots, film the angler: idle, bait close-up,
     // backswing, the cast, the float on the water and the rod on its stand.
     if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) && GetNetMode() == NM_Standalone)
@@ -698,7 +862,7 @@ void ALakeCharacter::RunPreviews()
                 });
             At(Try.At - 0.5f, [this, Try]
             {
-                RodKind = Try.Rod;
+                UseRod(Try.Rod);
                 if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(Try.Pitch, GetActorRotation().Yaw, 0));
             });
             At(Try.At, [this] { NextActionTime = 0; ServerFish_Implementation(); });
@@ -760,7 +924,7 @@ void ALakeCharacter::RunPreviews()
             SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
             if (APlayerController* PC = Cast<APlayerController>(GetController()))
                 PC->SetControlRotation(FRotator(-12, FMath::RadiansToDegrees(FMath::Atan2(-Deepest->Outward.Y, -Deepest->Outward.X)), 0));
-            RodKind = ERodKind::Medium;
+            UseRod(ERodKind::Medium);
             FloatDepth = FMath::Clamp(FMath::RoundToFloat(Most - 40), 100.0f, 300.0f);
             UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DEEP spot %s, %.0f cm of water 7 m out, depth set %.0f cm"), Deepest->Name, Most, FloatDepth);
         });
@@ -1002,7 +1166,7 @@ void ALakeCharacter::RunPreviews()
         const FTry Tries[] = { { 6.0f, ERodKind::Light, TEXT("light") }, { 14.0f, ERodKind::Medium, TEXT("medium") }, { 22.0f, ERodKind::Heavy, TEXT("heavy") } };
         for (const FTry& Try : Tries)
         {
-            At(Try.At - 1.0f, [this, Try] { RodKind = Try.Rod; });
+            At(Try.At - 1.0f, [this, Try] { UseRod(Try.Rod); });
             At(Try.At, [this] { NextActionTime = 0; ServerFish_Implementation(); });
             At(Try.At + 0.8f, [this] { ServerRelease_Implementation(); });
             At(Try.At + 5.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
@@ -1015,7 +1179,7 @@ void ALakeCharacter::RunPreviews()
         At(14.75f, [Shot] { Shot(TEXT("Rod_Draw.png")); });
         At(15.05f, [Shot] { Shot(TEXT("Rod_Whip.png")); });
         // A perch struck and played on the medium rod.
-        At(29.0f, [this] { RodKind = ERodKind::Medium; });
+        At(29.0f, [this] { UseRod(ERodKind::Medium); });
         At(30.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
         At(30.8f, [this] { ServerRelease_Implementation(); });
         At(33.0f, [this]
@@ -1224,7 +1388,7 @@ void ALakeCharacter::RunPreviews()
                 PC->SetControlRotation(FRotator(-12, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
                 if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
             }
-            RodKind = ERodKind::Medium;
+            UseRod(ERodKind::Medium);
             FloatDepth = HookDepth = Depth;
             const FTransform& T = GetActorTransform();
             const FVector Arm = T.InverseTransformPosition(GetMesh()->GetBoneLocation(TEXT("upperarm_l")));

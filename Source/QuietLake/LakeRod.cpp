@@ -225,6 +225,10 @@ void ALakeRod::PrepareBlank(const FTransform& Hold)
     }
     else HoldFrom = HoldTo;
     HoldTo = Hold;
+    // Lying on the ground the blank rests on it (or on the water's surface beyond the bank).
+    BlankFloor.Reset();
+    if (bLyingDown)
+        for (int32 I = 0; I <= N; ++I) BlankFloor.Add(WaterOrGround(Start + Axis * Seg * I) + BlankRadius(float(I) / N) * FMath::Sqrt(Heft));
 }
 
 void ALakeRod::StepBlank(float H, float S)
@@ -272,6 +276,8 @@ void ALakeRod::StepBlank(float H, float S)
             Rope(Anchor, 0, Points[N], BlankW[N], TipReach);
         }
     }
+    if (BlankFloor.Num() == N + 1)
+        for (int32 I = 2; I <= N; ++I) Points[I].Z = FMath::Max(Points[I].Z, BlankFloor[I]);
 }
 
 void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
@@ -688,6 +694,7 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
         }
     }
     Heft = FMath::Max(0.5f, In.RodHeft);
+    bLyingDown = In.bOnGround;
     PrepareBlank(In.Hold);
     // First frame or a teleport: hang the rig straight down from the tip.
     const bool bReset = !bInitialised || FVector::Dist(Tip(), LastTip) > 300;

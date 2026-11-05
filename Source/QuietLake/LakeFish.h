@@ -781,6 +781,7 @@ private:
     float Stamina = 1, MaxStamina = 1, BurstTime = 0, Phase = 0;
     int32 NibblesLeft = 0;
     TWeakObjectPtr<ALakeCharacter> TargetAngler;
+    int32 TargetRig = -1;             // which of the angler's rods (ERodKind); -1: the one in his hands
     TMap<TWeakObjectPtr<ALakeCharacter>, float> IgnoreBaitUntil;
     FVector PendingLineForce = FVector::ZeroVector;
     float SimTime = 0;
@@ -818,6 +819,7 @@ private:
     float BiteStepEnd = 0;
     int32 BaitVisits = 0;             // times it came to this angler's bait in a row
     TWeakObjectPtr<ALakeCharacter> ReturnTo;   // let go of this bait meaning to come back to it
+    int32 ReturnRig = -1;
     // Fear of predators.
     float Fear = 0, NextThreatLook = 0;
     TWeakObjectPtr<ALakeFish> Threat;
@@ -872,6 +874,8 @@ private:
     friend class FLakeFightProfilesTest;
     friend class FLakeContactPhysicsTest;
     friend class FLakeFishingTest;   // the strike scenarios put a fish on the bait directly
+    friend class FLakeRodCaseTest;
+    friend class FLakeThreeRodsTest;
     friend class ALakeCharacter; // live rig preview seeds approach only
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */

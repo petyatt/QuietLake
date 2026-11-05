@@ -1698,7 +1698,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     ALakeCharacter* Angler = TargetAngler.Get();
     // The bait was pulled out of the water, or another fish got there first.
-    if ((State == EState::Investigate || State == EState::Nibble) && (!Angler || !Angler->HasBaitInWater()))
+    if ((State == EState::Investigate || State == EState::Nibble) && (!Angler || !Angler->HasBaitInWater(TargetRig)))
     {
         State = EState::Roam;
         TargetAngler = nullptr;
@@ -1715,16 +1715,18 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
         NextThink = SimTime + Random.FRandRange(0.6f, 1.4f);
         // A feeding fish is quick to find bait, a resting one rarely bothers.
         const float Mind = Goal == EFishGoal::Feed ? 1.4f : Goal == EFishGoal::Rest ? 0.3f : 0.85f;
+        // Every rig in the water: an angler may have up to three rods out on their stands.
         for (TActorIterator<ALakeCharacter> It(GetWorld()); It; ++It)
+        for (int32 Rig = 0; Rig < ALakeCharacter::NumRods; ++Rig)
         {
             ALakeCharacter* Candidate = *It;
-            if (!Candidate->HasBaitInWater()) continue;
+            if (!Candidate->HasBaitInWater(Rig)) continue;
             const float* Until = IgnoreBaitUntil.Find(Candidate);
             if (Until && *Until > SimTime) continue;
-            const FVector Bait = Candidate->BaitLocation();
+            const FVector Bait = Candidate->BaitLocation(Rig);
             const float Dist = FVector::Dist(Bait, GetActorLocation());
             // Back for another try at a bait it let go of a moment ago.
-            const bool bBack = ReturnTo.Get() == Candidate && Until && SimTime < *Until + 30 && Dist < S.SenseRadius * 1.5f;
+            const bool bBack = ReturnTo.Get() == Candidate && ReturnRig == Rig && Until && SimTime < *Until + 30 && Dist < S.SenseRadius * 1.5f;
             if (!bBack && Dist > S.SenseRadius) continue;
             // Feeding, it finds a bait in the layer it feeds in, likes one that goes with its food and
             // is choosy amid plenty (a big hatch).
@@ -1733,7 +1735,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
             const bool bOnGroundbait = Goal == EFishGoal::Feed && FeedOn == EFishFood::Groundbait;
             const bool bOnFood = Goal == EFishGoal::Feed && (LakeFood::IsNatural(FeedOn) || bOnGroundbait);
             const float FeedColumn = bOnFood ? Depth01(RoamTarget.Z, RoamTarget.X, RoamTarget.Y) : -1.0f;
-            float Match = LakeFood::BaitMatch(FeedOn, Candidate->Bait), Plenty = 0;
+            float Match = LakeFood::BaitMatch(FeedOn, Candidate->BaitOf(Rig)), Plenty = 0;
             if (const ALakeLife* FoodLife = ALakeLife::Get(GetWorld()); bOnFood && FoodLife && FoodLife->Food().IsReady())
             {
                 const FLakeFoodField& Field = FoodLife->Food();
@@ -1742,17 +1744,17 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
                     float Smell = 0;
                     if (const int32 G = Field.SmellGroundbait(FVector2D(GetActorLocation()), Smell); G >= 0)
                     {
-                        Match = LakeFood::GroundbaitMix(Field.Groundbait()[G]) == Candidate->Bait ? 1.15f : 0.95f;
+                        Match = LakeFood::GroundbaitMix(Field.Groundbait()[G]) == Candidate->BaitOf(Rig) ? 1.15f : 0.95f;
                         Plenty = 1 - FMath::Exp(-Field.Groundbait()[G].Balls / 2);
                     }
                 }
                 else if (bSeen) Plenty = FMath::Clamp(Field.Available(FeedOn, FVector2D(GetActorLocation()), Seen), 0.0f, 1.0f);
             }
-            float Interest = LakeFish::BaitInterest(Species, Candidate->Bait, Depth01(Bait.Z, Bait.X, Bait.Y), FeedColumn) * Match
+            float Interest = LakeFish::BaitInterest(Species, Candidate->BaitOf(Rig), Depth01(Bait.Z, Bait.X, Bait.Y), FeedColumn) * Match
                 * Hunger * Activity * Mind * FMath::Sqrt(FMath::Max(0.0f, 1 - Dist / S.SenseRadius)) * (1 - Fear);
             if (bOnFood) Interest *= 1.15f - 0.35f * Plenty;
             // What it has learnt: the hook, the bait that pricked it, a much-fished spot.
-            Interest *= Willingness(Candidate->Bait);
+            Interest *= Willingness(Candidate->BaitOf(Rig));
             if (const ALakeLife* PressureLife = ALakeLife::Get(GetWorld()))
                 Interest *= 1 - FMath::Min(0.6f, 0.15f * S.Learning.Fright * PressureLife->PressureAt(Bait));
             if (bBack || Random.FRand() < Interest * 0.7f)
@@ -1760,6 +1762,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
                 State = EState::Investigate;
                 StateTime = 0;
                 TargetAngler = Candidate;
+                TargetRig = Rig;
                 ReturnTo = nullptr;
                 return;
             }
@@ -1775,12 +1778,12 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
             State = EState::Roam;
             return;
         }
-        if (FVector::Dist(MouthLocation(), Angler->BaitLocation()) < ContactRadius() && Angler->ClaimBait(this))
+        if (FVector::Dist(MouthLocation(), Angler->BaitLocation(TargetRig)) < ContactRadius() && Angler->ClaimBait(this))
         {
             State = EState::Nibble;
             StateTime = 0;
             // The bite starts; the fish decides each step as it goes (LakeFish::NextBiteStep).
-            const FVector BaitAt = Angler->BaitLocation();
+            const FVector BaitAt = Angler->BaitLocation(TargetRig);
             BiteState = FBiteState();
             BiteNow = FBiteStep();
             BiteStepEnd = SimTime + Random.FRandRange(0.3f, 1.0f);
@@ -1793,7 +1796,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
     }
     if ((State == EState::Nibble || State == EState::Holding) && Angler && SimTime >= BiteStepEnd) NextBiteStep(Angler);
     // Jerked under its nose while it only tries the bait, or a predator close by: it backs off at once.
-    else if (State == EState::Nibble && Angler && (Angler->RigDisturbance() > 0.8f || Fear > 0.6f))
+    else if (State == EState::Nibble && Angler && (Angler->RigDisturbance(TargetRig) > 0.8f || Fear > 0.6f))
     {
         BiteState.Felt += 1;
         Angler->OnBiteMotion(this, FBiteStep());
@@ -1803,8 +1806,8 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
 
 float ALakeFish::BaitLike(const ALakeCharacter* Angler) const
 {
-    const FVector Bait = Angler->BaitLocation();
-    return FMath::Clamp(LakeFish::BaitInterest(Species, Angler->Bait, Depth01(Bait.Z, Bait.X, Bait.Y)), 0.0f, 1.0f);
+    const FVector Bait = Angler->BaitLocation(TargetRig);
+    return FMath::Clamp(LakeFish::BaitInterest(Species, Angler->BaitOf(TargetRig), Depth01(Bait.Z, Bait.X, Bait.Y)), 0.0f, 1.0f);
 }
 
 void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
@@ -1821,14 +1824,14 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
     // Wary in bright sun on a glassy lake; it feels the rig move and the float pull.
     FFishConditions Conditions;
     const bool bBright = GetConditions(Conditions) && LakeFish::IsBrightCalm(Conditions);
-    const FVector BaitAt = Angler->BaitLocation();
+    const FVector BaitAt = Angler->BaitLocation(TargetRig);
     const bool bOnBottom = BaitAt.Z <= BottomZ(BaitAt.X, BaitAt.Y) + 8;
     // A fish that has learnt the hook tests longer, takes less readily and feels more.
-    const float Shy = BaitShy[FMath::Clamp((int32)Angler->Bait, 0, 2)];
+    const float Shy = BaitShy[FMath::Clamp((int32)Angler->BaitOf(TargetRig), 0, 2)];
     const FBiteState Before = BiteState;
     const FBiteStep Step = LakeFish::NextBiteStep(Species, BiteState, Size01, Activity, bOnBottom, bBright || Caution > 0.4f, BaitLike(Angler) * (1 - 0.7f * Shy),
-        Angler->RigDisturbance() + 0.3f * Caution, Random);
-    if (Step.bTake && State == EState::Nibble && FVector::Dist(MouthLocation(), Angler->BaitLocation()) > ContactRadius())
+        Angler->RigDisturbance(TargetRig) + 0.3f * Caution, Random);
+    if (Step.bTake && State == EState::Nibble && FVector::Dist(MouthLocation(), Angler->BaitLocation(TargetRig)) > ContactRadius())
     {
         BiteState = Before; BiteStepEnd = SimTime + 0.1f;
         return; // Finish approaching; taking cannot pull a distant hook into the mouth.
@@ -1926,7 +1929,7 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     {
         Life->Alarm(this, 600);
         const FFishLearning& L = LakeFish::Info(Species).Learning;
-        const int32 With = Angler ? (int32)Angler->Bait : -1;
+        const int32 With = Angler ? (int32)Angler->BaitOf(TargetRig) : -1;
         Life->ForEachFishNear(GetActorLocation(), 600, [&](ALakeFish* Mate)
         {
             if (Mate == this || School < 0 || Mate->School != School) return;
@@ -1949,16 +1952,17 @@ void ALakeFish::DropBait()
         // Still hungry and liking the bait, it comes back for another try a few seconds later (a
         // crucian again and again, a pike seldom); one that felt the tackle, or has tried a few
         // times already, leaves it alone for a minute.
-        BaitAt = Angler->BaitLocation();
+        BaitAt = Angler->BaitLocation(TargetRig);
         ++BaitVisits;
         const FFishBiteStyle& Style = LakeFish::Info(Species).Bite;
         const float Again = Hunger * (0.35f + 0.65f * BaitLike(Angler)) * FMath::Clamp(Activity, 0.2f, 1.0f) * Style.Comeback
             * (1 - FMath::Clamp(BiteState.Felt * 0.6f, 0.0f, 0.9f)) * (1 - Caution);
-        if (BiteState.Felt > 0.5f) Frighten(0.15f * Style.Comeback * LakeFish::Info(Species).Learning.Fright, (int32)Angler->Bait);
+        if (BiteState.Felt > 0.5f) Frighten(0.15f * Style.Comeback * LakeFish::Info(Species).Learning.Fright, (int32)Angler->BaitOf(TargetRig));
         bBack = BaitVisits < Style.MaxVisits && Random.FRand() < Again;
         const float Delay = bBack ? Random.FRandRange(Style.ReturnMin, FMath::Max(Style.ReturnMin, Style.ReturnMax)) : 60.0f;
         IgnoreBaitUntil.Add(Angler, SimTime + Delay);
         ReturnTo = bBack ? Angler : nullptr;
+        ReturnRig = TargetRig;
         if (!bBack) BaitVisits = 0;
         Angler->ReleaseBaitClaim(this);
     }
@@ -2057,7 +2061,7 @@ void ALakeFish::Release(float SpookSeconds)
     {
         const bool bHooked = State == EState::Hooked;
         const float Fright = LakeFish::Info(Species).Learning.Fright;
-        Frighten(Fright * (bHooked ? 1.0f : 0.6f), TargetAngler.IsValid() ? (int32)TargetAngler->Bait : -1);
+        Frighten(Fright * (bHooked ? 1.0f : 0.6f), TargetAngler.IsValid() ? (int32)TargetAngler->BaitOf(TargetRig) : -1);
         if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->AddPressure(GetActorLocation(), bHooked ? 0.6f : 0.2f);
     }
     State = EState::Roam;
@@ -2075,7 +2079,7 @@ void ALakeFish::Move(FVector Desired, float MaxSpeed, float DeltaSeconds)
     if (bPrecise && (State == EState::Investigate || State == EState::Nibble) && TargetAngler.IsValid())
     {
         // Close to food, fins can brake and move backwards; a tail-only orbit cannot dock a mouth.
-        const FVector Bait = TargetAngler->BaitLocation();
+        const FVector Bait = TargetAngler->BaitLocation(TargetRig);
         const FVector P = GetActorLocation();
         const FVector Look = Bait - P - GetActorQuat().RotateVector(FVector(0, 0, MouthOffset().Z));
         FRotator Want = Look.Rotation(); Want.Pitch = FMath::Clamp(Want.Pitch, -50.0, 50.0); Want.Roll = 0;
@@ -2452,7 +2456,7 @@ void ALakeFish::Simulate(float DeltaSeconds)
     case EState::Investigate:
     {
         // Approach slowly, ending with the mouth at the bait.
-        const FVector To = Angler->BaitLocation() - MouthLocation();
+        const FVector To = Angler->BaitLocation(TargetRig) - MouthLocation();
         Desired = To.GetSafeNormal() * FMath::Min(S.CruiseSpeed * 0.8f, To.Size() * 0.8f + 4);
         bPrecise = To.Size() < 80;
         // Pike close the last metre in one strike.
@@ -2462,7 +2466,7 @@ void ALakeFish::Simulate(float DeltaSeconds)
     case EState::Nibble:
     {
         // Hover with the mouth at the bait, tiny pecks forward.
-        const FVector To = Angler->BaitLocation() - MouthLocation();
+        const FVector To = Angler->BaitLocation(TargetRig) - MouthLocation();
         Desired = To * 1.5f + GetActorForwardVector() * 6 * FMath::Sin(SimTime * 9);
         FaceDir = To;
         MaxSpeed = 20;

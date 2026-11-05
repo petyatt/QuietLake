@@ -1,4 +1,5 @@
 #include "LakeMenu.h"
+#include "LakeGame.h"
 #include "LakeMap.h"
 #include "AudioDevice.h"
 #include "Blueprint/WidgetTree.h"
@@ -141,10 +142,14 @@ TSharedRef<SWidget> ULakeMenuWidget::RebuildWidget()
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ПКМ"), TEXT("подсечка, когда поплавок ушёл под воду, лёг или поехал")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ с рыбой"), TEXT("держать — поднимать удилище и тянуть рыбу, отпускать на рывках")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("G"), TEXT("бросить шар прикормки к поплавку (или куда смотрите, до 12 м); в шар добавляется то, что на крючке; рыба подходит на запах через минуту-другую")),
-                 TPair<const TCHAR*, const TCHAR*>(TEXT("R"), TEXT("поставить удочку на рогатку / взять")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("R"), TEXT("поставить удочку на рогатку / взять; рогаток до трёх, снасть на рогатке ловит сама; поклёвка — подбегите и ПКМ")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("R — держать 2 с"), TEXT("положить удочку на землю: синий контур, ЛКМ — положить, ПКМ — отмена")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("B"), TEXT("снять чехол со спины: синий контур, ЛКМ — положить, ПКМ — отмена")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("F — держать"), TEXT("навести на чехол: «Открыть» или «Надеть на спину» (колесо — выбрать); на удочку на земле — взять")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("Окно чехла"), TEXT("перетаскивать удочки мышью между тремя ячейками и рукой; F или Esc — закрыть")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("V"), TEXT("вид от первого лица / со стороны")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("1 / 2 / 3"), TEXT("наживка: червь, опарыш, хлеб")),
-                 TPair<const TCHAR*, const TCHAR*>(TEXT("+ / −"), TEXT("глубина наживки (или колесо мыши): 10–500 см, шаг 1 см, только до заброса")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("+ / −"), TEXT("глубина наживки (или колесо мыши, если не наведено на чехол): 10–500 см, шаг 1 см, только до заброса")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("WASD"), TEXT("ходьба, в том числе с заброшенной удочкой")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("F3"), TEXT("«Live Fish»: чем заняты рыбы, последние всплески и круги")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("Esc"), TEXT("меню")) })
@@ -292,7 +297,7 @@ void ALakePlayerController::BeginPlay()
     // Automated preview runs go straight into the game.
     FString ScenePreview;
     if (FParse::Value(FCommandLine::Get(), TEXT("ScenePreview="), ScenePreview)) { bStarted = true; return; }
-    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("NightPreview")) || FParse::Param(FCommandLine::Get(), TEXT("MapPreview")) || FParse::Param(FCommandLine::Get(), TEXT("FisherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("FishPreview")) || FParse::Param(FCommandLine::Get(), TEXT("WaterPreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CastPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LinePreview")) || FParse::Param(FCommandLine::Get(), TEXT("RodPreview")) || FParse::Param(FCommandLine::Get(), TEXT("HandsPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LeaderPreview")) || FParse::Param(FCommandLine::Get(), TEXT("RetrievePreview")) || FParse::Param(FCommandLine::Get(), TEXT("GroundbaitPreview")) || FParse::Param(FCommandLine::Get(), TEXT("FightPreview")) || FParse::Param(FCommandLine::Get(), TEXT("MouthPreview"))) { bStarted = true; return; }
+    if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("NightPreview")) || FParse::Param(FCommandLine::Get(), TEXT("MapPreview")) || FParse::Param(FCommandLine::Get(), TEXT("FisherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("FishPreview")) || FParse::Param(FCommandLine::Get(), TEXT("WaterPreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CastPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LinePreview")) || FParse::Param(FCommandLine::Get(), TEXT("RodPreview")) || FParse::Param(FCommandLine::Get(), TEXT("HandsPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LeaderPreview")) || FParse::Param(FCommandLine::Get(), TEXT("RetrievePreview")) || FParse::Param(FCommandLine::Get(), TEXT("GroundbaitPreview")) || FParse::Param(FCommandLine::Get(), TEXT("FightPreview")) || FParse::Param(FCommandLine::Get(), TEXT("MouthPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CasePreview"))) { bStarted = true; return; }
     // A slow flight around the lake behind the menu.
     MenuCamera = GetWorld()->SpawnActor<ACameraActor>();
     if (MenuCamera) MenuCamera->GetCameraComponent()->SetFieldOfView(60);
@@ -326,6 +331,13 @@ void ALakePlayerController::SetupInputComponent()
 
 void ALakePlayerController::ToggleMenu()
 {
+    // Esc first closes the case window, or drops the ghost of what was being laid down.
+    if (!bMenuOpen)
+        if (ALakeCharacter* Fisher = Cast<ALakeCharacter>(GetPawn()))
+        {
+            if (Fisher->IsCaseWindowOpen()) { Fisher->CloseCaseWindow(); return; }
+            if (Fisher->Placing != ALakeCharacter::EPlacing::None) { Fisher->Placing = ALakeCharacter::EPlacing::None; return; }
+        }
     if (bMenuOpen) { if (bStarted) CloseMenu(); }
     else OpenMenu();
 }

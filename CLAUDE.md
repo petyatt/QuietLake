@@ -35,7 +35,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth);
+Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
@@ -73,6 +73,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-WeatherPreview` | погода и время суток | `LakeWeather.cpp` |
 | `-NightPreview` | сразу ночь: три кадра — берег, в сторону луны, густой туман; по 10–12 с на кадр (~50 с всего) | `LakeWeather.cpp` |
 | `-MapPreview` | миникарта и большая карта озера (M): `Saved/Map_Minimap.png`, `Saved/Map_Full.png` | `LakeHUD.cpp` |
+| `-CasePreview` | чехол для удочек: за спиной и от первого лица, призрак после B, на земле, подсказка «Открыть / Надеть», открытая крышка и окно, все удочки в чехле, контур удочки при удержании R и удочка на земле, три снасти на рогатках; лог `QUIET_LAKE_CASE` | `LakePreviews.cpp` |
 | `-FisherPreview` | рыбак-MetaHuman в одежде: вид спереди, сбоку, сзади и лицо крупно (`Saved/Fisher_Front/Side/Back/Face.png`) | `LakePreviews.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
 
@@ -90,6 +91,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   рисуются для самого рыбака (`SetOwnerNoSee`), на выделенном сервере не создаются; проверка — `-FisherPreview`;
   поза удилища), `ALakeEnvironment` (объявление), `ALakeGameMode`.
 - `LakePreviews.cpp` — сценарии `-LakePreview`, `-BitePreview`, `-LandPreview`.
+- `LakeRods.cpp` — три удочки рыбака (`ALakeCharacter::Rods`: чехол, руки, рогатка, земля; снасть удочки на рогатке ловит сама, рыба выбирает снасть по `ALakeFish::TargetRig`) и чехол (на спине / на земле, открыт): серверные запросы и локальный интерфейс владельца — призрак (B, R 2 с), подсказка над чехлом (колесо, F), окно чехла. Вид чехла и призрака — `LakeRodCase.h/.cpp` (`ALakeRodCase`, `ALakeGhost`); окно и подсказки рисует `LakeHUD.cpp`. Модели — `GenerateTackleModels.py`/`ImportTackle.py` с `QUIETLAKE_TACKLE=RodCase,RodCaseLid,RodCaseStrap,RodPacked_Light,RodPacked_Medium,RodPacked_Heavy`.
 - `LakeHUD.h/.cpp` — экран: карточка статуса, полосы натяжения и заброса, погода, панель F3.
 - `LakeRod.h/.cpp` — удочка только для вида (`ALakeRod`): физическое удилище (цепочка с упругостью),
   физическая основная леска (ветер, вода), физический поплавок, дробь, крючок, рыба на леске. Считается на каждой машине из реплицируемого состояния рыбака
