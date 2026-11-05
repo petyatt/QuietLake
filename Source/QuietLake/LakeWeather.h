@@ -68,6 +68,33 @@ public:
     float StableHours() const;
     /** Previews: the weather now has been steady for GameHours already (the water has had time to layer). */
     void SetSteadyFor(float GameHours) { BlendStart = ServerNow() - BlendSeconds - GameHours / GameHoursPerSecond(); ForceNetUpdate(); }
+    /** The sky's clouds at a server time, the same on every machine (worked out from replicated
+     *  numbers only): how far they have sailed with the wind and reshaped, and where the front of
+     *  the coming weather is. Ahead of the front (downwind) the sky is the old weather, behind it
+     *  the new one; it leaves the upwind horizon when the change is set and passes over the lake
+     *  in the middle of the blend. */
+    struct FCloudSky
+    {
+        FVector2D Drift = FVector2D::ZeroVector;   // km
+        float Phase = 0;
+        FVector2D FrontDir = FVector2D(1, 0);       // the way the front moves (downwind of the new weather)
+        float FrontKm = 1e4f;                       // front line from the lake along FrontDir (negative: still coming)
+        float FrontWidthKm = 10;                    // half the width of the change across it
+    };
+    FCloudSky CloudSkyAt(float ServerSeconds) const;
+    /** How far away the front starts: beyond the horizon of the cloud layer. */
+    static constexpr float FrontStartKm = 45.0f;
+    /** How much of a thunderstorm the weather is now, 0..1: lightning comes only above 0. */
+    float StormAmount() const;
+    /** A lightning strike: when, how far from the lake and from which way, its own random seed. */
+    struct FStrike { float Time = -1; float DistanceKm = 5; float Yaw = 0; int32 Seed = 0; };
+    /** The latest strike at most a second before ServerSeconds, if any. Worked out from the server
+     *  time and the replicated weather alone, so every machine sees the same flashes. */
+    bool StrikeAt(float ServerSeconds, FStrike& Out) const;
+    /** Brightness of the flash at a moment (0 dark .. ~1 a close strike at its peak). */
+    float FlashAt(float ServerSeconds) const;
+    /** Strikes per second at full storm. */
+    static constexpr float StrikeRate = 0.08f;
     /** Everything the fish react to, for LakeFish::Activity. */
     FFishConditions FishConditions() const;
 
@@ -82,6 +109,11 @@ private:
     float ServerNow() const;
     void PickNextWeather();
     void ApplyToWorld(float DeltaSeconds);
+    /** Before the weather is changed: remember where the clouds are now, so their drift goes on
+     *  smoothly from here under the new wind. */
+    void MarkChange();
+    /** Cloud drift (km x, y) and reshaping phase (z) at a server time. */
+    FVector SkyAt(float ServerSeconds) const;
 
     UPROPERTY(Replicated) float ClockOriginServer = 0;
     UPROPERTY(Replicated) float ClockOriginHours = 5.5f;
@@ -92,6 +124,9 @@ private:
     UPROPERTY(Replicated) float WaterTemp = 20.5f;
     UPROPERTY(Replicated) float Pressure = 758.0f;
     UPROPERTY(Replicated) float Trend = 0.0f;
+    /** When the last change was set (the front leaves the horizon) and the sky drift then. */
+    UPROPERTY(Replicated) float ChangeAt = 0;
+    UPROPERTY(Replicated) FVector SkyAtChange = FVector::ZeroVector;
     float GameHoursPerSecond() const { return 24.0f / (DayMinutes * 60.0f); }
     float NextChange = 0;
     FRandomStream Random;
@@ -114,6 +149,20 @@ private:
     UPROPERTY() TObjectPtr<class UExponentialHeightFogComponent> Fog;
     UPROPERTY() TObjectPtr<class UVolumetricCloudComponent> Clouds;
     UPROPERTY() TObjectPtr<class UMaterialInstanceDynamic> CloudMaterial;
+    float PreviewFrameSeconds = 0;           // previews: frame time before each shot
+    int32 PreviewFrames = 0;
+    bool bMeasureFrames = false;
+    bool bOwnClouds = false;                 // M_LakeClouds (else the engine's sample clouds)
+    int32 LastSyncLog = -1;                  // QUIET_LAKE_CLOUD_SYNC: last logged half minute
+    float LastCloudShadow = -1;
+    // Lightning: a directional light that only shows during a flash (the clouds are lit by
+    // atmosphere lights only), and the thunder each strike sends after it.
+    UPROPERTY() TObjectPtr<class UDirectionalLightComponent> Lightning;
+    UPROPERTY() TArray<TObjectPtr<class USoundWave>> ThunderSounds;
+    struct FThunder { float At; float Volume; float Pitch; int32 Kind; };
+    TArray<FThunder> PendingThunder;
+    float LastStrikeTime = -1;
+    float PreviewStrikeAt = -1;              // previews: a close strike at this server time
     UPROPERTY() TObjectPtr<class UMaterialParameterCollection> WeatherParameters;
     UPROPERTY() TObjectPtr<class UHierarchicalInstancedStaticMeshComponent> RainTiles;
     UPROPERTY() TObjectPtr<class UAudioComponent> RainLightSound;
