@@ -27,8 +27,15 @@ namespace LakeMap
 
     /** Signed distance to the nearest waterline: positive in the water. */
     QUIETLAKE_API float ShoreDistance(float X, float Y);
-    /** Terrain or lake bed height. */
+    /** Terrain or lake bed height: the lake level's landscape as baked by Tools/BuildLakeLevel.py
+     *  (Content/Maps/LakeGround.bin, the bowl the Water lake carved), else the designed ground. */
     QUIETLAKE_API float Ground(float X, float Y);
+    /** The designed ground (land and the old hand-made bed), from which the landscape is built. */
+    QUIETLAKE_API float DesignGround(float X, float Y);
+    /** Whether Ground comes from the baked landscape. */
+    QUIETLAKE_API bool HasBakedGround();
+    /** Where the baked ground lives (relative to the project's Content folder). */
+    inline const TCHAR* BakedGroundFile = TEXT("Maps/LakeGround.bin");
     QUIETLAKE_API bool IsWater(float X, float Y);
     /** Water depth in cm (0 on land). */
     QUIETLAKE_API float Depth(float X, float Y);

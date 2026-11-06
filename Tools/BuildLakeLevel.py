@@ -8,11 +8,14 @@ the GPU, which the commandlet does not have), save it and quit:
 1. a new blank level (an existing /Game/Maps/Lake is replaced);
 2. landscape layer infos LI_Meadow / LI_Forest / LI_Clay and the landscape from LakeMap with
    M_LakeLandscape (Tools/CreateTerrainMaterial.py builds it);
-3. the engine Water lake along the waterline, carving its bowl, and a Water river per stream
+3. the engine Water lake along the waterline, carving its bowl, a Water river per stream and Water
+   islands under the water that raise the old weedy flats back to ~1 m
    (ULakeLevelLibrary, Source/QuietLake/LakeLevel.cpp); the Water editor adds the brush manager and
    the water zone by itself;
 4. a few seconds of editor frames for the brushes to render into the landscape, then save.
-Settings (environment): QUIETLAKE_LAKE_DEPTH (cm, default 600), QUIETLAKE_LAKE_RAMP (cm, default 4000).
+5. the carved heights baked to Content/Maps/LakeGround.bin for LakeMap::Ground (fish, tackle, tests).
+Settings (environment): QUIETLAKE_LAKE_DEPTH (cm, default 600), QUIETLAKE_LAKE_RAMP (cm, default 6000);
+the bed's profile across the ramp is the curve /Game/Maps/LakeBedProfile (ULakeLevelLibrary::CreateBedProfile).
 """
 import os
 
@@ -21,7 +24,7 @@ import unreal
 MAP = '/Game/Maps/Lake'
 LAYERS = '/Game/Maps/LakeLayers'
 DEPTH = float(os.environ.get('QUIETLAKE_LAKE_DEPTH', '600'))
-RAMP = float(os.environ.get('QUIETLAKE_LAKE_RAMP', '4000'))
+RAMP = float(os.environ.get('QUIETLAKE_LAKE_RAMP', '6000'))
 lib = unreal.LakeLevelLibrary
 state = {'step': 0, 'frames': 0, 'handle': None, 'busy': False}
 
@@ -66,8 +69,11 @@ def tick(delta):
             lib.build_landscape(material, infos)
             state.update(step=2, frames=0)
         elif step == 2 and frames > 30:
-            lib.spawn_lake(DEPTH, RAMP, 600)
+            profile = lib.create_bed_profile('/Game/Maps', 'LakeBedProfile')
+            unreal.EditorAssetLibrary.save_loaded_asset(profile)
+            lib.spawn_lake(DEPTH, RAMP, 600, profile)
             lib.spawn_streams(60)
+            lib.spawn_shallows(140, 500, 400, 100, 12)
             state.update(step=3, frames=0)
         elif step == 3 and frames in (120, 300, 480):
             # Ask the water brush manager to render the brushes again, then merge and measure.
@@ -77,6 +83,7 @@ def tick(delta):
             log('bowl depth at the centre: %.0f cm' % lib.update_landscape())
         elif step == 3 and frames > 600:
             log('bowl depth before saving: %.0f cm' % lib.update_landscape())
+            log('baked %d ground cells' % lib.bake_ground())
             world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
             if not unreal.EditorLoadingAndSavingUtils.save_map(world, MAP):
                 raise RuntimeError('could not save ' + MAP)

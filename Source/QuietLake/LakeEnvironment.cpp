@@ -168,6 +168,14 @@ void ALakeEnvironment::BeginPlay()
             Line += FString::Printf(TEXT(" | %.0f%%: landscape %.0f cm, LakeMap %.0f cm"), T * 100, Bed ? LakeMap::SurfaceZ - Bed->ImpactPoint.Z : -1.0f, LakeMap::Depth(P.X, P.Y));
         }
         UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL_DEPTHS%s"), *Line);
+        // What the float fisher finds in front of each spot, 3 and 6 m out.
+        FString Spots;
+        for (const LakeMap::FSpot& Spot : LakeMap::Spots())
+        {
+            const FVector2D A = Spot.Location - Spot.Outward * 300, B = Spot.Location - Spot.Outward * 600;
+            Spots += FString::Printf(TEXT(" | %s %.0f/%.0f"), Spot.Name, LakeMap::Depth(A.X, A.Y), LakeMap::Depth(B.X, B.Y));
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL_SPOTS cm at 3/6 m%s"), *Spots);
     }
 
     // --- terrain: 64 m chunks, each its own component; 1 m cells near the water, 2 m and 4 m further off --

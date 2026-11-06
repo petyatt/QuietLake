@@ -2213,10 +2213,12 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
         return false;
     };
     FVector2D Lily, Open, Reed, Slope;
-    const bool bPlaces = Find([](float X, float Y) { const float D = LakeMap::Depth(X, Y); return LakeMap::LilyAmount(X, Y) > 0.8f && D > 70 && D < 150 && LakeMap::ShoreDistance(X, Y) > 400; }, Lily)
-        && Find([](float X, float Y) { return LakeMap::Depth(X, Y) > 200 && LakeMap::ZonesAt(X, Y).Open > 0.9f; }, Open)
-        && Find([](float X, float Y) { return LakeMap::Depth(X, Y) > 110 && LakeMap::LilyAmount(X, Y) < 0.1f && LakeMap::ZonesAt(X, Y).ReedEdge > 0.8f; }, Reed)
-        && Find([](float X, float Y) { return LakeMap::ZonesAt(X, Y).DropOff > 0.85f && LakeMap::LilyAmount(X, Y) < 0.1f; }, Slope);
+    const bool bLily = Find([](float X, float Y) { const float D = LakeMap::Depth(X, Y); return LakeMap::LilyAmount(X, Y) > 0.8f && D > 70 && D < 150 && LakeMap::ShoreDistance(X, Y) > 400; }, Lily);
+    const bool bOpen = Find([](float X, float Y) { return LakeMap::Depth(X, Y) > 200 && LakeMap::ZonesAt(X, Y).Open > 0.9f; }, Open);
+    const bool bReed = Find([](float X, float Y) { return LakeMap::Depth(X, Y) > 110 && LakeMap::LilyAmount(X, Y) < 0.1f && LakeMap::ZonesAt(X, Y).ReedEdge > 0.8f; }, Reed);
+    const bool bSlope = Find([](float X, float Y) { return LakeMap::ZonesAt(X, Y).DropOff > 0.85f && LakeMap::LilyAmount(X, Y) < 0.1f; }, Slope);
+    AddInfo(FString::Printf(TEXT("Places found: lily bed %d, open water %d, reed edge %d, drop-off %d"), bLily, bOpen, bReed, bSlope));
+    const bool bPlaces = bLily && bOpen && bReed && bSlope;
     TestTrue(TEXT("The lake has lily beds, open water, a reed edge and a drop-off"), bPlaces);
     if (!bPlaces) return false;
     auto R = [](EFishFood F, const FVector2D& P) { return LakeFood::Richness(F, P.X, P.Y); };

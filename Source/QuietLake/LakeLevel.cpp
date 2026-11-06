@@ -17,8 +17,12 @@
 #include "LandscapeEdit.h"
 #include "LandscapeBlueprintBrushBase.h"
 #include "UObject/Package.h"
+#include "Curves/CurveFloat.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "WaterBodyLakeActor.h"
 #include "WaterBodyRiverActor.h"
+#include "WaterBodyIslandActor.h"
 #include "WaterBodyComponent.h"
 #include "WaterSplineComponent.h"
 #include "WaterSplineMetadata.h"
@@ -96,15 +100,25 @@ AActor* ULakeLevelLibrary::BuildLandscape(UMaterialInterface* Material, const TA
     Heights.SetNumUninitialized(SizeX * SizeY);
     TArray<uint8> Masks[3];
     for (TArray<uint8>& Mask : Masks) Mask.SetNumZeroed(SizeX * SizeY);
+    // The designed ground (not a bake of an earlier build), in parallel; then the masks.
+    LakeMap::ShoreDistance(0, 0);
+    LakeMap::Ground(0, 0);
+    ParallelFor(SizeY, [&](int32 Y)
+    {
+        for (int32 X = 0; X < SizeX; ++X)
+        {
+            const FVector2D P = Bounds.Min + FVector2D(X, Y) * QuadSize;
+            // Inside the waterline the ground is flat just under the water: the Water lake carves the
+            // bowl into it (its brush only lowers, see SpawnLake).
+            const float Z = LakeMap::DesignGround(P.X, P.Y);
+            Heights[Y * SizeX + X] = EncodeHeight(LakeMap::ShoreDistance(P.X, P.Y) > 0 ? FMath::Max(Z, LakeMap::SurfaceZ - 5) : Z);
+        }
+    });
     for (int32 Y = 0; Y < SizeY; ++Y)
         for (int32 X = 0; X < SizeX; ++X)
         {
             const FVector2D P = Bounds.Min + FVector2D(X, Y) * QuadSize;
             const int32 I = Y * SizeX + X;
-            // Inside the waterline the ground is flat just under the water: the Water lake carves the
-            // bowl into it (its brush only lowers, see SpawnLake).
-            const float Z = LakeMap::Ground(P.X, P.Y);
-            Heights[I] = EncodeHeight(LakeMap::ShoreDistance(P.X, P.Y) > 0 ? FMath::Max(Z, LakeMap::SurfaceZ - 5) : Z);
             const FLinearColor L = ALakeEnvironment::TerrainLayers(P);
             Masks[0][I] = (uint8)FMath::RoundToInt(FMath::Clamp(L.R, 0.0f, 1.0f) * 255);
             Masks[1][I] = (uint8)FMath::RoundToInt(FMath::Clamp(L.G, 0.0f, 1.0f) * 255);
@@ -145,84 +159,142 @@ AActor* ULakeLevelLibrary::BuildLandscape(UMaterialInterface* Material, const TA
 #endif
 }
 
+namespace
+{
+    /** Closed loops where Value crosses zero (positive inside), by marching squares on a Cell grid. */
+    TArray<TArray<FVector2D>> Contours(const FBox2D& Box, float Cell, TFunctionRef<float(float, float)> Value)
+    {
+        const int32 NX = FMath::CeilToInt(Box.GetSize().X / Cell), NY = FMath::CeilToInt(Box.GetSize().Y / Cell);
+        TArray<float> D;
+        D.SetNumUninitialized((NX + 1) * (NY + 1));
+        for (int32 Y = 0; Y <= NY; ++Y)
+            for (int32 X = 0; X <= NX; ++X)
+                D[Y * (NX + 1) + X] = Value(Box.Min.X + X * Cell, Box.Min.Y + Y * Cell);
+        auto At = [&](int32 X, int32 Y) { return D[Y * (NX + 1) + X]; };
+        const int32 HCount = NX * (NY + 1);
+        auto HEdge = [&](int32 X, int32 Y) { return Y * NX + X; };
+        auto VEdge = [&](int32 X, int32 Y) { return HCount + Y * (NX + 1) + X; };
+        auto EdgePoint = [&](int32 Edge)
+        {
+            int32 X0, Y0, X1, Y1;
+            if (Edge < HCount) { Y0 = Y1 = Edge / NX; X0 = Edge % NX; X1 = X0 + 1; }
+            else { const int32 E = Edge - HCount; Y0 = E / (NX + 1); X0 = X1 = E % (NX + 1); Y1 = Y0 + 1; }
+            const float A = At(X0, Y0), B = At(X1, Y1);
+            const float T = FMath::Clamp(A / (A - B), 0.0f, 1.0f);
+            return Box.Min + FMath::Lerp(FVector2D(X0, Y0), FVector2D(X1, Y1), T) * Cell;
+        };
+        TMap<int32, TArray<int32, TInlineAllocator<2>>> Links;
+        auto Link = [&](int32 A, int32 B) { Links.FindOrAdd(A).Add(B); Links.FindOrAdd(B).Add(A); };
+        for (int32 Y = 0; Y < NY; ++Y)
+            for (int32 X = 0; X < NX; ++X)
+            {
+                const bool A = At(X, Y) > 0, B = At(X + 1, Y) > 0, C = At(X + 1, Y + 1) > 0, Dd = At(X, Y + 1) > 0;
+                const int32 Bottom = HEdge(X, Y), Right = VEdge(X + 1, Y), Top = HEdge(X, Y + 1), Left = VEdge(X, Y);
+                TArray<int32, TInlineAllocator<4>> Cross;
+                if (A != B) Cross.Add(Bottom);
+                if (B != C) Cross.Add(Right);
+                if (Dd != C) Cross.Add(Top);
+                if (A != Dd) Cross.Add(Left);
+                if (Cross.Num() == 2) Link(Cross[0], Cross[1]);
+                else if (Cross.Num() == 4) { Link(Bottom, Right); Link(Top, Left); }   // a saddle: either pairing closes the loops
+            }
+        TSet<int32> Seen;
+        TArray<TArray<FVector2D>> Loops;
+        for (const auto& Pair : Links)
+        {
+            if (Seen.Contains(Pair.Key)) continue;
+            TArray<FVector2D>& Loop = Loops.AddDefaulted_GetRef();
+            int32 Prev = INDEX_NONE, Cur = Pair.Key;
+            while (Cur != INDEX_NONE && !Seen.Contains(Cur))
+            {
+                Seen.Add(Cur);
+                Loop.Add(EdgePoint(Cur));
+                int32 Next = INDEX_NONE;
+                for (int32 N : Links[Cur]) if (N != Prev && !Seen.Contains(N)) { Next = N; break; }
+                Prev = Cur;
+                Cur = Next;
+            }
+        }
+        return Loops;
+    }
+
+    /** A point every Spacing along a closed loop, at height Z. */
+    TArray<FVector> Resample(const TArray<FVector2D>& Loop, float Spacing, float Z, float* OutLength = nullptr)
+    {
+        TArray<FVector> Out;
+        float Walked = 0, Next = 0;
+        for (int32 I = 0; I < Loop.Num(); ++I)
+        {
+            const FVector2D A = Loop[I], B = Loop[(I + 1) % Loop.Num()];
+            const float Len = FVector2D::Distance(A, B);
+            while (Next <= Walked + Len)
+            {
+                Out.Add(FVector(FMath::Lerp(A, B, Len > 0 ? (Next - Walked) / Len : 0.0f), Z));
+                Next += FMath::Max(100.0f, Spacing);
+            }
+            Walked += Len;
+        }
+        if (OutLength) *OutLength = Walked;
+        return Out;
+    }
+
+    /** Twice the signed area of a loop (X east, Y south). */
+    double SignedArea(const TArray<FVector>& Points)
+    {
+        double Area = 0;
+        for (int32 I = 0; I < Points.Num(); ++I)
+        {
+            const FVector& A = Points[I];
+            const FVector& B = Points[(I + 1) % Points.Num()];
+            Area += A.X * B.Y - B.X * A.Y;
+        }
+        return Area;
+    }
+}
+
 TArray<FVector> ULakeLevelLibrary::LakeOutline(float Spacing)
 {
-    // Marching squares on the signed distance to the waterline (positive in the water), 1 m cells;
-    // the crossings are chained into loops and the longest loop is the lake.
-    const FBox2D Box = LakeMap::LakeBounds().ExpandBy(1500);
-    constexpr float Cell = 100.0f;
-    const int32 NX = FMath::CeilToInt(Box.GetSize().X / Cell), NY = FMath::CeilToInt(Box.GetSize().Y / Cell);
-    TArray<float> D;
-    D.SetNumUninitialized((NX + 1) * (NY + 1));
-    for (int32 Y = 0; Y <= NY; ++Y)
-        for (int32 X = 0; X <= NX; ++X)
-            D[Y * (NX + 1) + X] = LakeMap::ShoreDistance(Box.Min.X + X * Cell, Box.Min.Y + Y * Cell);
-    auto Value = [&](int32 X, int32 Y) { return D[Y * (NX + 1) + X]; };
-    const int32 HCount = NX * (NY + 1);
-    auto HEdge = [&](int32 X, int32 Y) { return Y * NX + X; };
-    auto VEdge = [&](int32 X, int32 Y) { return HCount + Y * (NX + 1) + X; };
-    auto EdgePoint = [&](int32 Edge)
-    {
-        int32 X0, Y0, X1, Y1;
-        if (Edge < HCount) { Y0 = Y1 = Edge / NX; X0 = Edge % NX; X1 = X0 + 1; }
-        else { const int32 E = Edge - HCount; Y0 = E / (NX + 1); X0 = X1 = E % (NX + 1); Y1 = Y0 + 1; }
-        const float A = Value(X0, Y0), B = Value(X1, Y1);
-        const float T = FMath::Clamp(A / (A - B), 0.0f, 1.0f);
-        return Box.Min + FMath::Lerp(FVector2D(X0, Y0), FVector2D(X1, Y1), T) * Cell;
-    };
-    TMap<int32, TArray<int32, TInlineAllocator<2>>> Links;
-    auto Link = [&](int32 A, int32 B) { Links.FindOrAdd(A).Add(B); Links.FindOrAdd(B).Add(A); };
-    for (int32 Y = 0; Y < NY; ++Y)
-        for (int32 X = 0; X < NX; ++X)
-        {
-            const bool A = Value(X, Y) > 0, B = Value(X + 1, Y) > 0, C = Value(X + 1, Y + 1) > 0, Dd = Value(X, Y + 1) > 0;
-            const int32 Bottom = HEdge(X, Y), Right = VEdge(X + 1, Y), Top = HEdge(X, Y + 1), Left = VEdge(X, Y);
-            TArray<int32, TInlineAllocator<4>> Cross;
-            if (A != B) Cross.Add(Bottom);
-            if (B != C) Cross.Add(Right);
-            if (Dd != C) Cross.Add(Top);
-            if (A != Dd) Cross.Add(Left);
-            if (Cross.Num() == 2) Link(Cross[0], Cross[1]);
-            else if (Cross.Num() == 4) { Link(Bottom, Right); Link(Top, Left); }   // a saddle: either pairing closes the loops
-        }
-    TSet<int32> Seen;
-    TArray<FVector2D> Best;
-    for (const auto& Pair : Links)
-    {
-        if (Seen.Contains(Pair.Key)) continue;
-        TArray<FVector2D> Loop;
-        int32 Prev = INDEX_NONE, Cur = Pair.Key;
-        while (Cur != INDEX_NONE && !Seen.Contains(Cur))
-        {
-            Seen.Add(Cur);
-            Loop.Add(EdgePoint(Cur));
-            int32 Next = INDEX_NONE;
-            for (int32 N : Links[Cur]) if (N != Prev && !Seen.Contains(N)) { Next = N; break; }
-            Prev = Cur;
-            Cur = Next;
-        }
-        if (Loop.Num() > Best.Num()) Best = MoveTemp(Loop);
-    }
-    // Even spacing along the loop.
-    TArray<FVector> Out;
-    if (Best.Num() < 3) return Out;
-    float Walked = 0, Next = 0;
-    for (int32 I = 0; I < Best.Num(); ++I)
-    {
-        const FVector2D A = Best[I], B = Best[(I + 1) % Best.Num()];
-        const float Len = FVector2D::Distance(A, B);
-        while (Next <= Walked + Len)
-        {
-            Out.Add(FVector(FMath::Lerp(A, B, Len > 0 ? (Next - Walked) / Len : 0.0f), LakeMap::SurfaceZ));
-            Next += FMath::Max(100.0f, Spacing);
-        }
-        Walked += Len;
-    }
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL waterline %d crossings, %.0f m long, %d spline points"), Best.Num(), Walked / 100, Out.Num());
+    // The zero line of the signed distance to the waterline (positive in the water), 1 m cells; the
+    // longest loop is the lake.
+    TArray<TArray<FVector2D>> Loops = Contours(LakeMap::LakeBounds().ExpandBy(1500), 100.0f, [](float X, float Y) { return LakeMap::ShoreDistance(X, Y); });
+    const TArray<FVector2D>* Best = nullptr;
+    for (const TArray<FVector2D>& Loop : Loops) if (!Best || Loop.Num() > Best->Num()) Best = &Loop;
+    if (!Best || Best->Num() < 3) return {};
+    float Length = 0;
+    TArray<FVector> Out = Resample(*Best, Spacing, LakeMap::SurfaceZ, &Length);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL waterline %d crossings, %.0f m long, %d spline points"), Best->Num(), Length / 100, Out.Num());
     return Out;
 }
 
-AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float Spacing)
+UObject* ULakeLevelLibrary::CreateBedProfile(const FString& Folder, const FString& Name)
+{
+#if WITH_EDITOR
+    const FString PackageName = Folder / Name;
+    UCurveFloat* Curve = LoadObject<UCurveFloat>(nullptr, *(PackageName + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet);
+    if (!Curve)
+    {
+        UPackage* Package = CreatePackage(*PackageName);
+        Curve = NewObject<UCurveFloat>(Package, *Name, RF_Public | RF_Standalone | RF_Transactional);
+        FAssetRegistryModule::AssetCreated(Curve);
+    }
+    // Across the ramp (0 at the waterline, 1 where the full channel depth is reached) how much of the
+    // depth is reached. With a 6 m channel over a 60 m ramp: about 1.5 m of water a couple of metres
+    // out (in a float fisher's reach), 3 m at 7 m, then a broad shelf of open water at 3.5-4 m out to
+    // ~35 m from the bank, and only the middle of the lake falls to the full depth. (A plain bowl was
+    // deep everywhere past 25 m: no open midwater for roach and perch, only the deep zone.)
+    FRichCurve& Keys = Curve->FloatCurve;
+    Keys.Reset();
+    for (const FVector2f Key : { FVector2f(0, 0), FVector2f(0.04f, 0.25f), FVector2f(0.12f, 0.5f), FVector2f(0.25f, 0.6f), FVector2f(0.6f, 0.68f), FVector2f(1, 1) })
+        Keys.SetKeyInterpMode(Keys.AddKey(Key.X, Key.Y), RCIM_Cubic);
+    Keys.AutoSetTangents();
+    Curve->MarkPackageDirty();
+    return Curve;
+#else
+    return nullptr;
+#endif
+}
+
+AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float Spacing, UObject* Profile)
 {
 #if WITH_EDITOR
     UWorld* World = EditorWorld();
@@ -239,13 +311,7 @@ AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float 
     for (const FVector& P : Outline) Local.Add(P - Centre);
     // The water brush fills the lake's shape as a triangle fan, and with the other winding every
     // triangle is culled: the lake carved nothing at all. Keep the outline's signed area positive.
-    double Area = 0;
-    for (int32 I = 0; I < Local.Num(); ++I)
-    {
-        const FVector& A = Local[I];
-        const FVector& B = Local[(I + 1) % Local.Num()];
-        Area += A.X * B.Y - B.X * A.Y;
-    }
+    const double Area = SignedArea(Local);
     if (Area < 0) Algo::Reverse(Local);
     Lake->GetWaterSpline()->ResetSpline(Local);
     UWaterBodyComponent* Body = Lake->GetWaterBodyComponent();
@@ -253,6 +319,7 @@ AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float 
     Body->CurveSettings.bUseCurveChannel = true;
     Body->CurveSettings.ChannelDepth = ChannelDepth;
     Body->CurveSettings.CurveRampWidth = RampWidth;
+    if (UCurveFloat* Curve = Cast<UCurveFloat>(Profile)) Body->CurveSettings.ElevationCurveAsset = Curve;
     // Only lowering: the brush digs the bowl and cuts the banks no flatter than 70 degrees, but never
     // raises or flattens the land around (its default blend laid a flat shelf at the water level).
     FWaterBodyHeightmapSettings& Carve = Body->WaterHeightmapSettings;
@@ -267,6 +334,60 @@ AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float 
     return Lake;
 #else
     return nullptr;
+#endif
+}
+
+int32 ULakeLevelLibrary::SpawnShallows(float MaxDesignDepth, float MinBankDistance, float MinAreaM2, float DepthCm, float FalloffAngle)
+{
+#if WITH_EDITOR
+    UWorld* World = EditorWorld();
+    if (!World) return 0;
+    for (TActorIterator<AWaterBodyIsland> It(World); It; ++It) It->Destroy();
+    // The flats of the designed bed: shallower than MaxDesignDepth and at least MinBankDistance out.
+    const TArray<TArray<FVector2D>> Loops = Contours(LakeMap::LakeBounds().ExpandBy(500), 200.0f, [=](float X, float Y)
+    {
+        const float SD = LakeMap::ShoreDistance(X, Y);
+        if (SD <= 0) return -1000.0f;
+        return FMath::Min(SD - MinBankDistance, MaxDesignDepth - (LakeMap::SurfaceZ - LakeMap::DesignGround(X, Y)));
+    });
+    int32 Count = 0;
+    FString Sizes;
+    for (const TArray<FVector2D>& Loop : Loops)
+    {
+        if (Loop.Num() < 8) continue;
+        TArray<FVector> Points = Resample(Loop, 500.0f, LakeMap::SurfaceZ - DepthCm);
+        const double Area = SignedArea(Points);
+        if (FMath::Abs(Area) * 0.5 / 10000 < MinAreaM2 || Points.Num() < 4) continue;
+        if (Area < 0) Algo::Reverse(Points);         // the same winding the brush needs for the lake
+        FVector Centre = FVector::ZeroVector;
+        for (const FVector& P : Points) Centre += P;
+        Centre /= Points.Num();
+        AWaterBodyIsland* Shelf = SpawnWithFactory<AWaterBodyIsland>(World, Centre);
+        if (!Shelf) continue;
+        TArray<FVector> Local;
+        for (const FVector& P : Points) Local.Add(P - Centre);
+        Shelf->GetWaterSpline()->ResetSpline(Local);
+        // A flat top at the spline (DepthCm under the water), sloping off outside it; it only raises
+        // the carved bowl, never lowers it.
+        Shelf->WaterCurveSettings.bUseCurveChannel = false;
+        Shelf->WaterCurveSettings.ChannelDepth = 0;
+        FWaterBodyHeightmapSettings& Raise = Shelf->WaterHeightmapSettings;
+        Raise.BlendMode = EWaterBrushBlendType::Max;
+        Raise.FalloffSettings.FalloffMode = EWaterBrushFalloffMode::Angle;
+        Raise.FalloffSettings.FalloffAngle = FalloffAngle;
+        Raise.FalloffSettings.EdgeOffset = 0;
+        Raise.FalloffSettings.ZOffset = 0;
+        Shelf->SetActorLabel(FString::Printf(TEXT("Shallow_%d"), Count));
+        Shelf->GetWaterSpline()->SynchronizeWaterProperties();
+        Shelf->GetWaterSpline()->PostEditChange();
+        Shelf->PostEditChange();
+        Sizes += FString::Printf(TEXT(" %.0f m2"), FMath::Abs(Area) * 0.5 / 10000);
+        ++Count;
+    }
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL shallows: %d flats at %.0f cm (%s), from %d loops"), Count, DepthCm, *Sizes, Loops.Num());
+    return Count;
+#else
+    return 0;
 #endif
 }
 
@@ -336,6 +457,61 @@ float ULakeLevelLibrary::UpdateLandscape()
             Spline->IsClosedLoop(), *Body->Bounds.GetBox().ToString(), Under);
     }
     return Depth;
+#else
+    return 0;
+#endif
+}
+
+int32 ULakeLevelLibrary::BakeGround()
+{
+#if WITH_EDITOR
+    UWorld* World = EditorWorld();
+    TActorIterator<ALandscape> It(World);
+    if (!World || !It) return 0;
+    ULandscapeInfo* Info = It->GetLandscapeInfo();
+    int32 MinX, MinY, MaxX, MaxY;
+    if (!Info || !Info->GetLandscapeExtent(MinX, MinY, MaxX, MaxY)) return 0;
+    const int32 W = MaxX - MinX + 1, Hh = MaxY - MinY + 1;
+    TArray<uint16> Heights;
+    Heights.SetNumZeroed(W * Hh);
+    FLandscapeEditDataInterface Data(Info);
+    Data.GetHeightData(MinX, MinY, MaxX, MaxY, Heights.GetData(), W);
+    const FTransform T = It->GetActorTransform();
+    struct FHeader { char Magic[4]; int32 W, H; float MinX, MinY, Step, ZScale, ZOffset; } Header;
+    FMemory::Memcpy(Header.Magic, "QLG1", 4);
+    Header.W = W; Header.H = Hh;
+    const FVector Origin = T.TransformPosition(FVector(MinX, MinY, 0));
+    Header.MinX = Origin.X; Header.MinY = Origin.Y;
+    Header.Step = T.GetScale3D().X;
+    Header.ZScale = T.GetScale3D().Z / 128.0f;
+    Header.ZOffset = T.GetLocation().Z - 32768.0f * Header.ZScale;
+    TArray<uint8> Bytes;
+    Bytes.Append((const uint8*)&Header, sizeof(Header));
+    Bytes.Append((const uint8*)Heights.GetData(), Heights.Num() * sizeof(uint16));
+    const FString Path = FPaths::ProjectContentDir() / LakeMap::BakedGroundFile;
+    const bool bSaved = FFileHelper::SaveArrayToFile(Bytes, *Path);
+    // The bed across the bank in front of the camp, as the fish and the float will find it.
+    FVector2D Facing;
+    const FVector2D Start = LakeMap::StartSpot(&Facing);
+    const FVector2D Into = -LakeMap::NearestShore(Start).Outward;
+    const FVector2D Edge = LakeMap::NearestShore(Start).Location;
+    FString Transect;
+    for (float M : { 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 10.0f, 15.0f, 20.0f, 30.0f })
+    {
+        const FVector Local = T.InverseTransformPosition(FVector(Edge + Into * M * 100, 0));
+        const int32 X = FMath::Clamp(FMath::RoundToInt(Local.X) - MinX, 0, W - 1), Y = FMath::Clamp(FMath::RoundToInt(Local.Y) - MinY, 0, Hh - 1);
+        Transect += FString::Printf(TEXT(" %.0fm:%.0fcm"), M, LakeMap::SurfaceZ - (Heights[Y * W + X] * Header.ZScale + Header.ZOffset));
+    }
+    // And in the middle of each raised flat.
+    FString Flats;
+    for (TActorIterator<AWaterBodyIsland> Island(World); Island; ++Island)
+    {
+        const FVector Local = T.InverseTransformPosition(Island->GetActorLocation());
+        const int32 X = FMath::Clamp(FMath::RoundToInt(Local.X) - MinX, 0, W - 1), Y = FMath::Clamp(FMath::RoundToInt(Local.Y) - MinY, 0, Hh - 1);
+        Flats += FString::Printf(TEXT(" %s:%.0fcm"), *Island->GetActorLabel(), LakeMap::SurfaceZ - (Heights[Y * W + X] * Header.ZScale + Header.ZOffset));
+    }
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL baked %dx%d heights to %s (%d); camp bank:%s; flats:%s"), W, Hh, *Path, bSaved, *Transect, *Flats);
+    return bSaved ? W * Hh : 0;
 #else
     return 0;
 #endif
