@@ -1581,8 +1581,9 @@ void ALakeEnvironment::BeginPlay()
                 View = (FVector(Best->Location + Best->Outward * 1000, LakeMap::SurfaceZ + 380) - Eye).Rotation();
             }
         }
-        else if (SceneView.Equals(TEXT("Air"), ESearchCase::IgnoreCase))
+        else if (SceneView.Equals(TEXT("Air"), ESearchCase::IgnoreCase) || SceneView.Equals(TEXT("AirDry"), ESearchCase::IgnoreCase))
         {
+            if (SceneView.Equals(TEXT("AirDry"), ESearchCase::IgnoreCase)) GEngine->Exec(GetWorld(), TEXT("r.Water.Enabled 0"));
             // The whole lake from 350 m up, south of it: the bowl, the shores and the streams.
             const FBox2D Box = LakeMap::LakeBounds();
             Eye = FVector(Box.GetCenter() + FVector2D(0, Box.GetSize().Y * 0.9f), LakeMap::SurfaceZ + 35000);

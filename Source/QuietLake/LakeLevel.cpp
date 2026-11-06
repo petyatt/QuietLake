@@ -23,6 +23,7 @@
 #include "WaterBodyLakeActor.h"
 #include "WaterBodyRiverActor.h"
 #include "WaterBodyIslandActor.h"
+#include "WaterBodyRiverComponent.h"
 #include "WaterBodyComponent.h"
 #include "WaterSplineComponent.h"
 #include "WaterSplineMetadata.h"
@@ -48,6 +49,20 @@ namespace
         AActor* Actor = Factory ? Factory->CreateActor(T::StaticClass(), World->PersistentLevel, FTransform(Location), Params)
                                 : World->SpawnActor<T>(Location, FRotator::ZeroRotator, Params);
         return Cast<T>(Actor);
+    }
+
+    /** Our lake water (M_LakeSurface: the peaty colour and murk, the foam, the wind's ripple and the
+     *  simulated rings of ALakeRipples) instead of the engine's; and no engine underwater effect,
+     *  the game has its own murk (ALakeLife). */
+    void UseLakeWater(UWaterBodyComponent* Body)
+    {
+        if (UMaterialInterface* Surface = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_LakeSurface.M_LakeSurface")))
+        {
+            Body->SetWaterMaterial(Surface);
+            Body->SetWaterStaticMeshMaterial(Surface);
+            if (UWaterBodyRiverComponent* River = Cast<UWaterBodyRiverComponent>(Body)) River->SetLakeTransitionMaterial(Surface);
+        }
+        Body->SetUnderwaterPostProcessMaterial(nullptr);
     }
 
     void RefreshWaterBody(AWaterBody* Body)
@@ -329,6 +344,9 @@ AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float 
     Carve.FalloffSettings.EdgeOffset = 0.0f;
     Carve.FalloffSettings.ZOffset = 0.0f;
     Lake->SetActorLabel(TEXT("Lake"));
+    // The surface is flat to the engine: the wind's ripple and the rings are in our material only.
+    Lake->SetWaterWaves(nullptr);
+    UseLakeWater(Body);
     RefreshWaterBody(Lake);
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL lake: %d spline points, channel %.0f cm, ramp %.0f cm, outline reversed %d"), Local.Num(), ChannelDepth, RampWidth, Area < 0);
     return Lake;
@@ -554,6 +572,7 @@ int32 ULakeLevelLibrary::SpawnStreams(float Depth)
         Carve.FalloffSettings.FalloffWidth = 300.0f;
         Carve.FalloffSettings.EdgeOffset = 30.0f;
         Carve.FalloffSettings.ZOffset = 0.0f;
+        UseLakeWater(Body);
         River->SetActorLabel(FString::Printf(TEXT("Stream_%d"), Count));
         RefreshWaterBody(River);
         ++Count;

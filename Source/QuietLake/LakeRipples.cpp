@@ -1,4 +1,7 @@
 #include "LakeRipples.h"
+#include "WaterBodyActor.h"
+#include "WaterBodyComponent.h"
+#include "EngineUtils.h"
 
 #include "Async/ParallelFor.h"
 #include "Tasks/Task.h"
@@ -280,6 +283,18 @@ void ALakeRipples::FindWater()
         if (!Dynamic) Dynamic = It->CreateDynamicMaterialInstance(0, Material);
         Dynamic->SetTextureParameterValue(TEXT("Ripples"), Texture);
         Materials.Add(Dynamic);
+    }
+    // The engine Water lake and streams (/Game/Maps/Lake) draw M_LakeSurface through their own
+    // material instances.
+    for (TActorIterator<AWaterBody> It(GetWorld()); It; ++It)
+    {
+        UWaterBodyComponent* Body = It->GetWaterBodyComponent();
+        for (UMaterialInstanceDynamic* Dynamic : { Body->GetWaterMaterialInstance(), Body->GetRiverToLakeTransitionMaterialInstance() })
+        {
+            if (!Dynamic || !Dynamic->GetBaseMaterial() || Dynamic->GetBaseMaterial()->GetName() != TEXT("M_LakeSurface")) continue;
+            Dynamic->SetTextureParameterValue(TEXT("Ripples"), Texture);
+            Materials.AddUnique(Dynamic);
+        }
     }
 }
 
