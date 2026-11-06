@@ -12,7 +12,7 @@
 - Изменения проекта и запуск работы в других чатах сначала согласовывать с пользователем; выполнять работу в пределах согласованной задачи.
 - Никогда не коммитить `Content/Fab`, `Content/Megaplant_Library`, `Content/Characters/Mannequins`, `Content/Characters/MetaHumans`
   (они в `.gitignore`; восстанавливаются через Fab в редакторе, `Tools/CopyMannequin.ps1` и `Tools/CreateFisherMetaHuman.py`;
-  после восстановления Megaplant запустить `Tools/FixPineBark.py` питоном редактора).
+  Megaplant в ветке `experiment/landscape-water` больше не используется).
 - Fab: только бесплатные лицензии; не входить в аккаунты и не вводить пароли за пользователя.
 - После изменения механики обновлять [WORLD.md](WORLD.md), а после проверки — раздел «Проверено …» в [README.md](README.md).
 
@@ -105,9 +105,8 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 - `LakeRipples.h/.cpp` — живые волны у игрока: волновое уравнение на сетке вокруг камеры (`FLakeRippleSim`), источники — рыба у поверхности, поплавок, дождь (`ALakeRipples`), высоты уходят в материал воды текстурой.
 - `LakeLife.h/.cpp` — «Live Fish»: стаи, малёк, хищники, знаки на воде, испуг от заброса и шагов (`Disturb`), замеры плавания, панель F3.
 - `LakeMap.h/.cpp` — форма озера (SDF), глубины, рельеф, места рыбалки, зоны.
-- `LakeEnvironment.cpp` — построение мира: рельеф, лес, трава, камыш, кувшинки, коряги, мостки, свет. На уровне с Landscape и Water (`/Game/Maps/Lake`) свой рельеф и плоскость воды не строит.
+- `LakeEnvironment.cpp` — построение мира: рельеф (без Landscape), мостки, лодки, кладки, колья, лагерь, свет, звуки. Растений, камней и коряг больше не ставит — на уровне озера их будет расставлять PCG Biome Core. На уровне с Landscape и Water (`/Game/Maps/Lake`) свой рельеф и плоскость воды не строит.
 - `LakeLevel.h/.cpp` — инструмент редактора `ULakeLevelLibrary` для `Tools/BuildLakeLevel.py`: Landscape из `LakeMap`, контур берега, озеро и реки Water, замер прорезки.
-- `LakeForest.h/.cpp` — источник точек PCG по рельефу и зонам леса, граф `Content/Forest/PCG_LakeForest.uasset` с двумя штатными Skinned Mesh Spawner. Плотность и опушки редактируются в графе; луг под деревню, подходы и места ловли исключены. `LakeForestTest.cpp` проверяет зоны и повторяемость; запускать весь набор через `Automation RunTests QuietLake`. `-LegacyForest` возвращает старую расстановку; `Tools/PreviewScene.ps1 -View Forest` сразу показывает опушку.
 - `LakeWeather.h/.cpp` — время суток, погода, экспозиция, туман, состояние воды, условия клёва.
 - `LakeMenu.h/.cpp` — главное меню и `ALakePlayerController`; `FisherAnim.h/.cpp` — анимация рыбака.
 - `LakeFishingTest.cpp` — автотесты.
