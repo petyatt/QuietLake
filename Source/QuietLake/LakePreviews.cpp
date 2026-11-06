@@ -13,6 +13,9 @@
 #include "InputKeyEventArgs.h"
 #include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
@@ -108,6 +111,101 @@ void ALakeCharacter::RunPreviews()
         }
         FTimerHandle Exit;
         GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 14.0f + UE_ARRAY_COUNT(Shots) * 2.5f + 1.0f, false);
+        return;
+    }
+    // -PlantPreview: the plants grown in the Procedural Vegetation Editor (Tools/CreateGrownPlants.py)
+    // stood in a row on the bank behind the angler, the shore plants (Tools/GenerateShorePlants.py) in
+    // front of them, at clear noon: the whole row, the conifers, the broadleaves and shrubs, the reeds
+    // and sedges, then the bark of the birch, the alder and the pine close up. Frames
+    // Saved/Plants_*.png, each plant's size in QUIET_LAKE_PLANT lines.
+    if (FParse::Param(FCommandLine::Get(), TEXT("PlantPreview")) && GetNetMode() == NM_Standalone)
+    {
+        // Trees along the back row, shrubs and shore plants in front of them; Along is metres along the
+        // bank, Back metres inland. Mesh /Game/Plants/<Folder>/<Name>.
+        struct FPlant { const TCHAR* Folder; const TCHAR* Name; float Along, Back; };
+        static const FPlant Plants[] = {
+            { TEXT("PV"), TEXT("SM_PV_Pine_A"), -27, 34 }, { TEXT("PV"), TEXT("SM_PV_Pine_B"), -18, 34 },
+            { TEXT("PV"), TEXT("SM_PV_Spruce_A"), -9, 34 }, { TEXT("PV"), TEXT("SM_PV_Spruce_B"), 0, 34 },
+            { TEXT("PV"), TEXT("SM_PV_Birch_A"), 9, 34 }, { TEXT("PV"), TEXT("SM_PV_Birch_B"), 18, 34 },
+            { TEXT("PV"), TEXT("SM_PV_Alder_A"), 27, 34 },
+            { TEXT("PV"), TEXT("SM_PV_Shrub_A"), 4, 24 }, { TEXT("PV"), TEXT("SM_PV_Shrub_B"), 13, 24 },
+            { TEXT("Shore"), TEXT("SM_Reed_A"), -22, 16 }, { TEXT("Shore"), TEXT("SM_Reed_B"), -18.5f, 16 },
+            { TEXT("Shore"), TEXT("SM_Bulrush"), -15, 16 }, { TEXT("Shore"), TEXT("SM_Sedge_A"), -12.5f, 16 },
+            { TEXT("Shore"), TEXT("SM_Sedge_B"), -10.8f, 16 },
+        };
+        // Camera: Along/Back of the eye and of the target (metres), their heights (metres) and the field of view.
+        struct FShot { float FromAlong, FromBack, FromUp, ToAlong, ToBack, ToUp, Fov; const TCHAR* File; };
+        static const FShot Shots[] = {
+            { 0, -12, 4, 0, 34, 8, 70, TEXT("Plants_Row.png") },
+            { -13, 8, 3, -13, 34, 9, 62, TEXT("Plants_Conifers.png") },
+            { 15, 58, 2.5f, 15, 30, 6, 62, TEXT("Plants_Broadleaf.png") },        // from inland, the sun behind the camera
+            { -16, 22.5f, 1.7f, -16, 16, 1.0f, 60, TEXT("Plants_Shore.png") },
+            { 9, 37.5f, 1.6f, 9, 34, 1.8f, 50, TEXT("Plants_BirchBark.png") },
+            { 27, 37.5f, 1.6f, 27, 34, 1.8f, 50, TEXT("Plants_AlderBark.png") },
+            { -27, 37.5f, 1.6f, -27, 34, 2.2f, 50, TEXT("Plants_PineBark.png") },
+        };
+        APlayerController* PC = Cast<APlayerController>(GetController());
+        if (PC && PC->MyHUD) PC->MyHUD->bShowHUD = false;
+        if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+        {
+            FLakeWeatherState Clear;
+            Clear.Cloud = 0.15f;
+            Clear.Fog = 0.10f;
+            Clear.Rain = 0.0f;
+            Clear.Wind = 0.10f;
+            Weather->SetWeatherNow(Clear);
+            Weather->SetHours(13.0f);
+        }
+        // The bank's axes at the angler: Out inland, Along the waterline.
+        TSharedRef<FVector2D> Base = MakeShared<FVector2D>(), Out = MakeShared<FVector2D>(), Along = MakeShared<FVector2D>();
+        auto Point = [Base, Out, Along](float AlongM, float BackM, float UpM)
+        {
+            const FVector2D P = *Base + *Along * (AlongM * 100.0f) + *Out * (BackM * 100.0f);
+            return FVector(P.X, P.Y, LakeMap::Ground(P.X, P.Y) + UpM * 100.0f);
+        };
+        FTimerHandle Plant;
+        GetWorldTimerManager().SetTimer(Plant, [this, Base, Out, Along, Point]
+        {
+            *Base = FVector2D(GetActorLocation());
+            *Out = LakeMap::NearestShore(*Base).Outward.GetSafeNormal();
+            *Along = FVector2D(-Out->Y, Out->X);
+            for (const FPlant& Entry : Plants)
+            {
+                const FString Path = FString::Printf(TEXT("/Game/Plants/%s/%s.%s"), Entry.Folder, Entry.Name, Entry.Name);
+                UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *Path);
+                if (!Mesh) { UE_LOG(LogTemp, Warning, TEXT("QUIET_LAKE_PLANT %s missing"), Entry.Name); continue; }
+                AStaticMeshActor* Actor = GetWorld()->SpawnActor<AStaticMeshActor>(Point(Entry.Along, Entry.Back, 0), FRotator::ZeroRotator);
+                if (!Actor) continue;
+                Actor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
+                Actor->GetStaticMeshComponent()->SetStaticMesh(Mesh);
+                const FBox Box = Mesh->GetBoundingBox();
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_PLANT %s height %.1f m, crown %.1f x %.1f m"),
+                    Entry.Name, Box.Max.Z / 100.0f, Box.GetSize().X / 100.0f, Box.GetSize().Y / 100.0f);
+            }
+        }, 11.0f, false);
+        TSharedRef<TWeakObjectPtr<ACameraActor>> Cam = MakeShared<TWeakObjectPtr<ACameraActor>>();
+        for (int32 I = 0; I < UE_ARRAY_COUNT(Shots); ++I)
+        {
+            const FShot Shot = Shots[I];
+            const float At = 15.0f + I * 3.0f;
+            FTimerHandle Pose, Snap;
+            GetWorldTimerManager().SetTimer(Pose, [this, Shot, Cam, PC, Point]
+            {
+                const FVector From = Point(Shot.FromAlong, Shot.FromBack, Shot.FromUp), Target = Point(Shot.ToAlong, Shot.ToBack, Shot.ToUp);
+                ACameraActor* Camera = Cam->Get();
+                if (!Camera) { Camera = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation()); *Cam = Camera; }
+                if (!Camera) return;
+                Camera->SetActorLocationAndRotation(From, (Target - From).Rotation());
+                Camera->GetCameraComponent()->SetFieldOfView(Shot.Fov);
+                if (PC) PC->SetViewTarget(Camera);
+            }, At - 1.5f, false);
+            GetWorldTimerManager().SetTimer(Snap, [Shot]
+            {
+                FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Shot.File, false, false);
+            }, At, false);
+        }
+        FTimerHandle Exit;
+        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 15.0f + UE_ARRAY_COUNT(Shots) * 3.0f + 1.0f, false);
         return;
     }
     // -CasePreview: the rod case on the back, its ghost (B), laid on the ground, the prompt over it, the
