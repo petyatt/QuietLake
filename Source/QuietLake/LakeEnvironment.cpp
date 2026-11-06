@@ -1,6 +1,8 @@
 ﻿#include "LakeGame.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
+#include "LandscapeProxy.h"
+#include "WaterBodyActor.h"
 #include "LakeBirds.h"
 #include "LakeForest.h"
 #include "LakeRod.h"
@@ -84,6 +86,27 @@ namespace
     float YawOf(const FVector2D& Dir) { return FMath::RadiansToDegrees(FMath::Atan2(Dir.Y, Dir.X)); }
 }
 
+FLinearColor ALakeEnvironment::TerrainLayers(const FVector2D& P)
+{
+    static const FVector2D Start = LakeMap::StartSpot();
+    constexpr float N = 200.0f;
+    const float DX = (LakeMap::Ground(P.X + N, P.Y) - LakeMap::Ground(P.X - N, P.Y)) / (2 * N);
+    const float DY = (LakeMap::Ground(P.X, P.Y + N) - LakeMap::Ground(P.X, P.Y - N)) / (2 * N);
+    const float L = -LakeMap::ShoreDistance(P.X, P.Y) / 100;
+    const float Bare = FMath::SmoothStep(0.55f, 0.95f, (float)FVector2D(DX, DY).Size()) * FMath::SmoothStep(0.2f, 1.0f, L);
+    const float Open = FMath::SmoothStep(900.0f, 1800.0f, (float)FVector2D::Distance(P, Start));
+    const float Forest = Woodland(P, L) * Open;
+    const float ShorePatch = 0.55f * FMath::PerlinNoise2D(P / 170 + FVector2D(13, 5)) + 0.35f * FMath::PerlinNoise2D(P / 650);
+    const float Meadow = FMath::SmoothStep(0.35f + ShorePatch, 3.2f + ShorePatch, L) * (1 - Forest);
+    // Clay faces get some dark forest soil mixed in: dirty, not like a sand dune.
+    const float Worn = 1 - 0.85f * FMath::Max(PierApproach(P), 0.8f * LakeMap::PathAmount(P));
+    // The beach and the stream channels show the sandy bed.
+    const float Sand = FMath::Max(LakeMap::BeachAmount(P), 1 - FMath::SmoothStep(140.0f, 260.0f, LakeMap::StreamDistance(P)));
+    // Bare faces of bluffs and steep slopes: mostly dark forest earth with some clay showing,
+    // so they read as earth banks, not sand dunes.
+    return FLinearColor(Meadow * (1 - Bare) * Worn * (1 - Sand), (Forest * (1 - Bare) * Worn + 0.65f * Bare) * (1 - Sand), 0.35f * Bare * (1 - Sand));
+}
+
 void ALakeEnvironment::BeginPlay()
 {
     Super::BeginPlay();
@@ -124,13 +147,36 @@ void ALakeEnvironment::BeginPlay()
     const FBox2D LakeBox = LakeMap::LakeBounds();
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BUILD map %.1f s"), FPlatformTime::Seconds() - BuildStart);
 
+    // The lake level (/Game/Maps/Lake, Tools/BuildLakeLevel.py) brings its own ground and water: a
+    // Landscape and the engine Water lake and streams. Then the terrain mesh and the water slab are
+    // not built; the distant ring of hills still is.
+    const bool bLevelGround = !!TActorIterator<ALandscapeProxy>(GetWorld());
+    const bool bLevelWater = !!TActorIterator<AWaterBody>(GetWorld());
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BUILD level ground %d, level water %d"), bLevelGround, bLevelWater);
+    if (bLevelGround)
+    {
+        // How deep the landscape's bowl is against LakeMap's: from the middle of the lake towards the shore.
+        FString Line;
+        const FVector2D Shore = LakeMap::NearestShore(LakeMap::Centre).Location;
+        for (float T : { 0.0f, 0.25f, 0.5f, 0.75f, 0.9f })
+        {
+            const FVector2D P = FMath::Lerp(LakeMap::Centre, Shore, T);
+            // The landscape only: the Water bodies have their own collision at the surface.
+            TArray<FHitResult> Hits;
+            GetWorld()->LineTraceMultiByObjectType(Hits, FVector(P, 5000), FVector(P, -5000), FCollisionObjectQueryParams(ECC_WorldStatic));
+            const FHitResult* Bed = Hits.FindByPredicate([](const FHitResult& H) { return H.GetActor() && H.GetActor()->IsA<ALandscapeProxy>(); });
+            Line += FString::Printf(TEXT(" | %.0f%%: landscape %.0f cm, LakeMap %.0f cm"), T * 100, Bed ? LakeMap::SurfaceZ - Bed->ImpactPoint.Z : -1.0f, LakeMap::Depth(P.X, P.Y));
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL_DEPTHS%s"), *Line);
+    }
+
     // --- terrain: 64 m chunks, each its own component; 1 m cells near the water, 2 m and 4 m further off --
     {
         const FBox2D Bounds = LakeMap::TerrainBounds;
         constexpr float ChunkSize = 6400.0f;
         UMaterialInterface* TerrainMaterial = Material(TEXT("M_TerrainScanned"));
         int32 Chunks = 0, Vertices1 = 0;
-        for (float CY = Bounds.Min.Y; CY < Bounds.Max.Y - 1; CY += ChunkSize)
+        for (float CY = Bounds.Min.Y; CY < Bounds.Max.Y - 1 && !bLevelGround; CY += ChunkSize)
             for (float CX = Bounds.Min.X; CX < Bounds.Max.X - 1; CX += ChunkSize)
             {
                 const float W = FMath::Min(ChunkSize, (float)Bounds.Max.X - CX), Hh = FMath::Min(ChunkSize, (float)Bounds.Max.Y - CY);
@@ -159,22 +205,7 @@ void ALakeEnvironment::BeginPlay()
                     const FVector2D Grad(DX, DY);
                     const float Steep = FMath::SmoothStep(0.4f, 1.2f, (float)Grad.Size());
                     UVs.Add((P + Grad.GetSafeNormal() * (H - LakeMap::SurfaceZ) * Steep) / 250);
-                    // Layer masks for M_TerrainScanned: R = meadow, G = forest floor, B = bare clay on steep
-                    // faces; none of them = the muddy shore and the lake bed.
-                    const float L = -LakeMap::ShoreDistance(X, Y) / 100;
-                    const float Bare = FMath::SmoothStep(0.55f, 0.95f, (float)FVector2D(DX, DY).Size()) * FMath::SmoothStep(0.2f, 1.0f, L);
-                    const float Open = FMath::SmoothStep(900.0f, 1800.0f, (float)FVector2D::Distance(P, Start));
-                    const float Forest = Woodland(P, L) * Open;
-                    const float ShorePatch = 0.55f * FMath::PerlinNoise2D(P / 170 + FVector2D(13, 5))
-                        + 0.35f * FMath::PerlinNoise2D(P / 650);
-                    const float Meadow = FMath::SmoothStep(0.35f + ShorePatch, 3.2f + ShorePatch, L) * (1 - Forest);
-                    // Clay faces get some dark forest soil mixed in: dirty, not like a sand dune.
-                    const float Worn = 1 - 0.85f * FMath::Max(PierApproach(P), 0.8f * LakeMap::PathAmount(P));
-                    // The beach and the stream channels show the sandy bed.
-                    const float Sand = FMath::Max(LakeMap::BeachAmount(P), 1 - FMath::SmoothStep(140.0f, 260.0f, LakeMap::StreamDistance(P)));
-                    // Bare faces of bluffs and steep slopes: mostly dark forest earth with some clay showing,
-                    // so they read as earth banks, not sand dunes.
-                    Colors.Add(FLinearColor(Meadow * (1 - Bare) * Worn * (1 - Sand), (Forest * (1 - Bare) * Worn + 0.65f * Bare) * (1 - Sand), 0.35f * Bare * (1 - Sand)));
+                    Colors.Add(ALakeEnvironment::TerrainLayers(P));
                 };
                 for (int32 Y = 0; Y <= NY; ++Y)
                     for (int32 X = 0; X <= NX; ++X)
@@ -258,7 +289,7 @@ void ALakeEnvironment::BeginPlay()
     // --- water: one surface over the whole lake -----------------------------------------------------
     auto* Water = Group(TEXT("Cube"), TEXT("M_LakeSurface"), true);
     const FVector2D WaterExtent = LakeBox.GetExtent() + FVector2D(3000, 3000);
-    Add(Water, FVector(LakeBox.GetCenter(), LakeMap::SurfaceZ - 6), FVector(WaterExtent.X / 50, WaterExtent.Y / 50, 0.12));
+    if (!bLevelWater) Add(Water, FVector(LakeBox.GetCenter(), LakeMap::SurfaceZ - 6), FVector(WaterExtent.X / 50, WaterExtent.Y / 50, 0.12));
     Water->SetCullDistances(0, 0);
     // The water slab must not shade what is under it: the sun and the sky light the shallows, the
     // bottom and the fish through the water (the water material dims them by depth itself).
@@ -1541,6 +1572,21 @@ void ALakeEnvironment::BeginPlay()
                 Eye = FVector(Best->Location - Best->Outward * 1600, LakeMap::SurfaceZ + 260);
                 View = (FVector(Best->Location + Best->Outward * 1000, LakeMap::SurfaceZ + 380) - Eye).Rotation();
             }
+        }
+        else if (SceneView.Equals(TEXT("Air"), ESearchCase::IgnoreCase))
+        {
+            // The whole lake from 350 m up, south of it: the bowl, the shores and the streams.
+            const FBox2D Box = LakeMap::LakeBounds();
+            Eye = FVector(Box.GetCenter() + FVector2D(0, Box.GetSize().Y * 0.9f), LakeMap::SurfaceZ + 35000);
+            View = (FVector(Box.GetCenter(), LakeMap::SurfaceZ) - Eye).Rotation();
+        }
+        else if (SceneView.Equals(TEXT("Bowl"), ESearchCase::IgnoreCase))
+        {
+            // The lake level's landscape with its water hidden: the bowl the Water lake carved.
+            for (TActorIterator<AWaterBody> It(GetWorld()); It; ++It) It->SetActorHiddenInGame(true);
+            GEngine->Exec(GetWorld(), TEXT("r.Water.Enabled 0"));
+            Eye = FVector(Start - StartFacing * 1500, Ground(Start - StartFacing * 1500) + 2500);
+            View = (FVector(Start + StartFacing * 6000, LakeMap::SurfaceZ - 300) - Eye).Rotation();
         }
         else if (SceneView.Equals(TEXT("Birds"), ESearchCase::IgnoreCase))
         {
