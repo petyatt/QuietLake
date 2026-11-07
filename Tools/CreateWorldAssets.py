@@ -186,6 +186,8 @@ for name, rgb in palette.items():
     if name == 'M_LakeSurface':
         # UE5 Single Layer Water: depth absorption, scattering, Lumen reflections.
         mat.set_editor_property('shading_model', unreal.MaterialShadingModel.MSM_SINGLE_LAYER_WATER)
+        # Also the surface of the engine Water lake and streams of /Game/Maps/Lake (their water mesh).
+        mat.set_editor_property('used_with_water', True)
         camera = expression(mat, unreal.MaterialExpressionCameraPositionWS)
         param = lambda n: expression(mat, unreal.MaterialExpressionCollectionParameter, collection=weather, parameter_name=n)
         rain, wind, wx, wy, wetness = param('Rain'), param('Wind'), param('WindDirX'), param('WindDirY'), param('Wetness')

@@ -1,15 +1,16 @@
-"""Build M_TerrainScanned: the lake terrain material from Quixel Megascans surfaces.
+"""Build M_TerrainScanned and M_LakeLandscape: the lake terrain materials from Quixel Megascans surfaces.
 
 Layers (world-aligned, no UV seams on the procedural terrain):
   meadow -> Uncut Grass, forest and shore -> Mossy Forest Floor, patches -> Nordic Moss,
   plus darker, glossier damp ground right above the waterline.
 Terrain vertex colour carries the layer masks: R = meadow, G = forest, B = bare clay (set in LakeEnvironment.cpp).
+M_LakeLandscape is the same material for the landscape of /Game/Maps/Lake: the masks come from its
+layers Meadow, Forest and Clay instead (painted by ULakeLevelLibrary::BuildLandscape).
 """
 import unreal
 
 lib = unreal.MaterialEditingLibrary
 assets = unreal.AssetToolsHelpers.get_asset_tools()
-PATH = '/Game/Materials/M_TerrainScanned'
 SURF = '/Game/Fab/Megascans/Surfaces/'
 LAYERS = {
     # name: (texture folder, texture id, tile size in cm)
@@ -56,81 +57,92 @@ def sampler_for(tex):
     return unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR
 
 
-if unreal.EditorAssetLibrary.does_asset_exist(PATH) and not unreal.EditorAssetLibrary.delete_asset(PATH):
+def build(PATH, landscape):
+  name = PATH.split('/')[-1]
+  if unreal.EditorAssetLibrary.does_asset_exist(PATH) and not unreal.EditorAssetLibrary.delete_asset(PATH):
     raise RuntimeError('Cannot delete old ' + PATH)
-mat = assets.create_asset('M_TerrainScanned', '/Game/Materials', unreal.Material, unreal.MaterialFactoryNew())
+  mat = assets.create_asset(name, '/Game/Materials', unreal.Material, unreal.MaterialFactoryNew())
 
-position = node(mat, unreal.MaterialExpressionWorldPosition)
-wetness = node(mat, unreal.MaterialExpressionCollectionParameter, collection=unreal.load_asset('/Game/Weather/MPC_Weather'), parameter_name='Wetness')
-vertex = node(mat, unreal.MaterialExpressionVertexColor)
+  position = node(mat, unreal.MaterialExpressionWorldPosition)
+  wetness = node(mat, unreal.MaterialExpressionCollectionParameter, collection=unreal.load_asset('/Game/Weather/MPC_Weather'), parameter_name='Wetness')
+  if landscape:
+    layer = lambda n: node(mat, unreal.MaterialExpressionLandscapeLayerSample, parameter_name=n, preview_weight=0.0)
+    vertex = custom(mat, 'return float3(R, G, B);', [('R', layer('Meadow')), ('G', layer('Forest')), ('B', layer('Clay'))])
+  else:
+    vertex = node(mat, unreal.MaterialExpressionVertexColor)
 
-samples = {}
-for key, (folder, tex_id, tile) in LAYERS.items():
-    uv = custom(mat, 'return P.xy / %.1f;' % tile, [('P', position)], unreal.CustomMaterialOutputType.CMOT_FLOAT2)
-    for suffix in ('B', 'N', 'ORM'):
-        tex = unreal.load_asset('%sT_%s_4K_%s' % (folder, tex_id, suffix))
-        if not tex:
-            raise RuntimeError('Missing texture %s %s' % (tex_id, suffix))
-        s = node(mat, unreal.MaterialExpressionTextureSample, texture=tex, sampler_type=sampler_for(tex))
-        connect(uv, '', s, 'UVs')
-        samples[key + suffix] = s
+  samples = {}
+  for key, (folder, tex_id, tile) in LAYERS.items():
+      uv = custom(mat, 'return P.xy / %.1f;' % tile, [('P', position)], unreal.CustomMaterialOutputType.CMOT_FLOAT2)
+      for suffix in ('B', 'N', 'ORM'):
+          tex = unreal.load_asset('%sT_%s_4K_%s' % (folder, tex_id, suffix))
+          if not tex:
+              raise RuntimeError('Missing texture %s %s' % (tex_id, suffix))
+          s = node(mat, unreal.MaterialExpressionTextureSample, texture=tex, sampler_type=sampler_for(tex))
+          connect(uv, '', s, 'UVs')
+          samples[key + suffix] = s
 
-# Layer weights: x = grass, y = moss, z = damp ground. Forest floor fills the rest.
-weights = custom(mat, """
-float2 p = P.xy * 0.0022; float n = 0; float a = 0.5;
-for (int i = 0; i < 4; i++) {
-    float2 c = floor(p); float2 f = frac(p); f = f * f * (3 - 2 * f);
-    float h00 = frac(sin(dot(c, float2(127.1, 311.7))) * 43758.5453);
-    float h10 = frac(sin(dot(c + float2(1, 0), float2(127.1, 311.7))) * 43758.5453);
-    float h01 = frac(sin(dot(c + float2(0, 1), float2(127.1, 311.7))) * 43758.5453);
-    float h11 = frac(sin(dot(c + float2(1, 1), float2(127.1, 311.7))) * 43758.5453);
-    n += a * lerp(lerp(h00, h10, f.x), lerp(h01, h11, f.x), f.y);
-    p = p * 2.03 + 11.7; a *= 0.5;
-}
-float meadow = V.r * (1 - V.g);
-float forest = V.g;
-float moss = saturate((n - 0.52) * 5) * (0.35 * meadow + 0.75 * forest);
-float grass = saturate(meadow * (1 - moss) * saturate((n + 0.25) * 1.6));
-float wet = 1 - smoothstep(-23.0, 16.0, P.z + (n - 0.5) * 14.0);          // waterline is at Z = -25
-return float3(grass, moss, wet);
-""", [('P', position), ('V', vertex)])
+  # Layer weights: x = grass, y = moss, z = damp ground. Forest floor fills the rest.
+  weights = custom(mat, """
+  float2 p = P.xy * 0.0022; float n = 0; float a = 0.5;
+  for (int i = 0; i < 4; i++) {
+      float2 c = floor(p); float2 f = frac(p); f = f * f * (3 - 2 * f);
+      float h00 = frac(sin(dot(c, float2(127.1, 311.7))) * 43758.5453);
+      float h10 = frac(sin(dot(c + float2(1, 0), float2(127.1, 311.7))) * 43758.5453);
+      float h01 = frac(sin(dot(c + float2(0, 1), float2(127.1, 311.7))) * 43758.5453);
+      float h11 = frac(sin(dot(c + float2(1, 1), float2(127.1, 311.7))) * 43758.5453);
+      n += a * lerp(lerp(h00, h10, f.x), lerp(h01, h11, f.x), f.y);
+      p = p * 2.03 + 11.7; a *= 0.5;
+  }
+  float meadow = V.r * (1 - V.g);
+  float forest = V.g;
+  float moss = saturate((n - 0.52) * 5) * (0.35 * meadow + 0.75 * forest);
+  float grass = saturate(meadow * (1 - moss) * saturate((n + 0.25) * 1.6));
+  float wet = 1 - smoothstep(-23.0, 16.0, P.z + (n - 0.5) * 14.0);          // waterline is at Z = -25
+  return float3(grass, moss, wet);
+  """, [('P', position), ('V', vertex)])
 
-BLEND = 'float g = W.x, m = W.y; float f = saturate(1 - g - m);\n'
-color = custom(mat, BLEND + """
-float3 c = G * (g * 0.78) + F * f + M * m;
-float2 cell = floor(P.xy / 900), blend = frac(P.xy / 900);
-blend = blend * blend * (3 - 2 * blend);
-float4 h = frac(sin(float4(dot(cell, float2(12.9898, 78.233)), dot(cell + float2(1, 0), float2(12.9898, 78.233)), dot(cell + float2(0, 1), float2(12.9898, 78.233)), dot(cell + 1, float2(12.9898, 78.233)))) * 43758.5453);
-float macro = lerp(0.85, 1.12, lerp(lerp(h.x, h.y, blend.x), lerp(h.z, h.w, blend.x), blend.y));
-c *= macro;
-c = lerp(c, c * float3(0.5, 0.48, 0.45), W.z);       // damp soil is darker
-// Bare clay on the faces of bluffs and scarps (vertex blue): ochre, banded by its layers,
-// with the forest floor's detail for texture.
-float lum = dot(F, float3(0.3, 0.5, 0.2));
-float3 clay = float3(0.40, 0.28, 0.17) * saturate(lum * 2.4 + 0.35) * (0.88 + 0.12 * sin(P.z * 0.21 + sin(P.x * 0.01)));
-c = lerp(c, clay, V.b);
-// After rain the ground darkens (MPC_Weather.Wetness).
-return c * lerp(1.0, 0.62, Wt);
-""", [('W', weights), ('G', samples['GB']), ('F', samples['FB']), ('M', samples['MB']), ('P', position), ('V', vertex), ('Wt', wetness)])
-normal = custom(mat, BLEND + """
-float3 n = G * g + F * f + M * m;
-n.xy *= lerp(1.0, 0.6, W.z);                         // wet ground looks smoother
-n.xy *= lerp(1.0, 0.55, V.b);                        // clay is smoother than leaf litter
-return normalize(n);
-""", [('W', weights), ('G', samples['GN']), ('F', samples['FN']), ('M', samples['MN']), ('V', vertex)])
-rough = custom(mat, BLEND + 'float r = G.g * g + F.g * f + M.g * m;\nr = lerp(r, 0.8, V.b);\nr = lerp(r, 0.35, Wt);\nreturn lerp(r, 0.28, W.z);',
-               [('W', weights), ('G', samples['GORM']), ('F', samples['FORM']), ('M', samples['MORM']), ('V', vertex), ('Wt', wetness)],
-               unreal.CustomMaterialOutputType.CMOT_FLOAT1)
-ao = custom(mat, BLEND + 'return G.r * g + F.r * f + M.r * m;',
-            [('W', weights), ('G', samples['GORM']), ('F', samples['FORM']), ('M', samples['MORM'])],
-            unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+  BLEND = 'float g = W.x, m = W.y; float f = saturate(1 - g - m);\n'
+  color = custom(mat, BLEND + """
+  float3 c = G * (g * 0.78) + F * f + M * m;
+  float2 cell = floor(P.xy / 900), blend = frac(P.xy / 900);
+  blend = blend * blend * (3 - 2 * blend);
+  float4 h = frac(sin(float4(dot(cell, float2(12.9898, 78.233)), dot(cell + float2(1, 0), float2(12.9898, 78.233)), dot(cell + float2(0, 1), float2(12.9898, 78.233)), dot(cell + 1, float2(12.9898, 78.233)))) * 43758.5453);
+  float macro = lerp(0.85, 1.12, lerp(lerp(h.x, h.y, blend.x), lerp(h.z, h.w, blend.x), blend.y));
+  c *= macro;
+  c = lerp(c, c * float3(0.5, 0.48, 0.45), W.z);       // damp soil is darker
+  // Bare clay on the faces of bluffs and scarps (vertex blue): ochre, banded by its layers,
+  // with the forest floor's detail for texture.
+  float lum = dot(F, float3(0.3, 0.5, 0.2));
+  float3 clay = float3(0.40, 0.28, 0.17) * saturate(lum * 2.4 + 0.35) * (0.88 + 0.12 * sin(P.z * 0.21 + sin(P.x * 0.01)));
+  c = lerp(c, clay, V.b);
+  // After rain the ground darkens (MPC_Weather.Wetness).
+  return c * lerp(1.0, 0.62, Wt);
+  """, [('W', weights), ('G', samples['GB']), ('F', samples['FB']), ('M', samples['MB']), ('P', position), ('V', vertex), ('Wt', wetness)])
+  normal = custom(mat, BLEND + """
+  float3 n = G * g + F * f + M * m;
+  n.xy *= lerp(1.0, 0.6, W.z);                         // wet ground looks smoother
+  n.xy *= lerp(1.0, 0.55, V.b);                        // clay is smoother than leaf litter
+  return normalize(n);
+  """, [('W', weights), ('G', samples['GN']), ('F', samples['FN']), ('M', samples['MN']), ('V', vertex)])
+  rough = custom(mat, BLEND + 'float r = G.g * g + F.g * f + M.g * m;\nr = lerp(r, 0.8, V.b);\nr = lerp(r, 0.35, Wt);\nreturn lerp(r, 0.28, W.z);',
+                 [('W', weights), ('G', samples['GORM']), ('F', samples['FORM']), ('M', samples['MORM']), ('V', vertex), ('Wt', wetness)],
+                 unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+  ao = custom(mat, BLEND + 'return G.r * g + F.r * f + M.r * m;',
+              [('W', weights), ('G', samples['GORM']), ('F', samples['FORM']), ('M', samples['MORM'])],
+              unreal.CustomMaterialOutputType.CMOT_FLOAT1)
 
-for src, prop in [(color, unreal.MaterialProperty.MP_BASE_COLOR), (normal, unreal.MaterialProperty.MP_NORMAL),
-                  (rough, unreal.MaterialProperty.MP_ROUGHNESS), (ao, unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)]:
-    if not lib.connect_material_property(src, '', prop):
-        raise RuntimeError('Cannot connect %s' % prop)
-lib.recompile_material(mat)
-unreal.EditorAssetLibrary.save_asset(PATH)
+  for src, prop in [(color, unreal.MaterialProperty.MP_BASE_COLOR), (normal, unreal.MaterialProperty.MP_NORMAL),
+                    (rough, unreal.MaterialProperty.MP_ROUGHNESS), (ao, unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)]:
+      if not lib.connect_material_property(src, '', prop):
+          raise RuntimeError('Cannot connect %s' % prop)
+  lib.recompile_material(mat)
+  unreal.EditorAssetLibrary.save_asset(PATH)
+  unreal.log('QUIET_LAKE_TERRAIN_MATERIAL ' + PATH)
+
+
+build('/Game/Materials/M_TerrainScanned', False)
+build('/Game/Materials/M_LakeLandscape', True)
 
 # Fab's Megascans master materials ship without the instanced-mesh usage flag; the scene draws
 # rocks with instanced components, so without it the engine falls back to the default material.

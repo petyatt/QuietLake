@@ -459,6 +459,10 @@ public:
     static bool IsWater(FVector Position);
     /** 1 at the shoreline of the elliptic lake, 0 at its centre. */
     static float LakeRadius(float X, float Y);
+    /** The ground's layer masks at a point, 0..1 each: R meadow, G forest floor, B bare clay on steep
+     *  faces; none of them is the muddy shore and the lake bed. The terrain mesh carries them as vertex
+     *  colour, the landscape as its Meadow / Forest / Clay layers (ULakeLevelLibrary). */
+    static FLinearColor TerrainLayers(const FVector2D& P);
 };
 
 UCLASS()

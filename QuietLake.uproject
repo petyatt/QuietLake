@@ -42,6 +42,18 @@
     {
       "Name": "MetaHumanCharacter",
       "Enabled": true
+    },
+    {
+      "Name": "PCGBiomeCore",
+      "Enabled": true
+    },
+    {
+      "Name": "PCGBiomeSample",
+      "Enabled": false
+    },
+    {
+      "Name": "Water",
+      "Enabled": true
     }
   ]
 }

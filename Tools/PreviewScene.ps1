@@ -10,7 +10,7 @@ $safeName = $View -replace '[^\p{L}\p{N}_-]', '_'
 $logPath = Join-Path $projectRoot ('Saved\Logs\Scene_' + $safeName + '.log')
 $arguments = @(
     ('"' + (Join-Path $projectRoot 'QuietLake.uproject') + '"'),
-    '/Engine/Maps/Entry', '-game', '-windowed', '-ResX=1280', '-ResY=720',
+    '/Game/Maps/Lake', '-game', '-windowed', '-ResX=1280', '-ResY=720',
     ('-ScenePreview="' + $View + '"'), '-nosound', ('-abslog="' + $logPath + '"')
 )
 if ($StayOpen) { $arguments += '-PreviewStay' }

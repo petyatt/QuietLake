@@ -1,4 +1,6 @@
 #include "LakeMap.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Async/ParallelFor.h"
 
 namespace
@@ -578,12 +580,33 @@ namespace
         return SurfaceZ + H * 100;
     }
 
-    /** The ground on the same 1 m grid, built once. */
+    /** The ground on the same 1 m grid, built once: from the baked landscape where there is one. */
     struct FGroundGrid
     {
         FVector2D Min;
         int32 NX = 0, NY = 0;
         TArray<float> H;
+        bool bBaked = false;
+        /** The baked landscape heights (ULakeLevelLibrary::BakeGround): a small header, then uint16 heights. */
+        bool LoadBaked()
+        {
+            TArray<uint8> Bytes;
+            if (!FFileHelper::LoadFileToArray(Bytes, *(FPaths::ProjectContentDir() / BakedGroundFile), FILEREAD_Silent)) return false;
+            struct FHeader { char Magic[4]; int32 W, H; float MinX, MinY, Step, ZScale, ZOffset; };
+            if (Bytes.Num() < (int32)sizeof(FHeader)) return false;
+            FHeader Header;
+            FMemory::Memcpy(&Header, Bytes.GetData(), sizeof(FHeader));
+            if (FMemory::Memcmp(Header.Magic, "QLG1", 4) != 0 || Bytes.Num() != (int32)sizeof(FHeader) + Header.W * Header.H * 2) return false;
+            const uint16* Data = (const uint16*)(Bytes.GetData() + sizeof(FHeader));
+            for (int32 Y = 0; Y < NY; ++Y)
+                for (int32 X = 0; X < NX; ++X)
+                {
+                    const float FX = (Min.X + X * Cell - Header.MinX) / Header.Step, FY = (Min.Y + Y * Cell - Header.MinY) / Header.Step;
+                    const int32 IX = FMath::Clamp(FMath::RoundToInt(FX), 0, Header.W - 1), IY = FMath::Clamp(FMath::RoundToInt(FY), 0, Header.H - 1);
+                    H[Y * NX + X] = Data[IY * Header.W + IX] * Header.ZScale + Header.ZOffset;
+                }
+            return true;
+        }
         FGroundGrid()
         {
             // Everything the ground depends on is made first, so the parallel loop only reads.
@@ -596,10 +619,13 @@ namespace
             NX = FMath::CeilToInt((TerrainBounds.Max.X - Min.X) / Cell) + 1;
             NY = FMath::CeilToInt((TerrainBounds.Max.Y - Min.Y) / Cell) + 1;
             H.SetNumUninitialized(NX * NY);
-            ParallelFor(NY, [this](int32 Y)
-            {
-                for (int32 X = 0; X < NX; ++X) H[Y * NX + X] = GroundExact(Min.X + X * Cell, Min.Y + Y * Cell);
-            });
+            bBaked = LoadBaked();
+            if (!bBaked)
+                ParallelFor(NY, [this](int32 Y)
+                {
+                    for (int32 X = 0; X < NX; ++X) H[Y * NX + X] = GroundExact(Min.X + X * Cell, Min.Y + Y * Cell);
+                });
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_GROUND %s"), bBaked ? TEXT("baked landscape") : TEXT("designed"));
         }
         bool Sample(float X, float Y, float& Out) const
         {
@@ -667,6 +693,8 @@ float LakeMap::Ground(float X, float Y)
     if (GroundGrid().Sample(X, Y, H)) return H;
     return GroundExact(X, Y);
 }
+float LakeMap::DesignGround(float X, float Y) { return GroundExact(X, Y); }
+bool LakeMap::HasBakedGround() { return GroundGrid().bBaked; }
 bool LakeMap::IsWater(float X, float Y) { return ShoreDistance(X, Y) > 20; }
 float LakeMap::Depth(float X, float Y) { return FMath::Max(0.0f, SurfaceZ - Ground(X, Y)); }
 FVector2D LakeMap::DeeperDirection(float X, float Y)

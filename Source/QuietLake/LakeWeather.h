@@ -22,7 +22,7 @@ struct FLakeWeatherState
  * Game clock and weather. The server keeps the clock and picks the weather; both replicate as a
  * few numbers (a clock origin and a blend between two weather states on the server clock), so
  * every machine computes the same time and weather and drives its own sky from them:
- * sun and moon, sky light, height fog and morning mist, volumetric clouds, the Megaplants wind,
+ * sun and moon, sky light, height fog and morning mist, volumetric clouds, the plants' wind,
  * MPC_Weather for the materials (water waves and rain rings, grass sway, wet ground, rain), the
  * rain streaks around the camera, and the ambience (drizzle and downpour layers, wind, birds by day, crickets at night).
  */

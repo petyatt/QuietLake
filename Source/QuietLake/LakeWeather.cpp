@@ -974,7 +974,7 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
             }
     }
 
-    // Wind for the Megaplants trees and reeds, the materials and the rain.
+    // Wind for the Dynamic Wind plants, the materials and the rain.
     const FVector WindDir = FRotator(0, W.WindYaw, 0).Vector();
     // The plugin exports neither the subsystem class nor a usable header, so its Blueprint
     // function UpdateWindParameters is called through reflection.
