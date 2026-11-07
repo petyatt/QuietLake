@@ -504,6 +504,15 @@ void ALakeWeather::BeginPlay()
                 { 23.0f, 1.0f,  0.2f, 0.9f, 0.7f,  TEXT("Clouds_NightLightning.png"), -25, 15, 250, false, true },
                 { 23.5f, 0.45f, 0.05f, 0.0f, 0.1f, TEXT("Clouds_Night.png"), 0, 25 },
             };
+        // -CloudPreview -CloudQuick: only the four skies that show the shapes best, to iterate fast.
+        if (bCloudsOnly && FParse::Param(FCommandLine::Get(), TEXT("CloudQuick")))
+            Shots = {
+                { 11.0f, 0.25f, 0.0f, 0.0f, 0.2f,  TEXT("Clouds_FairCumulus.png"), -25, 30 },
+                { 13.0f, 0.5f,  0.0f, 0.0f, 0.35f, TEXT("Clouds_Cumulus.png"), 60, 30 },
+                { 14.0f, 0.8f,  0.1f, 0.0f, 0.4f,  TEXT("Clouds_Broken.png"), -25, 30 },
+                { 15.0f, 0.95f, 0.15f, 0.0f, 0.6f, TEXT("Clouds_Overcast.png"), -25, 30 },
+                { 16.0f, 1.0f,  0.3f, 1.0f, 0.85f, TEXT("Clouds_Storm.png"), -25, 30 },
+            };
         if (FParse::Param(FCommandLine::Get(), TEXT("GrassLightPreview")))
             Shots = {
                 { 12.5f, 0.15f, 0, 0, 0.1f, TEXT("Grass_NoonAcross.png"), -60, -25, 1000 },
@@ -695,20 +704,41 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
             // clouds mixed by the weather, drifting with the wind. The layer starts at 0.8 km and is
             // 9 km thick, room for storm towers; light reaching every sample is reddened by the
             // atmosphere, so the clouds glow at sunset.
-            UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Weather/M_LakeClouds.M_LakeClouds"));
+            // The engine's authored cloud material is the default look: its noise layers and
+            // height profiles already give the rounded cumulus of the reference skies, and the
+            // weather only has to move its coverage, density and storminess. Our own material is
+            // kept under -OwnClouds for experiments (it has fronts, in-cloud lightning and a
+            // moonlit glow, but its shaped heaps never read as well as the authored ones).
+            const bool bWantOwnClouds = FParse::Param(FCommandLine::Get(), TEXT("OwnClouds"));
+            UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, bWantOwnClouds
+                ? TEXT("/Game/Weather/M_LakeClouds.M_LakeClouds")
+                : TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst"));
             if (!Base) Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst"));
+            if (!Base) Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Weather/M_LakeClouds.M_LakeClouds"));
             if (Base)
             {
                 CloudMaterial = UMaterialInstanceDynamic::Create(Base, this);
                 Clouds->SetMaterial(CloudMaterial);
+                // The authored material's noise tiling (its own default is 256): a smaller value makes
+                // the heaps bigger, which is what the reference cumulus need.
+                CloudMaterial->SetScalarParameterValue(TEXT("Layout_CloudGlobalScale"), 150.0f);
                 bOwnClouds = Base->GetName() == TEXT("M_LakeClouds");
             }
             if (bOwnClouds)
             {
-                Clouds->SetLayerBottomAltitude(0.8f);
+                Clouds->SetLayerBottomAltitude(1.0f);
                 Clouds->SetLayerHeight(9.0f);
                 Clouds->SetbUsePerSampleAtmosphericLightTransmittance(true);
                 // More steps through the cloud than the default: smooth billows instead of grain.
+                Clouds->SetViewSampleCountScale(3.5f);
+                Clouds->SetShadowViewSampleCountScale(3.0f);
+            }
+            else
+            {
+                // The engine material: a cumulus layer from about 1.4 km up, five kilometres thick.
+                Clouds->SetLayerBottomAltitude(1.8f);
+                Clouds->SetLayerHeight(4.0f);
+                Clouds->SetbUsePerSampleAtmosphericLightTransmittance(true);
                 Clouds->SetViewSampleCountScale(2.5f);
                 Clouds->SetShadowViewSampleCountScale(2.0f);
             }
@@ -921,8 +951,13 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
     }
     else if (CloudMaterial && Changed(LastCloud, W.Cloud + 2.0f * W.Rain, 0.004f))
     {
-        CloudMaterial->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), FMath::Lerp(-0.7f, 1.2f, W.Cloud));
-        CloudMaterial->SetScalarParameterValue(TEXT("Cloud_GlobalDensity"), FMath::Lerp(0.004f, 0.035f, W.Cloud));
+        // The engine material's own scale: coverage -0.25 gives a clear sky, more than 1 an overcast
+        // one; the density is the thickness of the heaps.
+        // A gentle curve: clear skies stay clear, "partly cloudy" gives separate heaps with blue
+        // between them, and only an almost fully cloudy day closes the deck.
+        float CloudAmount = FMath::Pow(FMath::Clamp(W.Cloud, 0.0f, 1.0f), 1.6f);
+        CloudMaterial->SetScalarParameterValue(TEXT("Cloud_GlobalCoverage"), FMath::Lerp(-0.42f, 0.32f, W.Cloud) + 0.30f * S(0.5f, 1.0f, W.Rain));
+        CloudMaterial->SetScalarParameterValue(TEXT("Cloud_GlobalDensity"), FMath::Lerp(0.014f, 0.045f, S(0.05f, 0.95f, W.Cloud)));
         CloudMaterial->SetScalarParameterValue(TEXT("StormClouds"), S(0.3f, 1.0f, W.Rain));
     }
 

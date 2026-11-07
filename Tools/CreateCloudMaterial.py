@@ -48,13 +48,13 @@ def custom(mat, code, inputs, output=unreal.CustomMaterialOutputType.CMOT_FLOAT1
 # Density of the cloud at a sample. P: world position (cm); H: height above the layer's bottom
 # (km); Cu, St, Sm: how much of each kind; WO: wind offset (km) and evolution phase.
 DENSITY = r"""
-float3 pk = P / 100000.0;                         // km
+// Position in km and height above the layer bottom in km.
+float3 pk = P / 100000.0;
 float3 w = float3(WO.x, WO.y, 0);
 float h = H;
 
-// The front: the old weather's clouds thin out across its whole width (as the light and rain
-// change by the water), the coming ones arrive with a sharp leading edge a little ahead of its
-// middle, and where they bring rain a wall of storm towers stands on that edge.
+// The front: the old weather clouds thin out across its whole width, the coming ones arrive with a
+// sharp leading edge; where they bring rain a line of storm towers stands on that edge.
 float fx = Fr.z - dot(pk.xy, Fr.xy);
 float fOld = 1.0 - smoothstep(-Fr.w, Fr.w, fx);
 float fNew = smoothstep(-0.15 * Fr.w, 0.15 * Fr.w, fx + 0.3 * Fr.w);
@@ -63,58 +63,68 @@ float kCu = max(Cu * fOld, Cu2 * fNew), kSt = max(St * fOld, St2 * fNew);
 float kSm = max(Sm * fOld, Sm2 * saturate(fNew + wall * 0.6));
 float kD = lerp(D, D2, fNew);
 
-// Where clouds gather: broad patches drifting with the wind (from the same noise, as 2D).
-float patch = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy * 0.7) / 23.0, 0.31 + WO.z * 0.002), 0).r;
-float patch2 = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy * 0.5) / 47.0, 0.71), 0).r;
+// Where cloud fields gather: broad patches (tens of km), drifting with the wind.
+float patch = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy * 0.6) / 26.0, 0.31 + WO.z * 0.0015), 0).r;
+float patch2 = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy * 0.5) / 9.0, 0.71), 0).r;
 
-// The billows: Perlin-Worley shape noise, wider than tall, slowly reshaping with WO.z.
-float3 su = float3((pk.xy + w.xy) / 3.2, h / 1.8 + WO.z * 0.01);
-float4 s = Shape.SampleLevel(ShapeSampler, su, 0);
-float fbm = s.g * 0.625 + s.b * 0.25 + s.a * 0.125;
-float shape = saturate((s.r - (fbm - 1.0)) / (2.0 - fbm));     // remap(r, fbm-1, 1, 0, 1)
+// The billows: a 3D Perlin-Worley, the shape every cloud kind is carved from.
+float4 s = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy * 1.2) / 3.6, h / 3.0 + WO.z * 0.018), 0);
+float fbm = s.g * 0.82 + s.b * 0.13 + s.a * 0.05;
+float billow = saturate((s.r - (fbm - 1.0)) / (2.0 - fbm));
 
-// Cumulus: separate heaps on cells ~2 km apart (more cells fill in as Cu grows), each with a flat
-// base at ~0.45 km over the layer and a rounded top, the strongest cells towering highest.
-float4 cl = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy) / 9.0, 0.5 + WO.z * 0.003), 0);
-float cells = saturate(cl.r * 0.55 + cl.g * 0.45 + (patch - 0.5) * 0.35);
-float cc = saturate(kCu * 0.65);
-float cov = saturate((cells - (1.0 - cc)) / max(cc, 0.05));
-float top = 0.75 + (0.6 + 2.6 * cc) * cov;
-float pcu = smoothstep(0.38, 0.5, h) * saturate((top - h) / max(0.45 * top, 0.05));
-float g = cov * pcu;
-float dcu = saturate((shape - (1.0 - g)) / max(g, 0.05)) * g;
+// A cumulus: a 2D field says where clouds gather, and the heap is a dome whose footprint shrinks
+// with height (sqrt of one minus height squared), so it is a hemisphere with a flat base, not a
+// column or a pancake. A 3D Perlin-Worley carves the cauliflower surface: the density is that noise
+// remapped by the dome's coverage, so the billows themselves make the silhouette.
+float4 cn = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy) / 5.0, 0.53 + WO.z * 0.002), 0);
+float cells = saturate(cn.r * 0.65 + cn.g * 0.35 + (patch - 0.5) * 0.50);
+float cu = saturate(kCu * 0.90);
+float th = lerp(0.62, 0.20, cu);
+float cov = smoothstep(th, th + 0.16, cells);
+float baseCu = 0.10 + 0.05 * (cn.b - 0.5) + 0.02 * (patch - 0.5);
+float topCu = baseCu + 0.75 + 1.30 * cov + 0.35 * patch2;
+float hh = saturate((h - baseCu) / max(topCu - baseCu, 0.2));
+float dome = sqrt(saturate(1.0 - hh * hh));
+float c = saturate(cov * dome * 1.1);
+float dcu = saturate((billow - (1.0 - c)) / max(c, 0.05));
+// A finer noise frays the surface just enough to read as cloud, not as a smooth ball.
+float4 bs = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy * 1.5) / 1.6, h / 1.15 + WO.z * 0.04), 0);
+float det = bs.g * 0.7 + bs.b * 0.3;
+dcu = saturate((dcu - (1.0 - det) * 0.12) / 0.88);
+dcu *= smoothstep(baseCu, baseCu + 0.10, h);      // flat base
+dcu = saturate(dcu * 1.8);
 
-// Stratus: a wide grey deck from ~0.3 to ~1.1 km with a flat top and a lumpy underside (the cells
-// hang lower here and there, like stratocumulus seen from below), ragged in the rain.
-float sc = saturate(kSt * (0.8 + 0.4 * patch2));
-float4 s2 = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy) / 6.0, h / 1.5 + WO.z * 0.006), 0);
-float fbm2 = s2.g * 0.625 + s2.b * 0.25 + s2.a * 0.125;
+// Stratus: a closed deck with a lumpy underside. Thin spots let more light through, so the grey
+// ceiling has bright and dark patches instead of being one flat lid.
+float st = saturate(kSt);
+float4 s2 = Shape.SampleLevel(ShapeSampler, float3((pk.xy + w.xy * 1.1) / 5.5, h / 3.0 + WO.z * 0.008), 0);
+float fbm2 = s2.g * 0.82 + s2.b * 0.13 + s2.a * 0.05;
 float shape2 = saturate((s2.r - (fbm2 - 1.0)) / (2.0 - fbm2));
-float bottom = 0.5 - 0.3 * cells;                                // lumps of the underside
-float pst = smoothstep(bottom, bottom + 0.2, h) * (1.0 - smoothstep(0.95, 1.3, h));
-float gs = sc * pst;
-float dst = saturate((lerp(shape2, 1.0, 0.35) - (1.0 - gs)) / max(gs, 0.05)) * gs;
+float baseSt = 0.42 + 0.18 * (s2.g - 0.5) + 0.10 * (patch2 - 0.5);
+float topSt = baseSt + 0.45 + 0.35 * patch2;
+float vertSt = smoothstep(baseSt, baseSt + 0.15, h) * (1.0 - smoothstep(topSt - 0.25, topSt, h));
+float dst = st * vertSt * (0.30 + 0.85 * shape2);
 
-// Storm clouds: dark, heavy towers from ~0.2 km up to ~8 km, an anvil spreading under the top;
-// twice as dense as the rest, so their bases are dark.
-float mc = saturate(kSm * (0.35 + 1.0 * patch2));
-float psm = smoothstep(0.1, 0.35, h) * (1.0 - smoothstep(6.8, 8.2, h));
-float anvil = smoothstep(5.5, 6.8, h) * (1.0 - smoothstep(7.2, 8.2, h));
-float tower = saturate(1.25 - h / 9.0);
-float gm = mc * psm * lerp(tower, 1.0, anvil);
-float dsm = saturate((lerp(shape, 1.0, 0.25) - (1.0 - gm)) / max(gm, 0.05)) * gm * 2.0;
+// Storm: towers from just over the bottom up to ~7 km, an anvil spreading under the top; denser
+// than the rest, so the bases are dark and the anvil thins out at its edge.
+float sm = saturate(kSm * (0.45 + 0.9 * patch2));
+float baseSm = 0.05 + 0.10 * (cn.r - 0.5) + 0.04 * (patch2 - 0.5);
+float psm = smoothstep(baseSm, baseSm + 0.24, h) * (1.0 - smoothstep(6.4, 7.8, h));
+float anvil = smoothstep(4.8, 6.2, h) * (1.0 - smoothstep(6.4, 7.8, h));
+float tower = saturate(1.35 - h / 8.0);
+float fSm = sm * psm * lerp(tower, 1.0, anvil) * 0.8;
+float dsm = saturate((lerp(billow, 1.0, 0.25) - (1.0 - fSm)) / max(fSm, 0.03)) * 1.8;
 
 float d = max(max(dcu, dst), dsm);
 if (d <= 0.0) return 0.0;
 
-// Fray the edges with the erosion noise: wispy at the bottom, billowy at the top.
-float3 eu = (pk + w * 1.25) / 2.0 + float3(0, 0, WO.z * 0.03);
-float3 e3 = Erosion.SampleLevel(ErosionSampler, eu, 0).rgb;
-float e = e3.r * 0.625 + e3.g * 0.25 + e3.b * 0.125;
-e = lerp(1.0 - e, e, saturate(h * 1.5));
-d = saturate((d - e * 0.22) / 0.78);
-// Firmer edges and denser cores: the billows read as solid heaps, not as haze.
-d = saturate(d * 2.0);
+// Fray the edges: wispy at the bases, billowy crowns. The erosion is large-scale so the edges soften
+// into wisps instead of graining the surface.
+float3 eu = (pk + w * 1.4) / 2.2 + float3(0, 0, WO.z * 0.03);
+float3 e3 = Erosion.SampleLevel(ErosionSampler, eu, 1).rgb;
+float er = e3.r * 0.85 + e3.g * 0.15;
+float erode = lerp(0.02, 0.06, saturate(h * 0.9));
+d = saturate((d - er * erode) / (1.0 - erode));
 return d * kD;
 """
 
@@ -126,10 +136,11 @@ float fNew = smoothstep(-0.15 * Fr.w, 0.15 * Fr.w, fx + 0.3 * Fr.w);
 float kSt = max(St * fOld, St2 * fNew), kSm = max(Sm * fOld, Sm2 * fNew);
 // Grey decks absorb a little; storm clouds much more, most of all in their low, rain-laden bases,
 // so a storm seen from below is dark even with the sun high over it.
-float3 c = lerp(float3(0.96, 0.96, 0.97), float3(0.62, 0.65, 0.70), saturate(kSt * 0.5));
-float3 storm = lerp(float3(0.16, 0.18, 0.22), float3(0.50, 0.53, 0.58), saturate((H - 0.3) / 4.0));
+float3 c = lerp(float3(0.95, 0.95, 0.96), float3(0.72, 0.74, 0.78), saturate(kSt * 0.5));
+float3 storm = lerp(float3(0.10, 0.12, 0.16), float3(0.46, 0.49, 0.54), saturate((H - 0.3) / 4.0));
 return lerp(c, storm, saturate(kSm * 1.1));
 """
+
 
 # Light the cloud gives off itself, per metre and in proportion to its density (as the engine adds
 # it): the flash of a strike inside the storm, brightest low in the cloud and within ~2 km of it
@@ -187,10 +198,10 @@ lib.connect_material_property(density, '', unreal.MaterialProperty.MP_SUBSURFACE
 # Light in the cloud: a forward-scattering lobe (silver linings towards the sun) blended with a
 # softer backward one, and the multiple scattering that makes thick clouds glow inside.
 advanced = node(mat, unreal.MaterialExpressionVolumetricAdvancedMaterialOutput)
-for prop, value in (('const_phase_g', 0.75), ('const_phase_g2', -0.2), ('const_phase_blend', 0.45),
+for prop, value in (('const_phase_g', 0.78), ('const_phase_g2', -0.25), ('const_phase_blend', 0.5),
                     ('multi_scattering_approximation_octave_count', 2),
-                    ('const_multi_scattering_contribution', 0.55), ('const_multi_scattering_occlusion', 0.35),
-                    ('const_multi_scattering_eccentricity', 0.6), ('ground_contribution', True)):
+                    ('const_multi_scattering_contribution', 0.42), ('const_multi_scattering_occlusion', 0.55),
+                    ('const_multi_scattering_eccentricity', 0.6), ('ground_contribution', False)):
     try:
         advanced.set_editor_property(prop, value)
     except Exception as e:
