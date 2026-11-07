@@ -314,6 +314,87 @@ void ALakeEnvironment::BeginPlay()
     // the fishing spots and the camp.
     const TArray<LakeMap::FShorePoint>& Shore = LakeMap::Shoreline();
 
+    // --- snags: dead trees grown in the Procedural Vegetation Editor (SM_PV_Snag_*), lying from the
+    // bank into the water and sunk in open water where LakeMap puts them (the fish hold by them), and
+    // windfalls on the forest floor. Each tree's trunk runs from root to tip, turned at random about it.
+    {
+        UStaticMesh* const DeadTrees[] = {
+            LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Plants/PV/SM_PV_Snag_Pine.SM_PV_Snag_Pine")),
+            LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Plants/PV/SM_PV_Snag_Birch.SM_PV_Snag_Birch")),
+        };
+        FRandomStream SnagRandom(5501);
+        auto Lay = [&](const FVector& Root, const FVector& Tip)
+        {
+            UStaticMesh* Mesh = DeadTrees[SnagRandom.RandRange(0, 1)];
+            if (!Mesh) return false;
+            const FVector Dir = Tip - Root;
+            const FQuat Along = FRotationMatrix::MakeFromZ(Dir).ToQuat() * FQuat(FVector::UpVector, SnagRandom.FRandRange(0, 2 * PI));
+            auto* Tree = NewObject<UStaticMeshComponent>(this);
+            Tree->SetupAttachment(RootComponent);
+            Tree->SetStaticMesh(Mesh);
+            Tree->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Tree->RegisterComponent();
+            AddInstanceComponent(Tree);
+            Tree->SetWorldLocationAndRotation(Root, Along.Rotator());
+            Tree->SetWorldScale3D(FVector(Dir.Size() / FMath::Max(Mesh->GetBoundingBox().Max.Z, 100.0)));
+            return true;
+        };
+        int32 Snags = 0, Windfalls = 0;
+        for (const LakeMap::FSnag& Snag : LakeMap::Snags()) Snags += Lay(Snag.Root, Snag.Tip);
+        for (int32 Try = 0; Try < 4000 && Windfalls < 70; ++Try)
+        {
+            const FVector2D P(SnagRandom.FRandRange(LakeBox.Min.X - 12000, LakeBox.Max.X + 12000), SnagRandom.FRandRange(LakeBox.Min.Y - 12000, LakeBox.Max.Y + 12000));
+            const float Inland = -LakeMap::ShoreDistance(P.X, P.Y) / 100;
+            if (Inland < 8 || Inland > 120 || LakeMap::ForestAmount(P) < 0.9f || LakeMap::PathAmount(P) > 0 || LakeMap::SpotAmount(P) > 0) continue;
+            const FVector2D Q = P + FVector2D(1, 0).GetRotated(SnagRandom.FRandRange(0, 360)) * SnagRandom.FRandRange(600, 1200);
+            if (FMath::Abs(Ground(Q) - Ground(P)) > 250 || LakeMap::ShoreDistance(Q.X, Q.Y) > -500) continue;
+            Windfalls += Lay(FVector(P, Ground(P) + 15), FVector(Q, Ground(Q) + 25));
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SNAGS %d snags by and in the water, %d windfalls"), Snags, Windfalls);
+    }
+
+    // --- water lilies: patches of floating leaves (Tools/GenerateShorePlants.py, about a square metre
+    // each) over LakeMap's lily beds, some with white lilies in bloom, and the yellow brandy-bottle in
+    // the yellow beds. They float at the water level, where Biome Core (it samples the bed) cannot put
+    // them; their material M_Plant rides the live waves (ALakeRipples). ----------------------------
+    {
+        auto LilyGroup = [this](const TCHAR* Name)
+        {
+            auto* Component = NewObject<UHierarchicalInstancedStaticMeshComponent>(this);
+            Component->SetupAttachment(RootComponent);
+            Component->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Plants/Shore/SM_%s.SM_%s"), Name, Name)));
+            Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Component->SetCullDistances(20000, 26000);
+            Component->bAffectDistanceFieldLighting = false;
+            Component->bAffectDynamicIndirectLighting = false;
+            Component->RegisterComponent();
+            AddInstanceComponent(Component);
+            return Component;
+        };
+        auto* Pads = LilyGroup(TEXT("LilyPads"));
+        auto* White = LilyGroup(TEXT("LilyWhite"));
+        auto* Yellow = LilyGroup(TEXT("LilyNuphar"));
+        FRandomStream LilyRandom(4401);
+        int32 Patches = 0;
+        for (const LakeMap::FLilyBed& Bed : LakeMap::LilyBeds())
+        {
+            const int32 Count = FMath::RoundToInt(PI * FMath::Square(Bed.Radius / 100) * 0.9f);
+            for (int32 K = 0; K < Count; ++K)
+            {
+                // Denser in the middle of a bed, thinning out at its edge.
+                const float A = LilyRandom.FRandRange(0, 2 * PI), R = Bed.Radius * FMath::Pow(LilyRandom.FRand(), 0.7f);
+                const FVector2D P = Bed.Centre + FVector2D(FMath::Cos(A), FMath::Sin(A)) * R;
+                const float D = LakeMap::Depth(P.X, P.Y);
+                if (!LakeMap::IsWater(P.X, P.Y) || D < 20 || D > Bed.MaxDepth + 10 || !LakeMap::LilyAllowed(P)) continue;
+                const float Pick = LilyRandom.FRand();
+                auto* Patch = Bed.bYellow ? (Pick < 0.35f ? Yellow : Pads) : (Pick < 0.15f ? White : Pads);
+                Add(Patch, FVector(P, LakeMap::SurfaceZ + 0.3f), FVector(LilyRandom.FRandRange(0.8f, 1.3f)), FRotator(0, LilyRandom.FRandRange(0, 360), 0));
+                ++Patches;
+            }
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LILIES %d patches in %d beds"), Patches, LakeMap::LilyBeds().Num());
+    }
+
     // --- the pier: planks on stringers over pairs of piles, a wider landing stage at the end --------
     {
         const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);

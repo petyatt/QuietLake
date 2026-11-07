@@ -7,7 +7,7 @@ atlases (Tools/GeneratedPlants/T_*_Bark_C.png from Tools/GeneratePlantTextures.p
 the starter master material samples them) and makes two instances of that material in
 /Game/Plants/PV/Materials: MI_Birch_Bark (white, almost smooth) and MI_Alder_Bark (dark grey, the starter
 bark's furrows in relief). Then every bark slot of
-SM_PV_Birch_* and SM_PV_Alder_* gets its bark. Run it again after exporting the plants anew, because
+SM_PV_Birch_*, SM_PV_Alder_* and the dead birch SM_PV_Snag_Birch gets its bark. Run it again after exporting the plants anew, because
 an export puts the starter materials back. Log: Saved/TunePlantMaterials.txt.
 """
 import os
@@ -81,7 +81,7 @@ alder = instance('MI_Alder_Bark', dict(common, **{'Normal Strength': 1.0}),
                  {'BaseColor Tint': (0.5, 0.5, 0.5, 0.0), 'BaseColor Controls': (1.0, 1.0, 1.0, 0.0)},
                  {'Base Color': alder_texture, 'Normal': normal})
 
-for prefix, material in (('Birch', birch), ('Alder', alder)):
+for prefix, material in (('Birch', birch), ('Alder', alder), ('Snag_Birch', birch)):
     for name in unreal.EditorAssetLibrary.list_assets('/Game/Plants/PV', recursive=False):
         mesh_name = name.split('/')[-1].split('.')[0]
         if not mesh_name.startswith('SM_PV_' + prefix):

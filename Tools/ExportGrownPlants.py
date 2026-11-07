@@ -9,7 +9,7 @@ import os
 
 import unreal
 
-NAMES = os.environ.get('QUIETLAKE_PLANTS', 'Pine_A,Pine_B,Spruce_A,Spruce_B,Birch_A,Birch_B,Alder_A,Shrub_A,Shrub_B').split(',')
+NAMES = os.environ.get('QUIETLAKE_PLANTS', 'Pine_A,Pine_B,Spruce_A,Spruce_B,Birch_A,Birch_B,Alder_A,Shrub_A,Shrub_B,Snag_Pine,Snag_Birch').split(',')
 state = {'frames': 0, 'handle': None}
 
 

@@ -1,16 +1,25 @@
-"""Shore and shallow-water plants for the lake level as FBX files (run with Blender 5.x).
+"""Shore, meadow and water plants for the lake level as FBX files (run with Blender 5.x).
 
     blender --background --factory-startup --python Tools/GenerateShorePlants.py
 
 Real size in metres, origin at the ground (the bed under shallow water), colours in vertex colours and
 the vertex alpha = height fraction, which M_GrassBlades uses for the wind sway (Tools/ImportShorePlants.py
 imports them with it). Every blade, leaf and stem is a two-sided strip; normals point up, so a clump is
-lit softly like grass.
+lit softly like grass. QUIETLAKE_SHORE=Reed_A,Grass_A makes only those.
   Reed_A, Reed_B - common reed (Phragmites): a clump of 2-3 m culms with alternate arching leaves and
                    nodding purple-brown panicles; a few last year's straw-coloured culms stand among them.
   Bulrush        - reedmace (Typha latifolia): grey-green twisted strap leaves to 2 m and stems with
                    a dark brown cattail and a thin spike above it.
   Sedge_A, Sedge_B - tussock sedge (Carex) for wet banks: dense arching blades, a few dark spikes.
+  Grass_A        - a tuft of meadow grass, knee-low, with a few loose seed heads.
+  Grass_B        - tall unmown grass to the thigh with spiky seed heads (timothy) and panicles.
+  Grass_Low      - short sparse dark grass for the forest floor and under the edge.
+  Flowers_A      - grass with chamomile and buttercups.
+  Flowers_B      - grass with bellflowers, red clover and cornflowers.
+Floating on the water (origin at the water surface, M_Plant, normals as modelled):
+  LilyPads       - a patch of round water-lily leaves with the notch, some reddish, one curling.
+  LilyWhite      - leaves with an open white water lily.
+  LilyNuphar     - oval leaves of the yellow water lily (Nuphar) with yellow cups on stalks above them.
 Output: Tools/GeneratedPlants/SM_<Plant>.fbx
 """
 import math
@@ -50,6 +59,12 @@ class Builder:
                 for loop, (pt, cc) in zip(f.loops, ((prev[2], prev[3]), (prev[2], prev[3]), (row[2], row[3]), (row[2], row[3]))):
                     loop[self.col] = (*cc, min(1.0, max(0.0, pt.z / self.top)))
             prev = row
+
+    def face(self, points, colour):
+        """A flat polygon (a petal, a leaf of a lily) of one colour."""
+        f = self.bm.faces.new([self.bm.verts.new(p) for p in points])
+        for loop in f.loops:
+            loop[self.col] = (*colour, min(1.0, max(0.0, loop.vert.co.z / self.top)))
 
     def tube(self, base, axis, length, radius, colour, sides=8):
         """A closed little cylinder (a cattail, a spikelet)."""
@@ -196,13 +211,156 @@ def sedge(seed, blades, radius, h_min, h_max, spikes):
     return b
 
 
+def stem(b, rnd, base, height, lean, colour, top_colour):
+    """A thin flower stem; returns its top."""
+    yaw = rnd.uniform(0, 2 * math.pi)
+    pts = culm(b, base, height, yaw, lean, 0.0015, colour, top_colour, segments=4)
+    return pts[-1]
+
+
+def rosette(b, top, petals, length, width, colour, lift=0.15, phase=0.0):
+    """Petals round a centre, opening slightly upwards."""
+    for k in range(petals):
+        a = phase + 2 * math.pi * k / petals
+        d = Vector((math.cos(a), math.sin(a), lift)).normalized()
+        side = Vector((-math.sin(a), math.cos(a), 0)) * width
+        b.face([top, top + d * length * 0.35 + side, top + d * length, top + d * length * 0.35 - side], colour)
+
+
+def disc(b, centre, radius, colour, n=6, up=0.002):
+    b.face([centre + Vector((math.cos(2 * math.pi * k / n) * radius, math.sin(2 * math.pi * k / n) * radius, up)) for k in range(n)], colour)
+
+
+def chamomile(b, rnd, top):
+    rosette(b, top, 14, 0.013, 0.0028, (0.93, 0.93, 0.88), lift=0.05, phase=rnd.uniform(0, 1))
+    disc(b, top, 0.0055, (0.92, 0.70, 0.08))
+
+
+def buttercup(b, rnd, top):
+    rosette(b, top, 5, 0.009, 0.0045, (0.95, 0.78, 0.05), lift=0.6, phase=rnd.uniform(0, 1))
+    disc(b, top, 0.002, (0.85, 0.65, 0.05), n=5)
+
+
+def bellflower(b, rnd, top):
+    """A violet bell hanging from a bent tip."""
+    hang = top + Vector((0.01, 0, -0.004))
+    for k in range(5):
+        a = 2 * math.pi * k / 5
+        d = Vector((math.cos(a) * 0.45, math.sin(a) * 0.45, -1.0)).normalized()
+        side = Vector((-math.sin(a), math.cos(a), 0)) * 0.005
+        b.face([hang, hang + d * 0.007 + side, hang + d * 0.02, hang + d * 0.007 - side], (0.42, 0.30, 0.78))
+
+
+def clover(b, rnd, top):
+    """A round pink head of little upturned florets."""
+    for k in range(10):
+        a, z = rnd.uniform(0, 2 * math.pi), rnd.uniform(-0.6, 1.0)
+        d = Vector((math.cos(a), math.sin(a), z)).normalized()
+        side = Vector((-math.sin(a), math.cos(a), 0)) * 0.002
+        c = top + d * 0.004
+        b.face([c - side, c + side, c + d * 0.008 + side, c + d * 0.008 - side], (0.80, 0.36, 0.52))
+
+
+def cornflower(b, rnd, top):
+    rosette(b, top, 9, 0.011, 0.003, (0.22, 0.38, 0.88), lift=0.35, phase=rnd.uniform(0, 1))
+    disc(b, top, 0.003, (0.25, 0.20, 0.45), n=5)
+
+
+def grass(seed, blades, radius, h_min, h_max, colour, tip, heads=0, spikes=0, flowers=()):
+    """A tuft of grass blades, with loose seed heads, spiky heads and flowers on stems."""
+    rnd = random.Random(seed)
+    b = Builder(max(h_max * 1.2, 0.3))
+    for _ in range(blades):
+        a, r = rnd.uniform(0, 2 * math.pi), radius * math.sqrt(rnd.random())
+        base = Vector((math.cos(a) * r, math.sin(a) * r, -0.01))
+        leaf(b, rnd, base, a + rnd.uniform(-0.8, 0.8), rnd.uniform(h_min, h_max), rnd.uniform(0.0022, 0.0035), rnd.uniform(3, 20),
+             rnd.uniform(20, 70), jitter(colour, rnd, 0.02), jitter(tip, rnd, 0.03), segments=4, shape='strap')
+    for _ in range(heads):                 # loose panicles on thin stems
+        a, r = rnd.uniform(0, 2 * math.pi), radius * 0.7 * math.sqrt(rnd.random())
+        top = stem(b, rnd, Vector((math.cos(a) * r, math.sin(a) * r, 0)), rnd.uniform(h_max * 0.9, h_max * 1.15), 0.1, (0.25, 0.30, 0.10), (0.42, 0.40, 0.22))
+        for k in range(6):
+            leaf(b, rnd, top - Vector((0, 0, 0.012 * k)), rnd.uniform(0, 6.3), 0.03, 0.0012, 30, 70, (0.42, 0.38, 0.24), (0.50, 0.44, 0.30), segments=2, shape='strap')
+    for _ in range(spikes):                # timothy: a dense cylindrical spike
+        a, r = rnd.uniform(0, 2 * math.pi), radius * 0.7 * math.sqrt(rnd.random())
+        top = stem(b, rnd, Vector((math.cos(a) * r, math.sin(a) * r, 0)), rnd.uniform(h_max * 0.95, h_max * 1.2), 0.08, (0.25, 0.32, 0.10), (0.40, 0.42, 0.20))
+        b.tube(top - Vector((0, 0, 0.06)), Vector((0, 0, 1)), 0.065, 0.0035, (0.45, 0.45, 0.30), sides=5)
+    for kind, count, h in flowers:
+        for _ in range(count):
+            a, r = rnd.uniform(0, 2 * math.pi), radius * 0.8 * math.sqrt(rnd.random())
+            top = stem(b, rnd, Vector((math.cos(a) * r, math.sin(a) * r, 0)), rnd.uniform(h * 0.75, h * 1.1), 0.1, (0.18, 0.30, 0.08), (0.24, 0.36, 0.10))
+            kind(b, rnd, top)
+    return b
+
+
+def lily_pad(b, rnd, centre, radius, colour, rim, notch=0.35, oval=1.0, curl=0.0, n=20):
+    """A floating leaf: a disc with a notch to its centre; an edge may curl up."""
+    yaw = rnd.uniform(0, 2 * math.pi)
+    half = notch * 0.5
+    pts = []
+    for k in range(n + 1):
+        a = yaw + half + (2 * math.pi - notch) * k / n
+        r = radius * (1 + 0.04 * math.sin(a * 3))
+        p = centre + Vector((math.cos(a) * r * oval, math.sin(a) * r, 0))
+        lift = curl * max(0.0, math.cos(a - yaw - math.pi)) ** 2
+        pts.append(p + Vector((0, 0, lift)))
+    c = centre + Vector((0, 0, 0.002))
+    for k in range(n):                       # a fan of triangles: the rim darker or redder
+        f = b.bm.faces.new([b.bm.verts.new(c), b.bm.verts.new(pts[k]), b.bm.verts.new(pts[k + 1])])
+        for loop, col in zip(f.loops, (colour, rim, rim)):
+            loop[b.col] = (*col, 1.0)
+
+
+def lilies(seed, pads, spread, flowers=0, yellow=False):
+    rnd = random.Random(seed)
+    b = Builder(0.3)
+    placed = []
+    for _ in range(pads * 6):
+        if len(placed) >= pads:
+            break
+        a, r = rnd.uniform(0, 2 * math.pi), spread * math.sqrt(rnd.random())
+        centre = Vector((math.cos(a) * r, math.sin(a) * r, 0.0))
+        radius = rnd.uniform(0.09, 0.15) * (1.15 if yellow else 1.0)
+        if any((centre - c).length < (radius + rr) * 0.8 for c, rr in placed):
+            continue
+        placed.append((centre, radius))
+        young = rnd.random() < 0.08            # a few young leaves still bronze
+        colour = (0.20, 0.17, 0.08) if young and not yellow else jitter((0.10, 0.24, 0.06), rnd, 0.02)
+        rim = (0.24, 0.15, 0.08) if young and not yellow else jitter((0.16, 0.30, 0.08), rnd, 0.03)
+        lily_pad(b, rnd, centre, radius, colour, rim, notch=0.18 if yellow else 0.35, oval=1.25 if yellow else 1.0,
+                 curl=0.025 if rnd.random() < 0.15 else 0.0)
+    for k in range(flowers):
+        centre, radius = placed[rnd.randrange(len(placed))]
+        top = centre + Vector((rnd.uniform(-0.05, 0.05), rnd.uniform(-0.05, 0.05), 0.0))
+        if yellow:                             # a yellow cup on a stalk 6-10 cm above the water
+            top = top + Vector((0, 0, rnd.uniform(0.06, 0.1)))
+            b.tube(top - Vector((0, 0, 0.08)), Vector((0, 0, 1)), 0.08, 0.003, (0.20, 0.30, 0.08), sides=5)
+            rosette(b, top, 5, 0.022, 0.011, (0.95, 0.76, 0.06), lift=2.2)
+            disc(b, top + Vector((0, 0, 0.008)), 0.006, (0.85, 0.55, 0.05), n=6)
+        else:                                  # an open white water lily lying on the water
+            top = top + Vector((0, 0, 0.012))
+            rosette(b, top - Vector((0, 0, 0.006)), 8, 0.045, 0.012, (0.92, 0.90, 0.86), lift=0.25)
+            rosette(b, top, 10, 0.035, 0.009, (0.96, 0.95, 0.92), lift=0.7, phase=0.3)
+            disc(b, top + Vector((0, 0, 0.006)), 0.008, (0.95, 0.75, 0.10), n=8)
+    return b
+
+
 PLANTS = {
     'Reed_A': lambda: reed(21, 26, 0.45, 1.9, 2.7, 0.15),
     'Reed_B': lambda: reed(22, 34, 0.6, 2.2, 3.0, 0.2),
     'Bulrush': lambda: bulrush(23),
     'Sedge_A': lambda: sedge(24, 110, 0.16, 0.45, 0.85, 6),
     'Sedge_B': lambda: sedge(25, 70, 0.12, 0.3, 0.6, 3),
+    'Grass_A': lambda: grass(31, 90, 0.25, 0.25, 0.5, (0.12, 0.21, 0.05), (0.42, 0.50, 0.18), heads=5),
+    'Grass_B': lambda: grass(32, 110, 0.3, 0.45, 0.85, (0.11, 0.20, 0.05), (0.46, 0.50, 0.20), heads=6, spikes=7),
+    'Grass_Low': lambda: grass(33, 45, 0.22, 0.1, 0.25, (0.07, 0.14, 0.04), (0.25, 0.32, 0.10)),
+    'Flowers_A': lambda: grass(34, 50, 0.25, 0.2, 0.4, (0.12, 0.21, 0.05), (0.40, 0.48, 0.17), flowers=((chamomile, 8, 0.38), (buttercup, 6, 0.42))),
+    'Flowers_B': lambda: grass(35, 50, 0.25, 0.2, 0.42, (0.12, 0.21, 0.05), (0.40, 0.48, 0.17),
+                               flowers=((bellflower, 5, 0.45), (clover, 6, 0.22), (cornflower, 4, 0.5))),
+    'LilyPads': lambda: lilies(41, 9, 0.55),
+    'LilyWhite': lambda: lilies(42, 8, 0.5, flowers=2),
+    'LilyNuphar': lambda: lilies(43, 7, 0.55, flowers=3, yellow=True),
 }
+FLOATING = ('LilyPads', 'LilyWhite', 'LilyNuphar')
 
 
 def main():
@@ -218,10 +376,13 @@ def main():
         mesh = bpy.data.meshes.new('SM_' + name)
         b.bm.to_mesh(mesh)
         b.bm.free()
+        floating = name in FLOATING
         for p in mesh.polygons:
-            p.use_smooth = True
-        mesh.normals_split_custom_set_from_vertices([(0.0, 0.0, 1.0)] * len(mesh.vertices))
-        mesh.materials.append(bpy.data.materials.get('M_GrassBlades') or bpy.data.materials.new('M_GrassBlades'))
+            p.use_smooth = not floating
+        if not floating:
+            mesh.normals_split_custom_set_from_vertices([(0.0, 0.0, 1.0)] * len(mesh.vertices))
+        material = 'M_Plant' if floating else 'M_GrassBlades'
+        mesh.materials.append(bpy.data.materials.get(material) or bpy.data.materials.new(material))
         obj = bpy.data.objects.new('SM_' + name, mesh)
         bpy.context.scene.collection.objects.link(obj)
         bpy.ops.object.select_all(action='DESELECT')
@@ -229,7 +390,7 @@ def main():
         bpy.context.view_layer.objects.active = obj
         path = os.path.join(OUT, 'SM_%s.fbx' % name)
         bpy.ops.export_scene.fbx(filepath=path, use_selection=True, apply_unit_scale=True, object_types={'MESH'},
-                                 mesh_smooth_type='OFF', colors_type='LINEAR', axis_forward='-Y', axis_up='Z',
+                                 mesh_smooth_type='FACE' if floating else 'OFF', colors_type='LINEAR', axis_forward='-Y', axis_up='Z',
                                  bake_space_transform=True)
         size = obj.dimensions
         print('SHORE_PLANT %s %d verts %d faces %.2f x %.2f x %.2f m' % (name, len(mesh.vertices), len(mesh.polygons), size.x, size.y, size.z))

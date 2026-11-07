@@ -2,21 +2,24 @@
 
     UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -run=pythonscript -script=C:/Fish/Tools/ImportShorePlants.py
 
-Each gets M_GrassBlades (vertex colours, two-sided, swaying in the wind by the vertex alpha; made by
-Tools/ImportPlants.py) and Nanite, as reed beds hold thousands of clumps. QUIETLAKE_SHORE=Reed_A,Sedge_B
-imports only those.
+The ground plants get M_GrassBlades (vertex colours, two-sided, swaying in the wind by the vertex
+alpha), the floating lilies M_Plant (they ride the live waves); both made by Tools/ImportPlants.py. All
+are Nanite, as the beds and meadows hold thousands of clumps. QUIETLAKE_SHORE=Reed_A,Sedge_B imports
+only those.
 """
 import os
 
 import unreal
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PLANTS = ['Reed_A', 'Reed_B', 'Bulrush', 'Sedge_A', 'Sedge_B']
+PLANTS = ['Reed_A', 'Reed_B', 'Bulrush', 'Sedge_A', 'Sedge_B', 'Grass_A', 'Grass_B', 'Grass_Low', 'Flowers_A', 'Flowers_B',
+          'LilyPads', 'LilyWhite', 'LilyNuphar']
 FOLDER = '/Game/Plants/Shore'
 only = [n for n in os.environ.get('QUIETLAKE_SHORE', '').split(',') if n]
 grass = unreal.load_asset('/Game/Plants/M_GrassBlades')
-if not grass:
-    raise RuntimeError('M_GrassBlades is missing: run Tools/ImportPlants.py first')
+floating = unreal.load_asset('/Game/Plants/M_Plant')
+if not grass or not floating:
+    raise RuntimeError('M_GrassBlades or M_Plant is missing: run Tools/ImportPlants.py first')
 assets = unreal.AssetToolsHelpers.get_asset_tools()
 
 for name in PLANTS:
@@ -44,7 +47,7 @@ for name in PLANTS:
     mesh = unreal.load_asset(path)
     if not mesh:
         raise RuntimeError('Import failed: ' + name)
-    mesh.set_material(0, grass)
+    mesh.set_material(0, floating if name.startswith('Lily') else grass)
     nanite = mesh.get_editor_property('nanite_settings')
     nanite.set_editor_property('enabled', True)
     mesh.set_editor_property('nanite_settings', nanite)

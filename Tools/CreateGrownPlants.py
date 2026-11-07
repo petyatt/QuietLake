@@ -5,7 +5,9 @@
 Each plant is a copy of one of the editor's starter graphs in /Game/Plants/PV: conifers from the conifer
 tree with the pine or spruce grower preset, birches and alders from the deciduous tree (the alder with
 another leaf-tree preset on its trunk grower), shrubs from the deciduous shrub; variants of one species
-differ by the growers' RandomSeed (the PCG nodes' own seed does not change the plant). Every graph exports a static
+differ by the growers' RandomSeed (the PCG nodes' own seed does not change the plant). The dead trees
+(Snag_*) have their foliage and leafy twig nodes switched off, so only the bare trunk and branches
+grow: the game lays them from the bank into the water. Every graph exports a static
 Nanite mesh SM_PV_<Name> with trunk collision into /Game/Plants/PV, the kind PCG Biome Core places.
 The export itself is in the editor only: open the graph and press Ctrl+E (Tools/ExportGrownPlants.py
 opens them all). Then Tools/TunePlantMaterials.py gives the birches and alders their bark.
@@ -21,8 +23,9 @@ DST = '/Game/Plants/PV/'
 CONIFER = SAMPLES + 'ConiferTree_01/PVE_Sample_Conifer_Tree_01'
 DECIDUOUS = SAMPLES + 'DeciduousTree_01/PVE_Sample_Deciduous_Tree_01'
 SHRUB = SAMPLES + 'Deciduous_Shrub_01/PVE_Sample_Deciduous_Shrub_01'
-# name: (starter graph, grower preset or None, RandomSeed of every grower or None to keep the graph's).
-# The preset goes to the grower that already has one, else to the trunk grower (the most growth cycles).
+# name: (starter graph, grower preset or None, RandomSeed of every grower or None to keep the graph's,
+# [dead: no leaves]). The preset goes to the grower that already has one, else to the trunk grower (the
+# most growth cycles).
 PLANTS = {
     'Pine_A': (CONIFER, 'PVE_Preset_Pine_01', None),
     'Pine_B': (CONIFER, 'PVE_Preset_Pine_01', 4127),
@@ -33,7 +36,10 @@ PLANTS = {
     'Alder_A': (DECIDUOUS, 'PVE_Preset_Leaf_Tree_02', 5519),
     'Shrub_A': (SHRUB, None, None),
     'Shrub_B': (SHRUB, None, 2290),
+    'Snag_Pine': (CONIFER, 'PVE_Preset_Pine_01', 6607, True),
+    'Snag_Birch': (DECIDUOUS, None, 7741, True),
 }
+LEAVES = ('PVFoliageDistributorSettings', 'PVGraftDistributorSettings')
 ONLY = [n.strip() for n in os.environ.get('QUIETLAKE_PLANTS', '').split(',') if n.strip()]
 
 out = []
@@ -42,7 +48,8 @@ def log(text):
     unreal.log('QUIET_LAKE_PLANTS ' + str(text))
 
 unreal.AssetRegistryHelpers.get_asset_registry().scan_paths_synchronous(['/ProceduralVegetationEditor', '/Game/Plants'], True)
-for name, (source, preset, seed) in PLANTS.items():
+for name, (source, preset, seed, *rest) in PLANTS.items():
+    dead = bool(rest and rest[0])
     if ONLY and name not in ONLY:
         continue
     dst = DST + 'PV_' + name
@@ -69,6 +76,8 @@ for name, (source, preset, seed) in PLANTS.items():
         nodes += 1
         if cls == 'PVGrowerSettings':
             growers.append(settings)
+        if cls in LEAVES:
+            settings.set_editor_property('enabled', not dead)
         if cls == 'PVExportSettings':
             params = settings.get_editor_property('export_settings')
             folder = unreal.DirectoryPath()
@@ -95,7 +104,7 @@ for name, (source, preset, seed) in PLANTS.items():
             grower.set_editor_property('grower_params', params)
     seeds = [g.get_editor_property('grower_params').get_editor_property('random_seed') for g in growers]
     unreal.EditorAssetLibrary.save_asset(dst, only_if_is_dirty=False)
-    log('%s from %s, preset %s, grower seeds %s, %d nodes' % (dst, source.split('/')[-1], preset, seeds, nodes))
+    log('%s from %s, preset %s, grower seeds %s, %d nodes%s' % (dst, source.split('/')[-1], preset, seeds, nodes, ', no leaves' if dead else ''))
 
 with open(r'C:\Fish\Saved\CreateGrownPlants.txt', 'w', encoding='utf-8') as f:
     f.write('\n'.join(out))
