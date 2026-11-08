@@ -73,6 +73,35 @@ namespace
         Body->GetWaterBodyComponent()->PostEditChange();
         Body->PostEditChange();
     }
+
+    bool ExtendStreamIntoLake(AWaterBodyRiver& River, const UWaterSplineComponent& LakeSpline)
+    {
+        UWaterSplineComponent* Spline = River.GetWaterSpline();
+        if (Spline->GetNumberOfSplinePoints() < 2) return false;
+
+        constexpr auto WorldSpace = ESplineCoordinateSpace::World;
+        const FVector Mouth = Spline->GetLocationAtSplinePoint(0, WorldSpace);
+        const FVector Shore = LakeSpline.FindLocationClosestToWorldLocation(Mouth, WorldSpace);
+        const FVector2D Gap = FVector2D(Mouth - Shore);
+        const FVector2D Outward = LakeMap::NearestShore(FVector2D(Mouth)).Outward;
+        if (Gap.SizeSquared() > FMath::Square(400.0) || FVector2D::DotProduct(Gap, Outward) <= 0.0)
+            return false;
+
+        // Keep the shared surface under the lake to hide the seam and avoid coplanar meshes.
+        const FVector Overlap = Shore - FVector(Gap.GetSafeNormal() * 120.0, 0.0);
+        const double SurfaceZ = Shore.Z - 4.0;
+        River.Modify();
+        Spline->Modify();
+        Spline->AddSplinePointAtIndex(FVector(Shore.X, Shore.Y, SurfaceZ), 0, WorldSpace, false);
+        Spline->AddSplinePointAtIndex(FVector(Overlap.X, Overlap.Y, SurfaceZ), 0, WorldSpace, true);
+        return true;
+    }
+
+    const UWaterSplineComponent* FindLakeSpline(UWorld* World)
+    {
+        TActorIterator<AWaterBodyLake> Lake(World);
+        return Lake ? Lake->GetWaterSpline() : nullptr;
+    }
 #endif
 }
 
@@ -691,6 +720,7 @@ int32 ULakeLevelLibrary::SpawnStreams(float Depth)
 #if WITH_EDITOR
     UWorld* World = EditorWorld();
     if (!World) return 0;
+    const UWaterSplineComponent* LakeSpline = FindLakeSpline(World);
     for (TActorIterator<AWaterBodyRiver> It(World); It; ++It) It->Destroy();
     int32 Count = 0;
     for (const LakeMap::FStream& Stream : LakeMap::Streams())
@@ -725,10 +755,34 @@ int32 ULakeLevelLibrary::SpawnStreams(float Depth)
         Carve.FalloffSettings.ZOffset = 0.0f;
         UseLakeWater(Body);
         River->SetActorLabel(FString::Printf(TEXT("Stream_%d"), Count));
+        if (LakeSpline) ExtendStreamIntoLake(*River, *LakeSpline);
         RefreshWaterBody(River);
         ++Count;
     }
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL streams: %d rivers"), Count);
+    return Count;
+#else
+    return 0;
+#endif
+}
+
+int32 ULakeLevelLibrary::ConnectStreamMouths()
+{
+#if WITH_EDITOR
+    UWorld* World = EditorWorld();
+    if (!World) return 0;
+    const UWaterSplineComponent* LakeSpline = FindLakeSpline(World);
+    if (!LakeSpline) return 0;
+
+    int32 Count = 0;
+    for (TActorIterator<AWaterBodyRiver> It(World); It; ++It)
+    {
+        if (It->GetActorLabel().StartsWith(TEXT("Stream_")) && ExtendStreamIntoLake(**It, *LakeSpline))
+        {
+            RefreshWaterBody(*It);
+            ++Count;
+        }
+    }
     return Count;
 #else
     return 0;

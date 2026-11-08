@@ -73,6 +73,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
     static int32 SpawnStreams(float DepthCm = 60);
 
+    /** Connects the generated streams on the saved map without replacing their actors. */
+    UFUNCTION(BlueprintCallable, Category = "Lake|Level")
+    static int32 ConnectStreamMouths();
+
 private:
     /** Spawns a fresh landscape over LakeMap::TerrainBounds from heights on its 1 m grid, with the
      *  three terrain layer masks; the layer info assets come from LayerInfos. */

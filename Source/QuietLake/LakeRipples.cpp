@@ -282,7 +282,7 @@ void ALakeRipples::FindWater()
         UMaterialInstanceDynamic* Dynamic = Cast<UMaterialInstanceDynamic>(Material);
         if (!Dynamic) Dynamic = It->CreateDynamicMaterialInstance(0, Material);
         Dynamic->SetTextureParameterValue(TEXT("Ripples"), Texture);
-        Materials.Add(Dynamic);
+        Materials.AddUnique(Dynamic);
     }
     // The engine Water lake and streams (/Game/Maps/Lake) draw M_LakeSurface through their own
     // material instances.

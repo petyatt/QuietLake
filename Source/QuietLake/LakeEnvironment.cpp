@@ -3,6 +3,9 @@
 #include "LakeWeather.h"
 #include "LandscapeProxy.h"
 #include "WaterBodyActor.h"
+#include "WaterBodyComponent.h"
+#include "WaterBodyRiverActor.h"
+#include "WaterSubsystem.h"
 #include "LakeBirds.h"
 #include "LakeRod.h"
 #include "Async/ParallelFor.h"
@@ -10,6 +13,7 @@
 #include "KismetProceduralMeshLibrary.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/InstancedSkinnedMeshComponent.h"
+#include "Components/SplineMeshComponent.h"
 #include "Engine/SkinnedAsset.h"
 #include "DynamicWindData.h"
 #include "Components/AudioComponent.h"
@@ -27,6 +31,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/HUD.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Sound/SoundWave.h"
 #include "Sound/SoundAttenuation.h"
 #include "Misc/CommandLine.h"
@@ -151,6 +156,32 @@ void ALakeEnvironment::BeginPlay()
     // not built; the distant ring of hills still is.
     const bool bLevelGround = !!TActorIterator<ALandscapeProxy>(GetWorld());
     const bool bLevelWater = !!TActorIterator<AWaterBody>(GetWorld());
+    if (bLevelWater && GetNetMode() != NM_DedicatedServer)
+    {
+        // On sloped streams, the flat Water Mesh tiles cut into the bed. Use the existing
+        // spline meshes. WaterBodyComponent::PostLoad can clear a saved mesh override.
+        UStaticMesh* RiverMesh = GetDefault<UWaterSubsystem>()->DefaultRiverMesh;
+        for (TActorIterator<AWaterBodyRiver> River(GetWorld()); River && RiverMesh; ++River)
+        {
+            UWaterBodyComponent* Body = River->GetWaterBodyComponent();
+            if (Body->GetWaterMeshOverride() != nullptr) continue;
+            Body->SetWaterMeshOverride(RiverMesh);
+            UMaterialInstanceDynamic* Surface = Body->GetWaterMaterialInstance();
+            // Extend only the rendered sheet under the banks so terrain defines its shoreline.
+            const FVector2D BankOverlapScale(2.5, 1.0);
+            for (UPrimitiveComponent* Component : Body->GetStandardRenderableComponents())
+            {
+                if (auto* Segment = Cast<USplineMeshComponent>(Component))
+                {
+                    Segment->SetMaterial(0, Surface);
+                    Segment->SetStartScale(Segment->GetStartScale() * BankOverlapScale, false);
+                    Segment->SetEndScale(Segment->GetEndScale() * BankOverlapScale, false);
+                    Segment->UpdateBounds();
+                    Segment->MarkRenderStateDirty();
+                }
+            }
+        }
+    }
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BUILD level ground %d, level water %d"), bLevelGround, bLevelWater);
     if (bLevelGround)
     {
@@ -252,11 +283,12 @@ void ALakeEnvironment::BeginPlay()
         // terrain where they overlap. They close the horizon seen across the lake.
         constexpr float Far = 300000.0f, FarCell = 4000.0f, FarChunk = 64000.0f;
         const FBox2D Outer = Bounds.ExpandBy(Far);
+        const FBox2D Interior = Bounds.ExpandBy(-FarCell);
         for (float CY = Outer.Min.Y; CY < Outer.Max.Y - 1; CY += FarChunk)
             for (float CX = Outer.Min.X; CX < Outer.Max.X - 1; CX += FarChunk)
             {
                 const FBox2D ChunkBox(FVector2D(CX, CY), FVector2D(FMath::Min(CX + FarChunk, (float)Outer.Max.X), FMath::Min(CY + FarChunk, (float)Outer.Max.Y)));
-                if (Bounds.ExpandBy(-FarCell).IsInside(ChunkBox)) continue;
+                if (Interior.IsInside(ChunkBox)) continue;
                 const int32 NX = FMath::RoundToInt(ChunkBox.GetSize().X / FarCell), NY = FMath::RoundToInt(ChunkBox.GetSize().Y / FarCell);
                 TArray<FVector> Verts, Normals;
                 TArray<FVector2D> UVs;
@@ -279,6 +311,9 @@ void ALakeEnvironment::BeginPlay()
                         Colors.Add(FLinearColor(1 - 0.4f * Forest, 0.4f * Forest, 0));
                         if (X < NX && Y < NY)
                         {
+                            // A coarse cell can bridge a valley. Keep the overlap at the edge
+                            // of the detailed terrain, where the two meshes meet.
+                            if (Interior.IsInside(P) && Interior.IsInside(P + FVector2D(FarCell, FarCell))) continue;
                             const int32 A = Y * (NX + 1) + X;
                             Triangles.Append({ A, A + NX + 1, A + 1, A + 1, A + NX + 1, A + NX + 2 });
                         }
@@ -902,6 +937,19 @@ void ALakeEnvironment::BeginPlay()
         {
             Eye = FVector(Start + StartFacing * 5500 + Side * 3500, LakeMap::SurfaceZ + 2600);
             View = FRotator(0, YawOf(StartFacing), 0);
+        }
+        else if (SceneView.StartsWith(TEXT("StreamMouth")))
+        {
+            int32 Index = INDEX_NONE;
+            const auto& Streams = LakeMap::Streams();
+            if (LexTryParseString(Index, *SceneView.RightChop(11)) && Streams.IsValidIndex(Index)
+                && Streams[Index].Surface.Num() > 0)
+            {
+                const FVector2D Mouth(Streams[Index].Surface[0]);
+                const auto MouthShore = LakeMap::NearestShore(Mouth);
+                Eye = FVector(Mouth - MouthShore.Outward * 570, LakeMap::SurfaceZ + 550);
+                View = (FVector(Mouth, LakeMap::SurfaceZ) - Eye).Rotation();
+            }
         }
         else if (SceneView.Equals(TEXT("Outflow"), ESearchCase::IgnoreCase) && LakeMap::Streams().Num() > 0)
         {
