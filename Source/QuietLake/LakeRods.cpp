@@ -250,6 +250,28 @@ void ALakeCharacter::UpdateParkedRods(float DeltaSeconds)
     }
 }
 
+void ALakeCharacter::StowRodsInCase()
+{
+    if (!HasAuthority()) return;
+    for (int32 I = 0; I < Rods.Num(); ++I)
+    {
+        FLakeRodSlot& Rod = Rods[I];
+        Rod.Place = ERodPlace::Case;
+        Rod.CaseSlot = (int8)I;
+        Rod.Base = FVector::ZeroVector;
+        Rod.Yaw = 0;
+        Rod.Pitch = 0;
+        Rod.State = EFishingState::Idle;
+        Rod.LineFish = nullptr;
+    }
+    RodKind = ERodKind::Medium;
+    CasePlace = ECasePlace::Back;
+    bCaseOpen = false;
+    bCaseWindow = false;
+    bRigInHand = false;
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_RODS the angler starts with empty hands: all %d rods in the case"), Rods.Num());
+}
+
 void ALakeCharacter::UseRod(ERodKind Kind)
 {
     const int32 Rod = (int32)Kind;

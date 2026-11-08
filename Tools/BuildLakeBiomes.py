@@ -57,7 +57,7 @@ PV, SHORE = '/Game/Plants/PV/SM_PV_', '/Game/Plants/Shore/SM_'
 # Heights (world Z, cm; the water is at -25): trees and shrubs stand above the water, reeds no deeper than
 # 1.1 m, sedge in the edge of the water at most. Small plants stay out of the distance fields and the
 # Lumen scene (lit by it, lighting nothing themselves); grass and flowers cast no shadows.
-TREE = dict(extents=0.3, orient=0.0, collision=True, cull=0, hmin=-5, hmax=100000, shadow=True, gi=True)
+TREE = dict(extents=0.3, orient=0.7, collision=True, cull=0, hmin=-5, hmax=100000, shadow=True, gi=True)
 SHRUB = dict(extents=0.5, orient=0.3, collision=False, cull=25000, hmin=-5, hmax=100000, shadow=True, gi=False)
 REED = dict(extents=0.35, orient=0.6, collision=False, cull=15000, hmin=-135, hmax=150, shadow=True, gi=False)
 SEDGE = dict(extents=0.6, orient=0.6, collision=False, cull=15000, hmin=-60, hmax=100000, shadow=True, gi=False)
@@ -109,6 +109,39 @@ BIOMES = {
     'SedgeTussocks': ('shore', 100, 50, 1, [
         ('Sedge', SHORE + 'Sedge_A', 2, 'Sedge', 1.0, SEDGE), ('Sedge', SHORE + 'Sedge_B', 2, 'Sedge', 1.0, SEDGE)]),
 }
+# A row of identical trees reads as a stamping press: the scale of a PCG asset is one fixed number, so
+# the height range is made of several weighted copies of the same mesh (the table's own scale variants are
+# merged into one weight first).
+TREE_SCALES = ((0.58, 0.10), (0.76, 0.22), (0.95, 0.36), (1.16, 0.22), (1.38, 0.10))
+SHRUB_SCALES = ((0.70, 0.20), (0.85, 0.35), (1.00, 0.30), (1.20, 0.15))
+
+
+def vary_heights(plants):
+    merged = []
+    index = {}
+    for kind, mesh, weight, gen, scale, o in plants:
+        if kind in ('Pine', 'Spruce', 'Birch', 'Alder', 'Shrub'):
+            key = (kind, mesh, gen, tuple(sorted(o.items())))
+            if key in index:
+                old = merged[index[key]]
+                merged[index[key]] = (old[0], old[1], old[2] + weight, old[3], old[4], old[5])
+            else:
+                index[key] = len(merged)
+                merged.append((kind, mesh, weight, gen, 1.0, o))
+        else:
+            merged.append((kind, mesh, weight, gen, scale, o))
+    out = []
+    for kind, mesh, weight, gen, scale, o in merged:
+        if kind in ('Pine', 'Spruce', 'Birch', 'Alder', 'Shrub'):
+            for f, share in (SHRUB_SCALES if kind == 'Shrub' else TREE_SCALES):
+                out.append((kind, mesh, weight * share, gen, scale * f, o))
+        else:
+            out.append((kind, mesh, weight, gen, scale, o))
+    return out
+
+
+BIOMES = {name: (m, texel, blend, prio, vary_heights(plants)) for name, (m, texel, blend, prio, plants) in BIOMES.items()}
+
 # QUIETLAKE_BIOMES_ONLY=ReedBelt,PineForest plants only those (for trying settings out).
 ONLY = [n for n in os.environ.get('QUIETLAKE_BIOMES_ONLY', '').split(',') if n]
 if ONLY:

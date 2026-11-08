@@ -25,6 +25,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
     static AActor* BuildLandscape(UMaterialInterface* Material, const TArray<UObject*>& LayerInfos);
 
+    /** Diagnostic: how the visible waterline (where the landscape crosses the water level) sits
+     *  relative to the lake's water spline and the fishing spots; the mean and worst offset, cm. */
+    UFUNCTION(BlueprintCallable, Category = "Lake|Level")
+    static void WaterAlignmentLog();
+
     /** The lake's waterline as one closed loop, ordered, a point every SpacingCm, at the water level. */
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
     static TArray<FVector> LakeOutline(float SpacingCm = 600);
@@ -40,6 +45,12 @@ public:
      *  Replaces an existing one. */
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
     static AActor* SpawnLake(float ChannelDepthCm = 600, float RampWidthCm = 4000, float SpacingCm = 600, UObject* Profile = nullptr);
+
+    /** Rebuilds the landscape from the carved bed but with the designed ground on land, and frees it
+     *  from the water brushes: whatever the brushes dug above the waterline (a shelf ending in a wall
+     *  where the brush's influence ends) goes back to the designed banks. Returns the vertices changed. */
+    UFUNCTION(BlueprintCallable, Category = "Lake|Level")
+    static int32 RebuildLandWithoutBrush();
 
     /** Writes the landscape's final heights (with the carving) to Content/<LakeMap::BakedGroundFile>,
      *  which LakeMap::Ground then reads on every machine and in the tests. Returns the cells written. */
@@ -61,4 +72,9 @@ public:
     /** A Water river along every stream of LakeMap (its width, DepthCm deep). Returns how many. */
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
     static int32 SpawnStreams(float DepthCm = 60);
+
+private:
+    /** Spawns a fresh landscape over LakeMap::TerrainBounds from heights on its 1 m grid, with the
+     *  three terrain layer masks; the layer info assets come from LayerInfos. */
+    static class ALandscape* CreateLandscape(UWorld* World, class UMaterialInterface* Material, const TArray<UObject*>& LayerInfos, const TArray<uint16>& Heights);
 };

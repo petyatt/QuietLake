@@ -18,15 +18,17 @@ UNDER = 'saturate((-25.0 - P.z) / 3.0)'   # 0 above the lake surface, 1 from 3 c
 COLOUR = """
 float under = %s;
 float top = saturate(N.z);
-float3 dull = C * lerp(0.62, 0.42, top);
+float3 dull = C * lerp(0.55, 0.35, top);
 float l = dot(dull, float3(0.3, 0.59, 0.11));
-dull = lerp(dull, l * float3(0.92, 1.0, 0.72), 0.4);
-float3 light = exp(-float3(0.016, 0.018, 0.04) * max(-25.0 - P.z, 0.0));   // a little above M_LakeSurface's absorption (the light also scatters away), per cm
+dull = lerp(dull, l * float3(0.92, 1.0, 0.72), 0.45);
+// Twice M_LakeSurface's absorption (down to the fish and back), per cm: below half a metre the fish
+// is a dull olive shadow, not a bright body seen through the water.
+float3 light = exp(-float3(0.028, 0.020, 0.044) * max(-25.0 - P.z, 0.0));
 return lerp(C, dull * light, under);
 """ % UNDER
 
 ROUGH = 'return lerp(R, max(R, 0.62), %s);' % UNDER
-SPEC = 'return lerp(0.55, 0.22, %s);' % UNDER
+SPEC = 'return lerp(0.55, 0.10, %s);' % UNDER
 
 
 def _node(mat, cls, **props):

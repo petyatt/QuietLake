@@ -297,6 +297,10 @@ void ALakePlayerController::BeginPlay()
     // Automated preview runs go straight into the game.
     FString ScenePreview;
     if (FParse::Value(FCommandLine::Get(), TEXT("ScenePreview="), ScenePreview)) { bStarted = true; return; }
+    FString LookFrom;
+    if (FParse::Value(FCommandLine::Get(), TEXT("LookFrom="), LookFrom, false)) { bStarted = true; return; }
+    // -AutoStart: QA and screenshots of a real (non-preview) game start, straight past the menu.
+    if (FParse::Param(FCommandLine::Get(), TEXT("AutoStart"))) { bStarted = true; return; }
     if (FParse::Param(FCommandLine::Get(), TEXT("LakePreview")) || FParse::Param(FCommandLine::Get(), TEXT("WeatherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("NightPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CloudPreview")) || FParse::Param(FCommandLine::Get(), TEXT("FrontPreview")) || FParse::Param(FCommandLine::Get(), TEXT("MapPreview")) || FParse::Param(FCommandLine::Get(), TEXT("FisherPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LifePreview")) || FParse::Param(FCommandLine::Get(), TEXT("FishPreview")) || FParse::Param(FCommandLine::Get(), TEXT("WaterPreview")) || FParse::Param(FCommandLine::Get(), TEXT("BitePreview")) || FParse::Param(FCommandLine::Get(), TEXT("LandPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CastPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LinePreview")) || FParse::Param(FCommandLine::Get(), TEXT("RodPreview")) || FParse::Param(FCommandLine::Get(), TEXT("HandsPreview")) || FParse::Param(FCommandLine::Get(), TEXT("LeaderPreview")) || FParse::Param(FCommandLine::Get(), TEXT("RetrievePreview")) || FParse::Param(FCommandLine::Get(), TEXT("GroundbaitPreview")) || FParse::Param(FCommandLine::Get(), TEXT("FightPreview")) || FParse::Param(FCommandLine::Get(), TEXT("MouthPreview")) || FParse::Param(FCommandLine::Get(), TEXT("CasePreview")) || FParse::Param(FCommandLine::Get(), TEXT("PlantPreview"))) { bStarted = true; return; }
     // A slow flight around the lake behind the menu.
     MenuCamera = GetWorld()->SpawnActor<ACameraActor>();
@@ -344,6 +348,8 @@ void ALakePlayerController::ToggleMenu()
 
 void ALakePlayerController::OpenMenu()
 {
+    // The dev free camera belongs to the game view: drop out of it before the menu.
+    if (ALakeCharacter* Angler = Cast<ALakeCharacter>(GetPawn())) if (Angler->bFlyCamera) Angler->ToggleFlyCamera();
     if (!Menu)
     {
         Menu = CreateWidget<ULakeMenuWidget>(this, ULakeMenuWidget::StaticClass());

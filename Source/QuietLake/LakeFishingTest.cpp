@@ -3181,4 +3181,28 @@ bool FLakeThreeRodsTest::RunTest(const FString& Parameters)
     World->DestroyWorld(false);
     return true;
 }
+// A new match starts with empty hands: the rods are packed in the case on the back, and the first rod
+// comes out when the angler takes it (the game stows them a moment after the pawn is possessed).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeStartLoadoutTest, "QuietLake.Fishing.StartLoadout", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeStartLoadoutTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FVector2D Facing;
+    const FVector2D Edge = LakeMap::StartSpot(&Facing) + Facing * 120;
+    const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+    ALakeCharacter* A = World->SpawnActor<ALakeCharacter>(FVector(Edge, LakeMap::Ground(Edge.X, Edge.Y) + 95), FRotator(0, Yaw, 0));
+    APlayerController* PC = World->SpawnActor<APlayerController>();
+    PC->Possess(A);
+    A->StowRodsInCase();
+    const int32 Light = (int32)ERodKind::Light, Medium = (int32)ERodKind::Medium, Heavy = (int32)ERodKind::Heavy;
+    TestFalse(TEXT("Empty hands at the start"), A->HasRodInHands());
+    TestTrue(TEXT("All three rods are in the case"), A->Rods[Light].Place == ERodPlace::Case
+        && A->Rods[Medium].Place == ERodPlace::Case && A->Rods[Heavy].Place == ERodPlace::Case);
+    TestTrue(TEXT("Each in its own compartment"), A->Rods[Light].CaseSlot == 0 && A->Rods[Medium].CaseSlot == 1
+        && A->Rods[Heavy].CaseSlot == 2);
+    TestTrue(TEXT("The case is on the back and shut"), A->CasePlace == ECasePlace::Back && !A->bCaseOpen);
+    TestTrue(TEXT("No tackle in the water, nothing is cast"), A->FishingState == EFishingState::Idle && !A->bCharging && !A->bRigInHand);
+    World->DestroyWorld(false);
+    return true;
+}
 #endif

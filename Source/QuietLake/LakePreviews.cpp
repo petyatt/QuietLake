@@ -55,6 +55,65 @@ void ALakeCharacter::RunRodDiagnostics(float DeltaSeconds)
 
 void ALakeCharacter::RunPreviews()
 {
+    // -LookFrom=X,Y,Yaw,Pitch (world cm, degrees): a still camera exactly there, for reproducing a
+    // player's screenshot, plus the ground profile straight ahead.
+    if (FString Look; FParse::Value(FCommandLine::Get(), TEXT("LookFrom="), Look, false) && GetNetMode() == NM_Standalone)
+    {
+        TArray<FString> Parts;
+        Look.ParseIntoArray(Parts, TEXT(","), true);
+        FTimerHandle Fallback;
+        GetWorldTimerManager().SetTimer(Fallback, [] { FPlatformMisc::RequestExit(false); }, 16.0f, false);
+        if (Parts.Num() == 4)
+        {
+            const FVector2D At(FCString::Atof(*Parts[0]), FCString::Atof(*Parts[1]));
+            const float Yaw = FCString::Atof(*Parts[2]), Pitch = FCString::Atof(*Parts[3]);
+            FTimerHandle Snap, Exit;
+            GetWorldTimerManager().SetTimer(Snap, [this, At, Yaw, Pitch]
+            {
+                const FVector Eye(At, ALakeEnvironment::GroundHeight(At.X, At.Y) + 170.0f);
+                auto* Cam = GetWorld()->SpawnActor<ACameraActor>(Eye, FRotator(Pitch, Yaw, 0));
+                Cam->GetCameraComponent()->SetFieldOfView(70);
+                if (APlayerController* PC = Cast<APlayerController>(GetController()))
+                {
+                    PC->SetViewTarget(Cam);
+                    if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+                }
+                FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / TEXT("LookFrom.png"), true, false);
+                FString Line = FString::Printf(TEXT("QUIET_LAKE_LOOKFROM at (%.0f, %.0f) yaw %.0f |"), At.X, At.Y, Yaw);
+                const FVector Ahead = FRotator(0, Yaw, 0).Vector();
+                const FVector2D Dir(Ahead.X, Ahead.Y);
+                for (float D = 0.0f; D <= 40.0f; D += 2.0f)
+                {
+                    const FVector2D P = At + Dir * D * 100.0f;
+                    Line += FString::Printf(TEXT(" %.0fm:%.1f"), D, LakeMap::Ground(P.X, P.Y) - LakeMap::SurfaceZ);
+                }
+                UE_LOG(LogTemp, Display, TEXT("%s"), *Line);
+            }, 12.0f, false);
+            GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 13.5f, false);
+            return;
+        }
+    }
+    // -ScreenshotTest: presses F12 through the real input path and checks that a file appears.
+    if (FParse::Param(FCommandLine::Get(), TEXT("ScreenshotTest")) && GetNetMode() == NM_Standalone)
+    {
+        FTimerHandle Press, Check, Exit;
+        GetWorldTimerManager().SetTimer(Press, [this]
+        {
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::F12, IE_Pressed, 1.0f));
+                UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SCREENSHOT_TEST pressed"));
+            }
+        }, 12.0f, false);
+        GetWorldTimerManager().SetTimer(Check, [this]
+        {
+            TArray<FString> Files;
+            IFileManager::Get().FindFiles(Files, *(FPaths::ProjectSavedDir() / TEXT("Screenshots/*.png")), true, false);
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SCREENSHOT_TEST %d files in Saved/Screenshots"), Files.Num());
+        }, 14.0f, false);
+        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 15.0f, false);
+        return;
+    }
     // -FisherPreview: the angler from the front, the side and the back, then the face close up.
     if (FParse::Param(FCommandLine::Get(), TEXT("FisherPreview")) && GetNetMode() == NM_Standalone)
     {

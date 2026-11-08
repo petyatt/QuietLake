@@ -19,3 +19,6 @@ Content/Characters/MetaHumans/
 
 # Intermediate tree meshes and textures: rebuilt by Tools/PrepareTrees.py and Tools/PrepareTreeFoliage.py from the bought archives
 Tools/GeneratedTrees/
+
+# Python bytecode from the asset scripts
+Tools/__pycache__/

@@ -197,6 +197,8 @@ public:
     static constexpr float LayHold = 2.0f;
     static constexpr float InteractHold = 0.5f;
     bool HasRodInHands() const { return Rods.IsValidIndex((int32)RodKind) && Rods[(int32)RodKind].Place == ERodPlace::Hands; }
+    /** A new game starts with empty hands: every rod in its compartment of the case on the back. */
+    void StowRodsInCase();
     /** The rod in the hands can go into the case or onto the ground: its rig held in the free hand, nothing going on. */
     bool CanPutRodAway() const;
     /** Where a rod on its stand rests (butt on the ground behind the fork). */
@@ -232,6 +234,17 @@ public:
     void CloseCaseWindow();
     UPROPERTY(Replicated) TObjectPtr<ALakeFish> LineFish;  // fish holding the bait or hooked
     bool bThirdPerson = false;
+    /** Dev camera for looking the level over: 8 toggles it, WASD flies, Q/E up and down, Shift ×3. */
+    void ToggleFlyCamera();
+    void FlyUpInput(float Value);
+    void FlyBoostPressed();
+    void FlyBoostReleased();
+    void UpdateFlyCamera(float DeltaSeconds);
+    bool bFlyCamera = false;
+    bool bFlyBoost = false;
+    UPROPERTY() TObjectPtr<class ACameraActor> FlyCamera;
+    float FlyForwardInput = 0.0f, FlyRightInput = 0.0f, FlyUpValue = 0.0f;
+    float FlyViewYaw = 0.0f, FlyViewPitch = 0.0f, FlyNextLog = 0.0f;
     /** Server world time, the same clock on every machine. */
     float ServerNow() const;
 
@@ -336,6 +349,8 @@ private:
     void ToggleLifePanel();
     /** M: the whole lake over the screen (the minimap is always in the top-right corner). */
     void ToggleMap();
+    /** F12: save a screenshot into Saved/Screenshots (for showing what the world looks like now). */
+    void TakeScreenshot();
     /** The angler's own clothes over the hidden mannequin: boots, trousers, sweater, jacket, hands,
      *  head and cap. The mannequin keeps animating (it drives the bones the parts hang on). */
     void CreateFisherOutfit();

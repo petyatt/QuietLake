@@ -1,6 +1,7 @@
 ﻿#include "LakeGame.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
+#include "Camera/CameraActor.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
@@ -159,6 +160,23 @@ void ALakeCharacter::CreateFisherOutfit()
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FISHER body=%s head parts %d grooms %d"),
         *GetNameSafe(Body->GetSkeletalMeshAsset()), OutfitHead.Num(), Grooms);
 }
+namespace
+{
+    /** True in the automated preview runs: they set up the angler themselves. */
+    bool IsPreviewRun()
+    {
+        const TCHAR* Flags[] = { TEXT("LakePreview"), TEXT("BitePreview"), TEXT("LandPreview"), TEXT("CastPreview"),
+            TEXT("RodPreview"), TEXT("LeaderPreview"), TEXT("RetrievePreview"), TEXT("LinePreview"), TEXT("GroundbaitPreview"),
+            TEXT("FightPreview"), TEXT("MouthPreview"), TEXT("WeatherPreview"), TEXT("NightPreview"), TEXT("CloudPreview"),
+            TEXT("FrontPreview"), TEXT("MapPreview"), TEXT("CasePreview"), TEXT("FisherPreview"), TEXT("PlantPreview"),
+            TEXT("LifePreview"), TEXT("FishPreview"), TEXT("WaterPreview"), TEXT("ScreenshotTest") };
+        for (const TCHAR* Flag : Flags) if (FParse::Param(FCommandLine::Get(), Flag)) return true;
+        FString Value;
+        return FParse::Value(FCommandLine::Get(), TEXT("ScenePreview="), Value, false)
+            || FParse::Value(FCommandLine::Get(), TEXT("LookFrom="), Value, false);
+    }
+}
+
 void ALakeCharacter::BeginPlay()
 {
     Super::BeginPlay();
@@ -177,6 +195,16 @@ void ALakeCharacter::BeginPlay()
     RodVisual = HasRodInHands() ? RodVisuals[(int32)RodKind] : nullptr;
     // The case is only looked at: a dedicated server keeps its state, not its meshes.
     if (GetNetMode() != NM_DedicatedServer) CaseVisual = GetWorld()->SpawnActor<ALakeRodCase>();
+    // A real match starts with the rods packed: the angler walks up to the water empty-handed, opens his
+    // case and takes a rod. The preview runs skip this (they drive the rods themselves).
+    if (GetNetMode() != NM_DedicatedServer && HasAuthority() && !IsPreviewRun())
+    {
+        FTimerHandle StartHandle;
+        GetWorldTimerManager().SetTimer(StartHandle, [this]
+        {
+            if (GetController()) StowRodsInCase();
+        }, 0.5f, false);
+    }
 #if !UE_BUILD_SHIPPING
     RunPreviews();
 #endif
@@ -215,6 +243,13 @@ void ALakeCharacter::SetupPlayerInputComponent(UInputComponent* Input)
     Input->BindAction("ToggleView", IE_Pressed, this, &ALakeCharacter::ToggleView);
     Input->BindAction("LifePanel", IE_Pressed, this, &ALakeCharacter::ToggleLifePanel);
     Input->BindAction("Map", IE_Pressed, this, &ALakeCharacter::ToggleMap);
+    Input->BindAction("Screenshot", IE_Pressed, this, &ALakeCharacter::TakeScreenshot);
+#if !UE_BUILD_SHIPPING
+    Input->BindAction("FlyCamera", IE_Pressed, this, &ALakeCharacter::ToggleFlyCamera);
+    Input->BindAxis("FlyUp", this, &ALakeCharacter::FlyUpInput);
+    Input->BindAction("FlyBoost", IE_Pressed, this, &ALakeCharacter::FlyBoostPressed);
+    Input->BindAction("FlyBoost", IE_Released, this, &ALakeCharacter::FlyBoostReleased);
+#endif
 #if !UE_BUILD_SHIPPING
     // 6 and 7 (development only): an hour forward, and the weather in turn.
     Input->BindAction("DevTime", IE_Pressed, this, &ALakeCharacter::CycleDevTime);
@@ -280,16 +315,97 @@ void ALakeCharacter::ToggleLifePanel()
     if (const APlayerController* PC = Cast<APlayerController>(GetController()))
         if (ALakeHUD* HUD = Cast<ALakeHUD>(PC->GetHUD())) HUD->bShowLife = !HUD->bShowLife;
 }
+void ALakeCharacter::TakeScreenshot()
+{
+    // A plain frame grab of what the angler sees, without the interface: Saved/Screenshots/.
+    const FString File = FString::Printf(TEXT("Screenshots/Manual_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")));
+    FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / File, false, false);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SCREENSHOT %s"), *(FPaths::ProjectSavedDir() / File));
+    Status = TEXT("Снимок сохранён в Saved/Screenshots");
+}
 void ALakeCharacter::ToggleMap()
 {
     if (const APlayerController* PC = Cast<APlayerController>(GetController()))
         if (ALakeHUD* HUD = Cast<ALakeHUD>(PC->GetHUD())) HUD->bShowMap = !HUD->bShowMap;
 }
 // CharacterMovement keeps normal walking and network prediction in every fishing phase.
-void ALakeCharacter::Forward(float Value) { AddMovementInput(GetActorForwardVector(), Value); }
-void ALakeCharacter::Right(float Value) { AddMovementInput(GetActorRightVector(), Value); }
+void ALakeCharacter::Forward(float Value)
+{
+    if (bFlyCamera) { FlyForwardInput = Value; return; }
+    AddMovementInput(GetActorForwardVector(), Value);
+}
+void ALakeCharacter::Right(float Value)
+{
+    if (bFlyCamera) { FlyRightInput = Value; return; }
+    AddMovementInput(GetActorRightVector(), Value);
+}
+void ALakeCharacter::FlyUpInput(float Value)
+{
+    if (bFlyCamera) FlyUpValue = Value;
+}
+void ALakeCharacter::FlyBoostPressed() { bFlyBoost = true; }
+void ALakeCharacter::FlyBoostReleased() { bFlyBoost = false; }
+void ALakeCharacter::ToggleFlyCamera()
+{
+#if !UE_BUILD_SHIPPING
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (!PC) return;
+    if (!bFlyCamera)
+    {
+        FVector Eye;
+        FRotator View;
+        PC->GetPlayerViewPoint(Eye, View);
+        FlyViewYaw = View.Yaw;
+        FlyViewPitch = FMath::Clamp(FRotator::NormalizeAxis(View.Pitch), -85.0f, 85.0f);
+        FActorSpawnParameters Params;
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+        FlyCamera = GetWorld()->SpawnActor<ACameraActor>(Eye, FRotator(FlyViewPitch, FlyViewYaw, 0), Params);
+        if (!FlyCamera) return;
+        if (UCameraComponent* Cam = FlyCamera->GetCameraComponent()) Cam->SetFieldOfView(80.0f);
+        PC->SetViewTarget(FlyCamera);
+        GetCharacterMovement()->DisableMovement();
+        bFlyCamera = true;
+        Status = TEXT("Свободная камера: 8 — выйти, WASD — лететь, Q/E — вниз/вверх, Shift — ×3");
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FLYCAM on at (%.0f, %.0f, %.0f) yaw %.0f pitch %.0f"), Eye.X, Eye.Y, Eye.Z, FlyViewYaw, FlyViewPitch);
+    }
+    else
+    {
+        if (FlyCamera) { FlyCamera->Destroy(); FlyCamera = nullptr; }
+        bFlyCamera = false;
+        bFlyBoost = false;
+        FlyForwardInput = FlyRightInput = FlyUpValue = 0.0f;
+        GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+        PC->SetViewTarget(this);
+        Status = FString();
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FLYCAM off"));
+    }
+#endif
+}
+void ALakeCharacter::UpdateFlyCamera(float DeltaSeconds)
+{
+#if !UE_BUILD_SHIPPING
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (!PC || !FlyCamera) return;
+    const FRotator View(FlyViewPitch, FlyViewYaw, 0);
+    FlyCamera->SetActorRotation(View);
+    const bool bFast = bFlyBoost;
+    const float Speed = 1800.0f * (bFast ? 3.0f : 1.0f);
+    FVector Move = View.Vector() * FlyForwardInput
+        + FRotationMatrix(View).GetUnitAxis(EAxis::Y) * FlyRightInput
+        + FVector::UpVector * FlyUpValue;
+    if (!Move.IsNearlyZero()) FlyCamera->AddActorWorldOffset(Move.GetClampedToMaxSize(1.0f) * Speed * DeltaSeconds, false);
+    const float Now = GetWorld()->GetTimeSeconds();
+    if (Now >= FlyNextLog)
+    {
+        FlyNextLog = Now + 2.0f;
+        const FVector P = FlyCamera->GetActorLocation();
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_FLYCAM at (%.0f, %.0f, %.0f) speed %.0f cm/s (shift %d)"), P.X, P.Y, P.Z, Speed, bFast ? 1 : 0);
+    }
+#endif
+}
 void ALakeCharacter::Fish()
 {
+    if (bFlyCamera) return;
     if (Placing != EPlacing::None)
     {
         // LMB lays the ghost's thing where it is shown.
@@ -309,10 +425,12 @@ void ALakeCharacter::Fish()
 }
 void ALakeCharacter::Turn(float Value)
 {
+    if (bFlyCamera) { FlyViewYaw = FRotator::NormalizeAxis(FlyViewYaw + Value * RodMouseSensitivity); return; }
     MoveRodAxis(Value * RodMouseSensitivity, false);
 }
 void ALakeCharacter::Look(float Value)
 {
+    if (bFlyCamera) { FlyViewPitch = FMath::Clamp(FlyViewPitch - Value * RodMouseSensitivity, -85.0f, 85.0f); return; }
     MoveRodAxis(-Value * RodMouseSensitivity, true);
 }
 void ALakeCharacter::MoveRodAxis(float Delta, bool bPitch)
@@ -404,6 +522,7 @@ bool ALakeCharacter::IsSteeringRig() const
 }
 void ALakeCharacter::Cancel()
 {
+    if (bFlyCamera) return;
     // RMB cancels laying something down; in the case window it does nothing.
     if (Placing != EPlacing::None) { Placing = EPlacing::None; return; }
     if (IsCaseWindowOpen()) return;
@@ -413,6 +532,7 @@ void ALakeCharacter::CancelReleased() { ServerStopRetrieve(); }
 void ALakeCharacter::ServerStopRetrieve_Implementation() { bRetrieveHeld = false; }
 void ALakeCharacter::Release()
 {
+    if (bFlyCamera) return;
     if (IsCaseWindowOpen())
     {
         if (const APlayerController* PC = Cast<APlayerController>(GetController()))
@@ -619,6 +739,7 @@ void ALakeCharacter::ServerThrowGroundbait_Implementation(FVector_NetQuantize Ta
 void ALakeCharacter::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+    if (bFlyCamera) UpdateFlyCamera(DeltaSeconds);
     if (HasAuthority() && bCharging && bRigInHand && ServerNow() - ChargeServerStart >= 0.18f)
     {
         bRigInHand = false;
@@ -1420,6 +1541,7 @@ void ALakeCharacter::ServerCancel_Implementation()
 }
 void ALakeCharacter::Strike()
 {
+    if (bFlyCamera) return;
     StrikeServerTime = ServerNow();
     StrikeUntil = ServerNow() + 0.65f;
     HookImpulse = 0;

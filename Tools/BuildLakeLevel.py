@@ -83,6 +83,7 @@ def tick(delta):
             log('bowl depth at the centre: %.0f cm' % lib.update_landscape())
         elif step == 3 and frames > 600:
             log('bowl depth before saving: %.0f cm' % lib.update_landscape())
+            log('land set back to the design: %d vertices' % lib.rebuild_land_without_brush())
             log('baked %d ground cells' % lib.bake_ground())
             world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
             if not unreal.EditorLoadingAndSavingUtils.save_map(world, MAP):

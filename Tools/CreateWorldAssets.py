@@ -213,15 +213,15 @@ for name, rgb in palette.items():
         lib.connect_material_property(base, '', unreal.MaterialProperty.MP_BASE_COLOR)
         lib.connect_material_property(foam, '', unreal.MaterialProperty.MP_OPACITY)
         out = expression(mat, unreal.MaterialExpressionSingleLayerWaterMaterialOutput)
-        # A forest lake with a little peat: the humus in the water eats blue light most, then green,
-        # red least, so the water is tea-amber over a sandy bottom and dark brown-green in the deep;
-        # fine silt and plankton scatter a little light back (greenish-yellow). The engine takes the
-        # coefficients per centimetre (scene depth); below they are written per metre / 100.
-        # Visibility is about a metre: a fish 15 cm down is seen but already tinted, 40 cm down a dim
-        # shadow, 80 cm down next to nothing; the sandy shallows by the bank stay clear. (Much more
-        # scattering turns the lake into opaque green paint.) After long rain the runoff clouds it.
-        scatter = custom(mat, 'return (float3(0.08, 0.1, 0.045) * (1.0 + 3.0 * Wt) + float3(0.15, 0.14, 0.08) * Wt) / 100.0;', [('Wt', wetness)])
-        absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.012, 0.013, 0.032, 1))
+        # A clear forest lake: the water keeps a green window (blue is eaten most, then red) over a
+        # sandy or silty bottom, so the shallows look olive-green and the deep water dark teal-green.
+        # Fine silt and plankton scatter only a little light back; the old values scattered almost as
+        # much as they absorbed, which turned the lake into a milky amber sheet. The engine takes the
+        # coefficients per centimetre (scene depth); below they are written (per metre / 100).
+        # Visibility is a couple of metres: a fish 40 cm down is seen and tinted, 80 cm down a dim
+        # shadow; after long rain the runoff clouds the water.
+        scatter = custom(mat, 'return (float3(0.006, 0.015, 0.010) * (1.0 + 5.0 * Wt) + float3(0.04, 0.045, 0.025) * Wt) / 100.0;', [('Wt', wetness)])
+        absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.0140, 0.0100, 0.0220, 1))
         connect(scatter, '', out, 'ScatteringCoefficients')
         connect(absorb, '', out, 'AbsorptionCoefficients')
     elif name == 'M_Terrain':
@@ -261,8 +261,8 @@ for (int i = 0; i < 5; i++)
         avg += SceneTextureLookup(ViewportUVToBufferUV(float2((i + 0.5) / 5.0, (j + 0.5) / 3.0)), 14, false).rgb;
 avg /= 15.0;
 float lum = dot(avg, float3(0.3, 0.59, 0.11));
-float3 murk = float3(0.42, 0.5, 0.26) * lum;
-float3 t = exp(-float3(0.016, 0.015, 0.03) * D);
+float3 murk = float3(0.16, 0.28, 0.22) * lum;
+float3 t = exp(-float3(0.012, 0.009, 0.018) * D);
 return C * t + murk * (1.0 - t);
 """
 if not only or 'M_Underwater' in only:

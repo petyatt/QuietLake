@@ -399,7 +399,7 @@ void ALakeEnvironment::BeginPlay()
     {
         const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);
         const float Yaw = YawOf(Pier.Dir);
-        const float DeckZ = LakeMap::SurfaceZ + 50;
+        const float DeckZ = LakeMap::SurfaceZ + 85;
         for (float A = 0; A < Pier.Length; A += 17)
         {
             const bool bHead = A > Pier.Length - 300;
@@ -411,6 +411,13 @@ void ALakeEnvironment::BeginPlay()
         }
         for (float S : { -1.0f, 1.0f })
             Add(Wood, FVector(Pier.Root + Pier.Dir * Pier.Length * 0.5f + Side * S * (Pier.Width * 0.5f - 15), DeckZ - 9), FVector(Pier.Length / 100, 0.12f, 0.14f), FRotator(0, Yaw, 0));
+        // Two steps down from the landward end: the bank there is about half a metre below the deck.
+        for (float Step : { -45.0f, -105.0f })
+        {
+            const FVector2D P = Pier.Root + Pier.Dir * Step;
+            const float Z = FMath::Lerp(DeckZ, Ground(P) + 8, Step < -60.0f ? 1.0f : 0.5f);
+            Add(Wood, FVector(P, Z), FVector(0.20f, 2.6f, 0.06f), FRotator(0, Yaw, 0));
+        }
         for (float S : { -1.0f, 1.0f })
             Add(Wood, FVector(Pier.Root + Pier.Dir * (Pier.Length - 150) + Side * S * 215, DeckZ - 9), FVector(3.0f, 0.12f, 0.14f), FRotator(0, Yaw, 0));
         for (float A = 120; A < Pier.Length; A += 220)
@@ -439,7 +446,7 @@ void ALakeEnvironment::BeginPlay()
             }
     }
 
-    // --- the landing: boats and nets drying; the village itself comes later on the plateau above ---
+    // --- the landing: nets drying; the village itself comes later on the plateau above ---------------
     {
         auto Prop = [this](const TCHAR* Name, FVector Location, FRotator Rotation, bool bCollision)
         {
@@ -454,45 +461,6 @@ void ALakeEnvironment::BeginPlay()
             return C;
         };
         const FVector2D Along(-Landing.Outward.Y, Landing.Outward.X);
-        // A boat pulled up on the landing, bow up the bank, lying along the slope.
-        {
-            const FVector2D Dir = Landing.Outward;
-            const FVector2D P = Landing.Location + Dir * 170;
-            const float Pitch = FMath::RadiansToDegrees(FMath::Atan2(Ground(P + Dir * 190) - Ground(P - Dir * 190), 380));
-            Prop(TEXT("Boat_B"), FVector(P, Ground(P) - 4), FRotator(Pitch, YawOf(Dir) + 6, 4), true);
-        }
-        // An old boat half sunk beside the pier; the fish use it as cover (LakeMap::ZonesAt).
-        {
-            float Yaw = 0;
-            const FVector2D P = LakeMap::OldBoat(&Yaw);
-            if (LakeMap::IsWater(P.X, P.Y)) Prop(TEXT("Boat_A"), FVector(P, LakeMap::SurfaceZ - 34), FRotator(-3, Yaw, 8), false);
-        }
-        // One moored at the pier's landing stage.
-        {
-            const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);
-            const FVector2D P = Pier.Root + Pier.Dir * (Pier.Length - 170) + Side * 330;
-            Prop(TEXT("Boat_A"), FVector(P, LakeMap::SurfaceZ - 16), FRotator(0, YawOf(Pier.Dir) + 172, 1.5f), true);
-            auto* Mooring = Group(TEXT("Cylinder"), TEXT("M_OldBark"), false);
-            auto Rope = [&](FVector A, FVector B)
-            {
-                FVector Previous = A;
-                for (int32 K = 1; K <= 10; ++K)
-                {
-                    const float T = K / 10.0f;
-                    const FVector Next = FMath::Lerp(A, B, T) - FVector(0, 0, 10 * 4 * T * (1 - T));
-                    Add(Mooring, (Previous + Next) * 0.5f, FVector(0.012f, 0.012f, FVector::Dist(Previous, Next) / 100),
-                        FRotationMatrix::MakeFromZ(Next - Previous).Rotator());
-                    Previous = Next;
-                }
-            };
-            for (float End : { -1.0f, 1.0f })
-            {
-                const FVector2D Post = Pier.Root + Pier.Dir * (Pier.Length - 170 + End * 120) + Side * 215;
-                Add(Bark, FVector(Post, LakeMap::SurfaceZ + 45), FVector(0.14f, 0.14f, 1.4f));
-                const FVector2D Tie = P + Pier.Dir * End * 160 - Side * 25;
-                Rope(FVector(Post, LakeMap::SurfaceZ + 105), FVector(Tie, LakeMap::SurfaceZ + 30));
-            }
-        }
         // Nets hung to dry above the landing.
         for (float S : { -1.0f, 1.0f })
         {
@@ -656,11 +624,22 @@ void ALakeEnvironment::BeginPlay()
             && FCString::Strcmp(Spot.Name, TEXT("Отмель")) != 0 && FCString::Strcmp(Spot.Name, TEXT("Луговая бровка")) != 0) continue;
         const FVector2D Along(-Spot.Outward.Y, Spot.Outward.X);
         const float Yaw = YawOf(Spot.Outward);
+        // The boards lie on dry ground: on a gentle bank the first metre inland is still at the water
+        // level, and boards there read as floating in the shallows.
+        FVector2D Base = Spot.Location + Spot.Outward * 480.0f;
+        for (float D = 120.0f; D <= 480.0f; D += 20.0f)
+        {
+            const FVector2D P = Spot.Location + Spot.Outward * D;
+            if (Ground(P) >= LakeMap::SurfaceZ + 20.0f) { Base = P; break; }
+        }
         for (int32 K = 0; K < 3; ++K)
         {
-            const FVector2D P = Spot.Location + Spot.Outward * (60 + K * 22);
-            Add(Wood, FVector(P, Ground(P) + 3), FVector(0.2f, 1.5f, 0.04f), FRotator(Random.FRandRange(-2, 2), Yaw + Random.FRandRange(-4, 4), 0));
+            const FVector2D P = Base + Spot.Outward * (K * 22);
+            Add(Wood, FVector(P, Ground(P) + 8), FVector(0.2f, 1.5f, 0.04f), FRotator(Random.FRandRange(-2, 2), Yaw + Random.FRandRange(-4, 4), 0));
         }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_BOARDS %s: base (%.0f, %.0f) %.0f cm above the water, look from (%.0f, %.0f) yaw %.0f"),
+            Spot.Name, Base.X, Base.Y, Ground(Base) - LakeMap::SurfaceZ,
+            Base.X - Spot.Outward.X * 650.0f, Base.Y - Spot.Outward.Y * 650.0f, YawOf(-Spot.Outward));
         for (float Sgn : { -1.0f, 1.0f })
         {
             const FVector2D P = Spot.Location - Spot.Outward * 30 + Along * Sgn * 70;

@@ -110,12 +110,9 @@ AActor* ULakeLevelLibrary::BuildLandscape(UMaterialInterface* Material, const TA
     const int32 CountX = FMath::CeilToInt((Bounds.Max.X - Bounds.Min.X) / QuadSize / ComponentQuads);
     const int32 CountY = FMath::CeilToInt((Bounds.Max.Y - Bounds.Min.Y) / QuadSize / ComponentQuads);
     const int32 SizeX = CountX * ComponentQuads + 1, SizeY = CountY * ComponentQuads + 1;
-
     TArray<uint16> Heights;
     Heights.SetNumUninitialized(SizeX * SizeY);
-    TArray<uint8> Masks[3];
-    for (TArray<uint8>& Mask : Masks) Mask.SetNumZeroed(SizeX * SizeY);
-    // The designed ground (not a bake of an earlier build), in parallel; then the masks.
+    // The designed ground (not a bake of an earlier build), in parallel.
     LakeMap::ShoreDistance(0, 0);
     LakeMap::Ground(0, 0);
     ParallelFor(SizeY, [&](int32 Y)
@@ -129,6 +126,22 @@ AActor* ULakeLevelLibrary::BuildLandscape(UMaterialInterface* Material, const TA
             Heights[Y * SizeX + X] = EncodeHeight(LakeMap::ShoreDistance(P.X, P.Y) > 0 ? FMath::Max(Z, LakeMap::SurfaceZ - 5) : Z);
         }
     });
+    return CreateLandscape(World, Material, LayerInfos, Heights);
+#else
+    return nullptr;
+#endif
+}
+
+ALandscape* ULakeLevelLibrary::CreateLandscape(UWorld* World, UMaterialInterface* Material, const TArray<UObject*>& LayerInfos, const TArray<uint16>& Heights)
+{
+#if WITH_EDITOR
+    const FBox2D Bounds = LakeMap::TerrainBounds;
+    const int32 CountX = FMath::CeilToInt((Bounds.Max.X - Bounds.Min.X) / QuadSize / ComponentQuads);
+    const int32 CountY = FMath::CeilToInt((Bounds.Max.Y - Bounds.Min.Y) / QuadSize / ComponentQuads);
+    const int32 SizeX = CountX * ComponentQuads + 1, SizeY = CountY * ComponentQuads + 1;
+    if (!World || Heights.Num() != SizeX * SizeY) return nullptr;
+    TArray<uint8> Masks[3];
+    for (TArray<uint8>& Mask : Masks) Mask.SetNumZeroed(SizeX * SizeY);
     for (int32 Y = 0; Y < SizeY; ++Y)
         for (int32 X = 0; X < SizeX; ++X)
         {
@@ -139,9 +152,8 @@ AActor* ULakeLevelLibrary::BuildLandscape(UMaterialInterface* Material, const TA
             Masks[1][I] = (uint8)FMath::RoundToInt(FMath::Clamp(L.G, 0.0f, 1.0f) * 255);
             Masks[2][I] = (uint8)FMath::RoundToInt(FMath::Clamp(L.B, 0.0f, 1.0f) * 255);
         }
-
     TMap<FGuid, TArray<uint16>> HeightData;
-    HeightData.Add(FGuid(), MoveTemp(Heights));
+    HeightData.Add(FGuid(), Heights);
     TArray<FLandscapeImportLayerInfo> Layers;
     for (int32 L = 0; L < FMath::Min(3, LayerInfos.Num()); ++L)
         if (auto* Info = Cast<ULandscapeLayerInfoObject>(LayerInfos[L]))
@@ -152,7 +164,6 @@ AActor* ULakeLevelLibrary::BuildLandscape(UMaterialInterface* Material, const TA
         }
     TMap<FGuid, TArray<FLandscapeImportLayerInfo>> LayerData;
     LayerData.Add(FGuid(), Layers);
-
     ALandscape* Landscape = World->SpawnActor<ALandscape>(FVector(Bounds.Min, 0), FRotator::ZeroRotator);
     Landscape->LandscapeMaterial = Material;
     Landscape->SetActorRelativeScale3D(FVector(QuadSize, QuadSize, 100));
@@ -171,6 +182,70 @@ AActor* ULakeLevelLibrary::BuildLandscape(UMaterialInterface* Material, const TA
     return Landscape;
 #else
     return nullptr;
+#endif
+}
+
+int32 ULakeLevelLibrary::RebuildLandWithoutBrush()
+{
+#if WITH_EDITOR
+    UWorld* World = EditorWorld();
+    if (!World) return 0;
+    ALandscape* Old = nullptr;
+    for (TActorIterator<ALandscape> It(World); It; ++It) { Old = *It; break; }
+    if (!Old) return 0;
+    ULandscapeInfo* OldInfo = Old->GetLandscapeInfo();
+    int32 MinX, MinY, MaxX, MaxY;
+    if (!OldInfo || !OldInfo->GetLandscapeExtent(MinX, MinY, MaxX, MaxY)) return 0;
+    const int32 W = MaxX - MinX + 1, H = MaxY - MinY + 1;
+    TArray<uint16> Carved;
+    Carved.SetNumZeroed(W * H);
+    {
+        FLandscapeEditDataInterface Data(OldInfo);
+        Data.GetHeightData(MinX, MinY, MaxX, MaxY, Carved.GetData(), W);
+    }
+    const FTransform T = Old->GetActorTransform();
+    const float ScaleZ = T.GetScale3D().Z / 128.0f, OffsetZ = T.GetLocation().Z - 32768.0f * ScaleZ;
+    // The carved bowl stays under the water; the land above the waterline goes back to the designed
+    // ground, with a smooth join a metre either side of the waterline.
+    TArray<uint16> Hybrid;
+    Hybrid.SetNumUninitialized(W * H);
+    int32 Changed = 0;
+    float Worst = 0;
+    for (int32 Y = 0; Y < H; ++Y)
+        for (int32 X = 0; X < W; ++X)
+        {
+            const FVector P = T.TransformPosition(FVector(MinX + X, MinY + Y, 0));
+            const float SD = LakeMap::ShoreDistance(P.X, P.Y);          // positive in the water
+            const float CarvedZ = Carved[Y * W + X] * ScaleZ + OffsetZ;
+            float Z = CarvedZ;
+            if (SD < 100.0f)
+            {
+                const float Design = LakeMap::DesignGround(P.X, P.Y);
+                const float Land = 1.0f - FMath::SmoothStep(-100.0f, 100.0f, SD);
+                Z = FMath::Lerp(CarvedZ, Design, Land);
+                Worst = FMath::Max(Worst, FMath::Abs(Z - CarvedZ));
+                if (FMath::Abs(Z - CarvedZ) > 0.5f) ++Changed;
+            }
+            Hybrid[Y * W + X] = (uint16)FMath::Clamp(FMath::RoundToInt((Z - T.GetLocation().Z) / ScaleZ + 32768.0f), 0, 65535);
+        }
+    // Nothing may carve the new landscape: the water stays as the surface only.
+    for (TActorIterator<AWaterBody> It(World); It; ++It)
+        if (UWaterBodyComponent* Body = It->GetWaterBodyComponent()) Body->bAffectsLandscape = false;
+    TArray<AActor*> Brushes;
+    for (TActorIterator<AActor> It(World); It; ++It)
+        if (It->GetClass()->GetName().Contains(TEXT("WaterBrushManager"))) Brushes.Add(*It);
+    for (AActor* Brush : Brushes) Brush->Destroy();
+    UMaterialInterface* Material = Old->LandscapeMaterial;
+    TArray<UObject*> LayerInfos;
+    for (const FLandscapeInfoLayerSettings& Layer : OldInfo->Layers)
+        if (Layer.LayerInfoObj) LayerInfos.Add(Layer.LayerInfoObj);
+    for (TActorIterator<ALandscapeProxy> It(World); It; ++It) It->Destroy();
+    ALandscape* New = CreateLandscape(World, Material, LayerInfos, Hybrid);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL land rebuilt without the brush: %d of %d vertices set back to the design, up to %.0f cm, %d layer infos, landscape %s"),
+        Changed, W * H, Worst, LayerInfos.Num(), New ? TEXT("ok") : TEXT("failed"));
+    return New ? Changed : 0;
+#else
+    return 0;
 #endif
 }
 
@@ -406,6 +481,82 @@ int32 ULakeLevelLibrary::SpawnShallows(float MaxDesignDepth, float MinBankDistan
     return Count;
 #else
     return 0;
+#endif
+}
+
+void ULakeLevelLibrary::WaterAlignmentLog()
+{
+#if WITH_EDITOR
+    UWorld* World = EditorWorld();
+    if (!World) return;
+    ALandscape* Landscape = nullptr;
+    for (TActorIterator<ALandscape> It(World); It; ++It) { Landscape = *It; break; }
+    AWaterBody* Lake = nullptr;
+    for (TActorIterator<AWaterBody> It(World); It; ++It)
+        if (It->IsA<AWaterBodyLake>()) { Lake = *It; break; }
+    if (!Landscape || !Lake) { UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_ALIGN no landscape or lake")); return; }
+    auto Height = [Landscape](float X, float Y) -> TOptional<float>
+    {
+        return Landscape->GetHeightAtLocation(FVector(X, Y, 0.0f), EHeightfieldSource::Editor);
+    };
+    // The ground the game rules use (the baked heights) must be the landscape the player sees.
+    const FBox2D Box = LakeMap::LakeBounds();
+    int32 Samples = 0, Bad = 0;
+    float Sum = 0, Worst = 0;
+    for (float Y = Box.Min.Y; Y <= Box.Max.Y; Y += 400.0f)
+        for (float X = Box.Min.X; X <= Box.Max.X; X += 400.0f)
+        {
+            const TOptional<float> Z = Height(X, Y);
+            if (!Z.IsSet()) continue;
+            const float Diff = FMath::Abs(LakeMap::Ground(X, Y) - Z.GetValue());
+            Sum += Diff;
+            ++Samples;
+            if (Diff > 30.0f) ++Bad;
+            Worst = FMath::Max(Worst, Diff);
+        }
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_ALIGN baked ground vs landscape: %d samples, mean %.1f cm, %d over 30 cm, worst %.1f cm (baked %d)"),
+        Samples, Sum / FMath::Max(1, Samples), Bad, Worst, LakeMap::HasBakedGround() ? 1 : 0);
+    // The bank across the shore: the designed ground on land, the carved bed in the water.
+    UWaterSplineComponent* Spline = Lake->GetWaterSpline();
+    const int32 Count = Spline->GetNumberOfSplinePoints();
+    for (float Frac : { 0.08f, 0.33f, 0.62f })
+    {
+        const int32 I = FMath::Clamp(FMath::RoundToInt(Count * Frac), 0, Count - 1);
+        const FVector P = Spline->GetLocationAtSplinePoint(I, ESplineCoordinateSpace::World);
+        const FVector2D Out = LakeMap::NearestShore(FVector2D(P.X, P.Y)).Outward;
+        FString Line = FString::Printf(TEXT("QUIET_LAKE_ALIGN transect %s:"), *FVector2D(P.X, P.Y).ToString());
+        for (float D = -200.0f; D <= 600.0f; D += 50.0f)
+        {
+            const float X = P.X + Out.X * D, Y = P.Y + Out.Y * D;
+            const TOptional<float> Z = Height(X, Y);
+            Line += FString::Printf(TEXT(" %+.1fm:%+.1f(design %+.1f)"), D / 100.0f, Z.IsSet() ? Z.GetValue() : -999.0f, LakeMap::Ground(X, Y));
+        }
+        UE_LOG(LogTemp, Display, TEXT("%s"), *Line);
+    }
+    // The pier: the ground from the bank out along it, to check the deck is above the bank.
+    {
+        const LakeMap::FPier& Pier = LakeMap::Pier();
+        FString Line = FString::Printf(TEXT("QUIET_LAKE_ALIGN pier root (%.0f, %.0f) dir (%.3f, %.3f) length %.0f cm, along from the root:"),
+            Pier.Root.X, Pier.Root.Y, Pier.Dir.X, Pier.Dir.Y, Pier.Length);
+        for (float A = -400.0f; A <= Pier.Length + 400.0f; A += 200.0f)
+        {
+            const FVector2D P = Pier.Root + Pier.Dir * A;
+            Line += FString::Printf(TEXT(" %.0fm:%+.0f(design d %+.0f)"), A / 100.0f, LakeMap::Ground(P.X, P.Y) - LakeMap::SurfaceZ, LakeMap::Depth(P.X, P.Y));
+        }
+        UE_LOG(LogTemp, Display, TEXT("%s"), *Line);
+    }
+    // The fishing spots: the water 1.5 m off the bank should be as deep as the design puts it.
+    int32 BadSpots = 0;
+    for (const LakeMap::FSpot& Spot : LakeMap::Spots())
+    {
+        const FVector2D OnWater = Spot.Location - Spot.Outward * 150.0f;
+        const TOptional<float> Z = Height(OnWater.X, OnWater.Y);
+        const float DesignDepth = LakeMap::Depth(OnWater.X, OnWater.Y) / 100.0f;
+        const float RealDepth = Z.IsSet() ? (LakeMap::SurfaceZ - Z.GetValue()) / 100.0f : -99.0f;
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_ALIGN spot %s: 1.5 m off the bank design %.2f m, landscape %.2f m"), Spot.Name, DesignDepth, RealDepth);
+        if (RealDepth < 0.05f || FMath::Abs(RealDepth - DesignDepth) > 0.8f) ++BadSpots;
+    }
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_ALIGN spots off the design depth: %d of %d"), BadSpots, LakeMap::Spots().Num());
 #endif
 }
 
