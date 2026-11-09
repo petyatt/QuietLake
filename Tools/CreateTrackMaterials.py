@@ -105,6 +105,44 @@ return alpha > ign ? 1.0 : 0.0;""" % ragged, [('UV', uv), ('P', wp)], F1)
     unreal.EditorAssetLibrary.save_asset(path)
 
 
+def build_street(name):
+    """An opaque dirt street for the village: two wheel ruts in the same UV.x, no dithered mask."""
+    path = '/Game/Materials/' + name
+    if unreal.EditorAssetLibrary.does_asset_exist(path) and not unreal.EditorAssetLibrary.delete_asset(path):
+        raise RuntimeError('Cannot delete ' + path)
+    mat = assets.create_asset(name, '/Game/Materials', unreal.Material, unreal.MaterialFactoryNew())
+    wp = node(mat, unreal.MaterialExpressionWorldPosition)
+    uv = node(mat, unreal.MaterialExpressionTextureCoordinate)
+    wet = node(mat, unreal.MaterialExpressionCollectionParameter, collection=unreal.load_asset('/Game/Weather/MPC_Weather'), parameter_name='Wetness')
+    smp = {}
+    for key, (folder, tex_id, tile) in LAYERS.items():
+        coords = custom(mat, 'return P.xy / %.1f;' % tile, [('P', wp)], unreal.CustomMaterialOutputType.CMOT_FLOAT2)
+        for suffix in ('B', 'N', 'ORM'):
+            tex = unreal.load_asset('%sT_%s_4K_%s' % (folder, tex_id, suffix))
+            if not tex:
+                raise RuntimeError('Missing texture %s %s' % (tex_id, suffix))
+            tex_node = node(mat, unreal.MaterialExpressionTextureSample, texture=tex, sampler_type=sampler_for(tex))
+            connect(coords, '', tex_node, 'UVs')
+            smp[key + suffix] = tex_node
+    colour = custom(mat, """
+float u = UV.x;
+float wob = sin(P.x * 0.013 + P.y * 0.011) * 0.035;
+float rut = max(1.0 - smoothstep(0.06, 0.13, abs(u - 0.28 - wob)), 1.0 - smoothstep(0.06, 0.13, abs(u - 0.72 - wob)));
+float3 earth = F * float3(0.95, 0.82, 0.64);
+float3 mud = F * float3(0.58, 0.45, 0.34) * lerp(1.0, 0.6, Wt);
+return lerp(earth, mud, rut * 0.9);""", [('UV', uv), ('P', wp), ('F', smp['FB']), ('Wt', wet)])
+    normal = custom(mat, 'return float3(FN.x, FN.y * 0.7, FN.z);', [('FN', smp['FN'])])
+    rough = custom(mat, 'return lerp(FR.g, lerp(0.8, 0.25, Wt), 0.5);',
+                   [('FR', smp['FORM']), ('Wt', wet)], unreal.CustomMaterialOutputType.CMOT_FLOAT1)
+    for src, prop in ((colour, unreal.MaterialProperty.MP_BASE_COLOR), (normal, unreal.MaterialProperty.MP_NORMAL),
+                      (rough, unreal.MaterialProperty.MP_ROUGHNESS)):
+        if not lib.connect_material_property(src, '', prop):
+            raise RuntimeError('Cannot connect %s' % prop)
+    lib.recompile_material(mat)
+    unreal.EditorAssetLibrary.save_asset(path)
+
+
+build_street('M_VillageRoad')
 # Road: ruts at a quarter of the width from each side, grass in the middle, earth between.
 build('M_Road', """
 float u = UV.x;

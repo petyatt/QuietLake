@@ -1,5 +1,6 @@
 ﻿#include "LakeGame.h"
 #include "LakeMap.h"
+#include "LakeVillage.h"
 #include "LakeWeather.h"
 #include "LandscapeProxy.h"
 #include "WaterBodyActor.h"
@@ -646,6 +647,9 @@ void ALakeEnvironment::BeginPlay()
             Add(Burrows, FVector(P + Colony.Facing * 6, Z), FVector(0.09f, 0.09f, 0.07f), FRotator(0, YawOf(Colony.Facing), 0));
         }
     }
+    // --- the village on the hill above the middle of the lake ------------------------------------------
+    GetWorld()->SpawnActor<ALakeVillage>();
+
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_DETAILS streams %d (%d points), footbridges %d, stakes %d"),
         LakeMap::Streams().Num(), StreamPoints, LakeMap::Footbridges().Num(), LakeMap::Stakes().Num());
 
@@ -880,7 +884,13 @@ void ALakeEnvironment::BeginPlay()
         const FVector2D Side(-StartFacing.Y, StartFacing.X);
         FVector Eye(Start - StartFacing * 250, Ground(Start - StartFacing * 250) + 170);
         FRotator View(-6, YawOf(StartFacing) + 25, 0);
-        if (SceneView.Equals(TEXT("Shore"), ESearchCase::IgnoreCase))
+        if (SceneView.Equals(TEXT("Mist"), ESearchCase::IgnoreCase)
+            || SceneView.Equals(TEXT("MistWind"), ESearchCase::IgnoreCase))
+        {
+            Eye.Z = FMath::Max(Eye.Z, LakeMap::SurfaceZ + 220);
+            View = (FVector(-15700, 6000, LakeMap::SurfaceZ + 35) - Eye).Rotation();
+        }
+        else if (SceneView.Equals(TEXT("Shore"), ESearchCase::IgnoreCase))
         {
             Eye = FVector(Start + StartFacing * 500 + Side * 500, LakeMap::SurfaceZ + 160);
             const FVector2D Bank = Start + Side * 450;
@@ -997,6 +1007,14 @@ void ALakeEnvironment::BeginPlay()
                 FLakeWeatherState Clear;
                 Clear.Cloud = 0.3f; Clear.Fog = 0; Clear.Rain = 0; Clear.Wind = 0.1f; Clear.WindYaw = 40;
                 Weather->SetWeatherNow(Clear); Weather->SetHours(9.5f);
+                if (SceneView.Equals(TEXT("Mist"), ESearchCase::IgnoreCase)
+                    || SceneView.Equals(TEXT("MistWind"), ESearchCase::IgnoreCase))
+                {
+                    Clear.Fog = 0.08f;
+                    Clear.Wind = SceneView.Equals(TEXT("MistWind"), ESearchCase::IgnoreCase) ? 0.65f : 0.06f;
+                    Weather->SetWeatherNow(Clear);
+                    Weather->SetHours(6.0f);
+                }
                 if (SceneView.StartsWith(TEXT("Night")))
                 {
                     Clear.Cloud = SceneView == TEXT("NightCloudy") ? 1.0f : 0.05f;

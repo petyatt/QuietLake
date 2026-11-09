@@ -792,6 +792,73 @@ FVector2D LakeMap::OldBoat(float* OutYaw)
     return At(46, 14);
 }
 FVector2D LakeMap::VillageCentre() { return GVillage; }
+
+bool LakeMap::VillagePaved(const FVector2D& P)
+{
+    static const FVillage& V = Village();
+    auto OnLine = [](const FVector2D& Q, const TArray<FVector2D>& Line, float Half)
+    {
+        for (int32 I = 0; I + 1 < Line.Num(); ++I)
+        {
+            const FVector2D A = Line[I], AB = Line[I + 1] - A;
+            const float T = FMath::Clamp(FVector2D::DotProduct(Q - A, AB) / FMath::Max(AB.SizeSquared(), 1.0f), 0.0f, 1.0f);
+            if (FVector2D::Distance(Q, A + AB * T) < Half) return true;
+        }
+        return false;
+    };
+    if (OnLine(P, V.MainStreet, V.StreetHalfWidth + 140)) return true;
+    if (OnLine(P, V.CrossStreet, 400)) return true;
+    if (OnLine(P, V.MarketLane, 380)) return true;
+    if (OnLine(P, V.PierPath, 210)) return true;
+    const FVector2D L = P - V.Market;
+    return FMath::Abs(FVector2D::DotProduct(L, V.Axis)) < V.MarketHalfAlong + 120
+        && FMath::Abs(FVector2D::DotProduct(L, V.Side)) < V.MarketHalfAcross + 120;
+}
+
+const FVillage& LakeMap::Village()
+{
+    static const FVillage Instance = []
+    {
+        FVillage V;
+        V.Centre = GVillage;
+        V.Radius = GVillageRadius;
+        // The street runs up to the footpath that comes from the pier.
+        const FPier& Pier = LakeMap::Pier();
+        const FVector2D Approach = Pier.Root - Pier.Dir * 1450 + FVector2D(-Pier.Dir.Y, Pier.Dir.X) * 120;
+        V.Axis = (Approach - V.Centre).GetSafeNormal();
+        V.Side = FVector2D(-V.Axis.Y, V.Axis.X);
+        const FVector2D South = V.Centre - V.Axis * 4300;
+        const FVector2D North = V.Centre + V.Axis * 4400;
+        V.MainStreet = { South, V.Centre - V.Axis * 3100, V.Centre + V.Axis * 600, North };
+        // The market square lies in the west, past the last plots; a cross street runs east from it.
+        V.Market = V.Centre - V.Axis * 3300 - V.Side * 2300;
+        V.MarketLane = { V.Market + V.Side * 1050, V.Centre - V.Axis * 3300 };
+        V.CrossStreet = { V.Market + V.Side * 1050, V.Centre - V.Axis * 3300, V.Centre - V.Axis * 3300 + V.Side * 3900 };
+        V.Well = V.Market + V.Side * 520 - V.Axis * 420;
+        V.PierPath = { North, Approach };
+        // Four plots on each side of the main street, gardens behind the houses.
+        for (float Offset : { 3400.0f, 1900.0f, 400.0f, -1100.0f })
+            for (float SideSign : { -1.0f, 1.0f })
+            {
+                FVillagePlot P;
+                P.Street = V.Centre + V.Axis * Offset;
+                const FVector2D Out = V.Side * SideSign;
+                P.Facing = -Out;
+                P.House = P.Street + Out * 1650;
+                P.Gate = P.Street + Out * 800;
+                P.Garden = P.House - P.Facing * 1250;
+                P.HalfWidth = 700;
+                P.Front = 850;
+                P.Back = 1550;
+                P.Kind = 0;
+                if (Offset > 3000 && SideSign < 0) P.Kind = 1;   // the fishing shop at the pier end
+                if (Offset < -1000 && SideSign > 0) P.Kind = 2;  // the store by the cross street and the market
+                V.Plots.Add(P);
+            }
+        return V;
+    }();
+    return Instance;
+}
 FVector2D LakeMap::WestBay() { return GWestBay.C - FVector2D(1, 0).GetRotated(GWestBay.Yaw) * GWestBay.Axes.X; }
 FVector2D LakeMap::WestEnd() { return At(-300, 13.5f); }
 

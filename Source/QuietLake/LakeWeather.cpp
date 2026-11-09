@@ -12,6 +12,7 @@
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
+#include "Components/LocalFogVolumeComponent.h"
 #include "Components/VolumetricCloudComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/AudioComponent.h"
@@ -639,6 +640,27 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
         for (TActorIterator<ASkyAtmosphere> It(World); It; ++It) Atmosphere = It->GetComponent();
         for (TActorIterator<ASkyLight> It(World); It; ++It) SkyLight = It->GetLightComponent();
         for (TActorIterator<AExponentialHeightFog> It(World); It; ++It) Fog = It->GetComponent();
+        if (Fog && !FParse::Param(FCommandLine::Get(), TEXT("NoLakeMist")))
+        {
+            // XY and radius in cm. Separate patches leave breaks between the open water and bays.
+            const FVector Patches[] = {
+                {-17800, 6900, 2350}, {-13700, 4900, 3100}, {-11500, 9600, 2700},
+                {-22500, 1500, 3300}, {7200, -15400, 950}, {19900, -2000, 3300},
+                {27500, 5600, 850}
+            };
+            for (const FVector& Patch : Patches)
+            {
+                auto* Mist = NewObject<ULocalFogVolumeComponent>(this);
+                Mist->SetWorldLocation(FVector(Patch.X, Patch.Y, LakeMap::SurfaceZ + 95));
+                Mist->SetWorldScale3D(FVector(Patch.Z / ULocalFogVolumeComponent::GetBaseVolumeSize()));
+                Mist->SetHeightFogFalloff(Patch.Z / 1.4f); // approximately 1.4 m exponential falloff
+                Mist->SetRadialFogExtinction(0);
+                Mist->SetHeightFogExtinction(0);
+                Mist->SetFogAlbedo(FLinearColor(0.82f, 0.88f, 0.91f));
+                Mist->RegisterComponent();
+                LakeMist.Add(Mist);
+            }
+        }
         for (TActorIterator<AVolumetricCloud> It(World); It; ++It) Clouds = It->FindComponentByClass<UVolumetricCloudComponent>();
         // The sun casts the clouds' shadows on the ground and the water: the default 512 map over
         // 25 km, ~50 m a texel, fine enough for the shadow of a single cumulus.
@@ -889,15 +911,37 @@ void ALakeWeather::ApplyToWorld(float DeltaSeconds)
     }
 
     // Fog: a thin haze over the valley and a dense layer on the water; mist on calm mornings.
+    const float MistStrength = FMath::Clamp(2.0f * (FogNow - W.Fog) + 0.25f * W.Fog, 0.0f, 1.0f)
+        * (1.0f - S(0.12f, 0.45f, W.Wind)) * (1.0f - W.Rain);
+    if (LakeMist.Num() && Changed(LastLakeMist, MistStrength, 0.005f))
+    {
+        for (ULocalFogVolumeComponent* Mist : LakeMist)
+        {
+            // Unreal combines height and radial extinction when injecting into volumetric fog.
+            Mist->SetRadialFogExtinction(0.055f * MistStrength);
+            Mist->SetHeightFogExtinction(2.6f * MistStrength);
+        }
+    }
+    // Approximate diffuse skylight in the mist when the valley is still in shadow.
+    const float MistLight = 0.12f * S(-7.0f, 8.0f, Elevation);
+    if (LakeMist.Num() && Changed(LastLakeMistLight, MistLight, 0.002f))
+    {
+        for (ULocalFogVolumeComponent* Mist : LakeMist)
+            Mist->SetFogEmissive(FLinearColor(0.8f, 0.9f, 1.0f) * MistLight);
+    }
     if (Fog && Changed(LastFog, FogNow + 3.0f * W.Rain, 0.004f))
     {
         Fog->SetFogDensity(0.01f + 0.032f * FogNow + 0.02f * W.Rain);
+        Fog->SetVolumetricFogExtinctionScale(0.5f + 0.8f * FogNow + 0.4f * W.Rain);
+    }
+    const float LowFog = LakeMist.Num() ? FMath::Lerp(W.Fog, FogNow, 0.35f) : FogNow;
+    if (Fog && Changed(LastWaterFog, LowFog, 0.004f))
+    {
         FExponentialHeightFogData Water = Fog->SecondFogData;
-        Water.FogDensity = 0.02f + 0.26f * FogNow;
+        Water.FogDensity = 0.02f + 0.26f * LowFog;
         Water.FogHeightFalloff = 2.0f;
         Water.FogHeightOffset = -100.0f;
         Fog->SetSecondFogData(Water);
-        Fog->SetVolumetricFogExtinctionScale(0.5f + 0.8f * FogNow + 0.4f * W.Rain);
     }
     // A misty dawn is milky white, not orange: a low sun lights the fog only weakly (its light is
     // reddened by the long way through the air), the cool light of the sky lights most of it.

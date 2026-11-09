@@ -41,6 +41,9 @@ palette = {
     'M_Grass': (0.20,0.28,0.055), 'M_Reeds': (0.28,0.27,0.065),
     'M_Planks': (0.26,0.14,0.064), 'M_Metal': (0.18,0.24,0.25),
     'M_LakeSurface': (0.018,0.13,0.15),
+    # The village: tilled garden beds, the trodden earth of the market square and the canvas of the
+    # market stalls' awnings.
+    'M_Soil': (0.085,0.058,0.035), 'M_Dirt': (0.30,0.235,0.165), 'M_Canvas': (0.52,0.45,0.34),
 }
 # Hash-based value noise, 5 octaves; shared by terrain colour and roughness.
 NOISE = """

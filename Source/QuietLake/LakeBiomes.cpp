@@ -49,6 +49,7 @@ namespace
      *  landing, the beach, the footpath, the streams and their footbridges, the spring and the lookout. */
     const TCHAR* Clearing(const FVector2D& P, float ShoreDistance)
     {
+        if (LakeMap::VillagePaved(P)) return TEXT("village street");
         if (LakeMap::SpotAmount(P) > 0.25f) return TEXT("spot");
         if (FVector2D::Distance(P, LakeMap::StartSpot()) < 1500) return TEXT("camp");
         const LakeMap::FPier& Pier = LakeMap::Pier();

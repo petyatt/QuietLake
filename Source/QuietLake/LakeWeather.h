@@ -147,6 +147,8 @@ private:
     UPROPERTY() TObjectPtr<class USkyAtmosphereComponent> Atmosphere;
     UPROPERTY() TObjectPtr<class USkyLightComponent> SkyLight;
     UPROPERTY() TObjectPtr<class UExponentialHeightFogComponent> Fog;
+    UPROPERTY() TArray<TObjectPtr<class ULocalFogVolumeComponent>> LakeMist;
+    float LastLakeMist = -1, LastLakeMistLight = -1, LastWaterFog = -1;
     UPROPERTY() TObjectPtr<class UVolumetricCloudComponent> Clouds;
     UPROPERTY() TObjectPtr<class UMaterialInstanceDynamic> CloudMaterial;
     float PreviewFrameSeconds = 0;           // previews: frame time before each shot

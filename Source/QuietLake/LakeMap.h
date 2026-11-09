@@ -82,6 +82,40 @@ namespace LakeMap
     QUIETLAKE_API FVector2D OldBoat(float* OutYaw = nullptr);
     /** The hilly meadow above the middle of the lake kept for the village. */
     QUIETLAKE_API FVector2D VillageCentre();
+
+    /** The village on the hill: one main street from the south edge towards the pier, a cross street
+        with the market square at its east end, and the plots along the main street. Positions in cm. */
+    struct FVillagePlot
+    {
+        FVector2D House;        // where SM_Izba stands: its origin, on the ground in the middle
+        FVector2D Facing;       // the porch looks this way, at the street (unit)
+        FVector2D Street;       // on the main street's centre line, in front of the plot
+        FVector2D Gate;         // the gate in the front fence
+        FVector2D Garden;       // the middle of the garden behind the house
+        float HalfWidth;        // half of the plot along the street
+        float Front;            // the front fence: this far from House along Facing
+        float Back;             // the back fence: this far from House against Facing
+        int32 Kind;             // 0 an izba, 1 the fishing shop, 2 the village store
+    };
+    struct FVillage
+    {
+        FVector2D Centre;
+        FVector2D Axis;         // along the main street, towards the pier (unit)
+        FVector2D Side;         // across it, to the right of Axis (unit)
+        float Radius;
+        TArray<FVillagePlot> Plots;
+        TArray<FVector2D> MainStreet;   // from the south edge towards the pier
+        TArray<FVector2D> CrossStreet;
+        TArray<FVector2D> MarketLane;   // from the main street to the market square
+        TArray<FVector2D> PierPath;     // from the north end of the street down to the pier's footpath
+        FVector2D Market;               // the middle of the market square
+        float MarketHalfAcross = 1050.0f, MarketHalfAlong = 750.0f;
+        FVector2D Well;
+        float StreetHalfWidth = 325.0f;
+    };
+    QUIETLAKE_API const FVillage& Village();
+    /** True on the village's streets and the market square: ground kept clear of grass and bushes. */
+    QUIETLAKE_API bool VillagePaved(const FVector2D& P);
     /** The far end of the little bay at the west end, and a point beyond the rounded west end where the outflow leaves (its bank is the nearest shore). */
     QUIETLAKE_API FVector2D WestBay();
     QUIETLAKE_API FVector2D WestEnd();
