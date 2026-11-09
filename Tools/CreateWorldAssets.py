@@ -222,10 +222,10 @@ for name, rgb in palette.items():
         # Fine silt and plankton scatter only a little light back; the old values scattered almost as
         # much as they absorbed, which turned the lake into a milky amber sheet. The engine takes the
         # coefficients per centimetre (scene depth); below they are written (per metre / 100).
-        # Visibility is a couple of metres: a fish 40 cm down is seen and tinted, 80 cm down a dim
-        # shadow; after long rain the runoff clouds the water.
+        # A shallow fish can still be seen from above, but the longer path through the water
+        # quickly hides scale detail and softens the silhouette. Runoff adds scattering after rain.
         scatter = custom(mat, 'return (float3(0.006, 0.015, 0.010) * (1.0 + 5.0 * Wt) + float3(0.04, 0.045, 0.025) * Wt) / 100.0;', [('Wt', wetness)])
-        absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.0140, 0.0100, 0.0220, 1))
+        absorb = expression(mat, unreal.MaterialExpressionConstant3Vector, constant=unreal.LinearColor(0.0320, 0.0260, 0.0420, 1))
         connect(scatter, '', out, 'ScatteringCoefficients')
         connect(absorb, '', out, 'AbsorptionCoefficients')
     elif name == 'M_Terrain':
