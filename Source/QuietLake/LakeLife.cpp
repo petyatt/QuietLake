@@ -111,7 +111,8 @@ void ALakeLife::Tick(float DeltaSeconds)
     if (Underwater)
     {
         // (-FishPreview films the swimming from a few metres under water: there the murk stays off.)
-        static const bool bClearWater = FParse::Param(FCommandLine::Get(), TEXT("FishPreview"));
+        static const bool bClearWater = FParse::Param(FCommandLine::Get(), TEXT("FishPreview"))
+            || FParse::Param(FCommandLine::Get(), TEXT("BottomPreview")) || FParse::Param(FCommandLine::Get(), TEXT("ClearWater"));
         const FVector Eye = ViewLocation();
         Underwater->BlendWeight = !bClearWater && LakeMap::IsWater(Eye.X, Eye.Y) && Eye.Z < LakeFish::SurfaceZ - 1 ? 1.0f : 0.0f;
     }

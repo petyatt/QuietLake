@@ -386,7 +386,58 @@ void ALakeEnvironment::BeginPlay()
             if (FMath::Abs(Ground(Q) - Ground(P)) > 250 || LakeMap::ShoreDistance(Q.X, Q.Y) > -500) continue;
             Windfalls += Lay(FVector(P, Ground(P) + 15), FVector(Q, Ground(Q) + 25));
         }
-        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SNAGS %d snags by and in the water, %d windfalls"), Snags, Windfalls);
+        // Old trees on the open bed: they lie wholly under the water, cover for pike and perch, and
+        // their branches catch the light when the angler looks down through the shallows.
+        int32 Sunken = 0;
+        for (int32 Try = 0; Try < 800 && Sunken < 16; ++Try)
+        {
+            const FVector2D P(SnagRandom.FRandRange(LakeBox.Min.X, LakeBox.Max.X), SnagRandom.FRandRange(LakeBox.Min.Y, LakeBox.Max.Y));
+            const float D = LakeMap::Depth(P.X, P.Y);
+            if (D < 130 || D > 470 || LakeMap::SpotAmount(P) > 0) continue;
+            const FVector2D Dir = FVector2D(1, 0).GetRotated(SnagRandom.FRandRange(0, 360));
+            const FVector2D Tip = P + Dir * SnagRandom.FRandRange(280, 720);
+            if (!LakeMap::IsWater(Tip.X, Tip.Y) || LakeMap::SpotAmount(Tip) > 0) continue;
+            Sunken += Lay(FVector(P, Ground(P) + 14), FVector(Tip, Ground(Tip) + 26));
+        }
+        // Logs lying on the bed in little heaps, half sunk in the silt.
+        int32 BottomLogs = 0;
+        for (int32 Heap = 0; Heap < 30; ++Heap)
+        {
+            FVector2D P(SnagRandom.FRandRange(LakeBox.Min.X, LakeBox.Max.X), SnagRandom.FRandRange(LakeBox.Min.Y, LakeBox.Max.Y));
+            const float D = LakeMap::Depth(P.X, P.Y);
+            if (D < 70 || D > 430 || LakeMap::SpotAmount(P) > 0) continue;
+            const float Yaw = SnagRandom.FRandRange(0, 360);
+            for (int32 K = 0; K < 3; ++K)
+            {
+                const FVector2D Q = P + FVector2D(1, 0).GetRotated(Yaw + SnagRandom.FRandRange(-40, 40)) * SnagRandom.FRandRange(30, 110);
+                if (!LakeMap::IsWater(Q.X, Q.Y)) continue;
+                const FVector2D Dir = FVector2D(1, 0).GetRotated(Yaw + SnagRandom.FRandRange(-18, 18));
+                const float Len = SnagRandom.FRandRange(220, 560);
+                const float Radius = SnagRandom.FRandRange(9, 19);
+                Add(Bark, FVector(Q + Dir * (Len * 0.5f), Ground(Q) + Radius * 0.55f),
+                    FVector(Radius * 2 / 100, Radius * 2 / 100, Len / 100), FRotationMatrix::MakeFromZ(FVector(Dir, 0)).Rotator());
+            }
+            ++BottomLogs;
+        }
+        // The fishing spot called "Коряжник" gets a heap of old logs on its own bed, within sight of
+        // the angler's float.
+        for (const LakeMap::FSpot& Spot : LakeMap::Spots())
+        {
+            if (!FString(Spot.Name).Contains(TEXT("Коряжник"))) continue;
+            const FVector2D Side(-Spot.Outward.Y, Spot.Outward.X);
+            for (int32 K = 0; K < 6; ++K)
+            {
+                const FVector2D P = Spot.Location - Spot.Outward * SnagRandom.FRandRange(260, 720) + Side * SnagRandom.FRandRange(-520, 520);
+                if (!LakeMap::IsWater(P.X, P.Y)) continue;
+                const FVector2D Dir = FVector2D(1, 0).GetRotated(SnagRandom.FRandRange(0, 360));
+                const float Len = SnagRandom.FRandRange(260, 620);
+                const float Radius = SnagRandom.FRandRange(11, 22);
+                Add(Bark, FVector(P + Dir * (Len * 0.5f), Ground(P) + Radius * 0.6f),
+                    FVector(Radius * 2 / 100, Radius * 2 / 100, Len / 100), FRotationMatrix::MakeFromZ(FVector(Dir, 0)).Rotator());
+            }
+        }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_SNAGS %d snags by and in the water, %d windfalls, %d old trees and %d log heaps on the bed"),
+            Snags, Windfalls, Sunken, BottomLogs);
     }
 
     // --- water lilies: patches of floating leaves (Tools/GenerateShorePlants.py, about a square metre
@@ -429,6 +480,105 @@ void ALakeEnvironment::BeginPlay()
             }
         }
         UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LILIES %d patches in %d beds"), Patches, LakeMap::LilyBeds().Num());
+    }
+
+    // --- the bed lives: underwater weed beds of ribbon weed, lake grass, elodea, pondweed and hornwort,
+    // and low cushions of chara algae. They grow from the bed up to just under the surface, dense in the
+    // two weed beds and the warm shallows, thinner in the open and the deep, and never in a casting lane.
+    {
+        struct FWeedKind { const TCHAR* Name; int32 DepthMin, DepthMax; float ScaleMin, ScaleMax; float Density; float Height; };
+        const FWeedKind Kinds[] = {
+            { TEXT("Weed_Grass"),    25, 120, 1.0f, 1.7f, 0.90f,  60.0f },
+            { TEXT("Weed_Ribbon"),   55, 220, 1.0f, 1.8f, 0.85f, 118.0f },
+            { TEXT("Weed_Elodea"),   90, 320, 1.1f, 1.8f, 0.60f,  56.0f },
+            { TEXT("Weed_Pondweed"), 140, 390, 1.0f, 1.7f, 0.55f, 116.0f },
+            { TEXT("Weed_Hornwort"), 220, 470, 1.0f, 1.5f, 0.45f,  82.0f },
+            { TEXT("Weed_Chara"),    50, 520, 1.3f, 2.2f, 0.65f,  26.0f },
+        };
+        auto WeedGroup = [this](const TCHAR* Name)
+        {
+            auto* Component = NewObject<UHierarchicalInstancedStaticMeshComponent>(this);
+            Component->SetupAttachment(RootComponent);
+            Component->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Plants/Weeds/SM_%s.SM_%s"), Name, Name)));
+            Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+            Component->SetCullDistances(12000, 18000);
+            Component->SetCastShadow(false);
+            Component->bAffectDistanceFieldLighting = false;
+            Component->bAffectDynamicIndirectLighting = false;
+            Component->RegisterComponent();
+            AddInstanceComponent(Component);
+            return Component;
+        };
+        TArray<UHierarchicalInstancedStaticMeshComponent*> Groups;
+        for (const FWeedKind& Kind : Kinds) Groups.Add(WeedGroup(Kind.Name));
+        FRandomStream WeedRandom(7301);
+        int32 Planted = 0;
+        for (float Y = LakeBox.Min.Y - 200; Y <= LakeBox.Max.Y + 200; Y += 250)
+            for (float X = LakeBox.Min.X - 200; X <= LakeBox.Max.X + 200; X += 250)
+            {
+                const FVector2D P(X + WeedRandom.FRandRange(-110, 110), Y + WeedRandom.FRandRange(-110, 110));
+                if (!LakeMap::IsWater(P.X, P.Y)) continue;
+                const float D = LakeMap::Depth(P.X, P.Y);
+                if (D < 22 || D > 540) continue;
+                if (LakeMap::SpotAmount(P) > 0.05f) continue;      // casting lanes and the spots' windows stay clear
+                // Patchy: the weedy shallows and the two weed beds are thick, the open water thin.
+                const float Patch = FMath::Clamp(0.30f + 0.55f * LakeMap::WeedAmount(P) + 0.22f * FMath::PerlinNoise2D(P / 2400)
+                    + 0.22f * LakeMap::BackwaterAmount(P.X, P.Y) + 0.10f * FMath::PerlinNoise2D(P / 700), 0.04f, 1.3f);
+                for (int32 K = 0; K < UE_ARRAY_COUNT(Kinds); ++K)
+                {
+                    const FWeedKind& Kind = Kinds[K];
+                    const float Band = FMath::SmoothStep(Kind.DepthMin - 25.0f, Kind.DepthMin + 15.0f, D)
+                        * (1 - FMath::SmoothStep(Kind.DepthMax - 25.0f, Kind.DepthMax + 15.0f, D));
+                    if (Band <= 0.001f) continue;
+                    // Shallows are the richest ground, and the plants must stay well under the surface.
+                    const float Shallow = D < 150.0f ? 1.35f : 1.0f;
+                    if (WeedRandom.FRand() > Kind.Density * Band * Patch * 0.9f * Shallow) continue;
+                    // In clumps of two to four: a single blade looks lost, a clump looks like a plant.
+                    const int32 Clump = 1 + WeedRandom.RandRange(0, K == 5 ? 2 : 3);
+                    for (int32 J = 0; J < Clump; ++J)
+                    {
+                        const FVector2D Q = J == 0 ? P : P + FVector2D(1, 0).GetRotated(WeedRandom.FRandRange(0, 360)) * WeedRandom.FRandRange(18, 80);
+                        if (!LakeMap::IsWater(Q.X, Q.Y)) continue;
+                        const float Fit = (D - 20.0f) / Kind.Height;
+                        if (Fit < 0.45f) continue;
+                        const float Scale = FMath::Min(WeedRandom.FRandRange(Kind.ScaleMin, Kind.ScaleMax), Fit)
+                            * (J == 0 ? 1.0f : WeedRandom.FRandRange(0.7f, 1.05f));
+                        // Roots sit a little in the silt; keep the plants under the surface.
+                        const float Root = Ground(Q) - 6.0f;
+                        const FVector Scale3 = Kind.Name == FString(TEXT("Weed_Chara"))
+                            ? FVector(Scale * 1.7f, Scale * 1.7f, Scale * 0.7f) : FVector(Scale);
+                        Add(Groups[K], FVector(Q, Root), Scale3, FRotator(0, WeedRandom.FRandRange(0, 360), 0));
+                        ++Planted;
+                    }
+                }
+            }
+        // Low carpets of chara algae over the weed beds, and stones in the silt.
+        auto* Stones = Group(TEXT("Sphere"), TEXT("M_Stone"), true);
+        int32 Algae = 0, StoneCount = 0;
+        for (float Y = LakeBox.Min.Y; Y <= LakeBox.Max.Y; Y += 240)
+            for (float X = LakeBox.Min.X; X <= LakeBox.Max.X; X += 240)
+            {
+                const FVector2D P(X + WeedRandom.FRandRange(-100, 100), Y + WeedRandom.FRandRange(-100, 100));
+                if (!LakeMap::IsWater(P.X, P.Y)) continue;
+                const float D = LakeMap::Depth(P.X, P.Y);
+                if (LakeMap::SpotAmount(P) > 0.05f) continue;
+                const float Carpet = LakeMap::WeedAmount(P) * 0.6f + 0.18f * FMath::PerlinNoise2D(P / 1600) + 0.2f * LakeMap::BackwaterAmount(P.X, P.Y);
+                if (D > 25 && D < 420 && WeedRandom.FRand() < Carpet * 0.5f)
+                {
+                    const float Scale = WeedRandom.FRandRange(1.8f, 3.2f);
+                    Add(Groups[5], FVector(P, Ground(P) + 2.0f), FVector(Scale, Scale, Scale * 0.16f), FRotator(0, WeedRandom.FRandRange(0, 360), 0));
+                    ++Algae;
+                }
+                if (D > 30 && D < 380 && WeedRandom.FRand() < 0.10f)
+                {
+                    const float Scale = WeedRandom.FRandRange(0.15f, 0.45f);
+                    Add(Stones, FVector(P, Ground(P) + Scale * 12.0f), FVector(Scale, Scale * WeedRandom.FRandRange(0.7f, 1.2f), Scale * 0.55f),
+                        FRotator(WeedRandom.FRandRange(-10, 10), WeedRandom.FRandRange(0, 360), WeedRandom.FRandRange(-10, 10)));
+                    ++StoneCount;
+                }
+            }
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WEEDS %d underwater plants in %d kinds, %d algae carpets, %d stones"),
+            Planted, UE_ARRAY_COUNT(Kinds), Algae, StoneCount);
     }
 
     // --- the pier: planks on stringers over pairs of piles, a wider landing stage at the end --------

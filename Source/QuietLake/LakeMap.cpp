@@ -422,6 +422,18 @@ namespace
         return Table[UE_ARRAY_COUNT(Table) - 1][1];
     }
 
+    /** Broad swells and hollows of the open bed (+m deepens, -m shallows): wide, so the bed rolls, not steps. */
+    struct FSwell { FEllipse Shape; float Amp; };
+    const FSwell GSwells[] = {
+        { E(-60, -30, 34, 25, 10), -0.55f },    // a broad shallow bank off the north shore
+        { E(40, 25, 30, 22, -12), 0.65f },      // a hollow in the middle
+        { E(150, 15, 26, 18, 8), -0.45f },
+        { E(205, -55, 24, 16, 20), 0.7f },
+        { E(-150, 40, 36, 22, 5), 0.6f },
+        { E(-30, 95, 24, 16, 30), 0.45f },
+        { E(110, -30, 20, 14, 25), -0.5f },
+        { E(-200, -20, 26, 18, 0), 0.5f },
+    };
     /** Holes in the bed (+m), one level patch where the island stood, weed beds. */
     struct FHole { FEllipse Shape; float Amp; bool bAnyBed; };
     const FHole GHoles[] = {
@@ -513,7 +525,14 @@ namespace
                 D = FMath::Lerp(D, L.Depth, W);
                 Level = FMath::Max(Level, W);
             }
-            D += 0.16f * Noise(P, 1500) * S(1, 4, SD) * (1 - 0.9f * Level);
+            // The open bed rolls: broad shoals and hollows, then a slow swell over the whole lake, then
+            // smaller ripples. All of it is wide and soft, so the bed varies in depth without steps.
+            for (const FSwell& W : GSwells) D += W.Amp * W.Shape.Gauss(P) * S(6, 18, SD) * (1 - 0.8f * Level);
+            D += (0.55f * Fbm(P + FVector2D(-2100, 1300), 14000) + 0.28f * Fbm(P + FVector2D(1400, -800), 5200))
+                * S(3, 12, SD) * (1 - 0.7f * Level);
+            D += 0.10f * Noise(P, 1700) * S(1.5f, 5, SD) * (1 - 0.8f * Level);
+            // Shoals stay well under the waterline: no bar rises into a dry hump.
+            if (SD > 10) D = FMath::Max(D, 0.45f);
             return SurfaceZ - FMath::Max(D, 0.05f) * 100;
         }
         const float L = -SD;                              // metres inland

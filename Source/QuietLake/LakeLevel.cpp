@@ -234,8 +234,10 @@ int32 ULakeLevelLibrary::RebuildLandWithoutBrush()
     }
     const FTransform T = Old->GetActorTransform();
     const float ScaleZ = T.GetScale3D().Z / 128.0f, OffsetZ = T.GetLocation().Z - 32768.0f * ScaleZ;
-    // The carved bowl stays under the water; the land above the waterline goes back to the designed
-    // ground, with a smooth join a metre either side of the waterline.
+    // The designed ground comes back everywhere, the lake bed included: the brush's bowl is a smooth
+    // function of the distance to the bank, so the bottom lay as one even slope. The design bed carries
+    // broad shoals, hollows and the old channel instead, all of them wide and soft, and the shoreline
+    // stays where it was (the same waterline is the zero of the design as of the water body).
     TArray<uint16> Hybrid;
     Hybrid.SetNumUninitialized(W * H);
     int32 Changed = 0;
@@ -244,17 +246,10 @@ int32 ULakeLevelLibrary::RebuildLandWithoutBrush()
         for (int32 X = 0; X < W; ++X)
         {
             const FVector P = T.TransformPosition(FVector(MinX + X, MinY + Y, 0));
-            const float SD = LakeMap::ShoreDistance(P.X, P.Y);          // positive in the water
             const float CarvedZ = Carved[Y * W + X] * ScaleZ + OffsetZ;
-            float Z = CarvedZ;
-            if (SD < 100.0f)
-            {
-                const float Design = LakeMap::DesignGround(P.X, P.Y);
-                const float Land = 1.0f - FMath::SmoothStep(-100.0f, 100.0f, SD);
-                Z = FMath::Lerp(CarvedZ, Design, Land);
-                Worst = FMath::Max(Worst, FMath::Abs(Z - CarvedZ));
-                if (FMath::Abs(Z - CarvedZ) > 0.5f) ++Changed;
-            }
+            const float Z = LakeMap::DesignGround(P.X, P.Y);
+            Worst = FMath::Max(Worst, FMath::Abs(Z - CarvedZ));
+            if (FMath::Abs(Z - CarvedZ) > 0.5f) ++Changed;
             Hybrid[Y * W + X] = (uint16)FMath::Clamp(FMath::RoundToInt((Z - T.GetLocation().Z) / ScaleZ + 32768.0f), 0, 65535);
         }
     // Nothing may carve the new landscape: the water stays as the surface only.
@@ -270,7 +265,7 @@ int32 ULakeLevelLibrary::RebuildLandWithoutBrush()
         if (Layer.LayerInfoObj) LayerInfos.Add(Layer.LayerInfoObj);
     for (TActorIterator<ALandscapeProxy> It(World); It; ++It) It->Destroy();
     ALandscape* New = CreateLandscape(World, Material, LayerInfos, Hybrid);
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL land rebuilt without the brush: %d of %d vertices set back to the design, up to %.0f cm, %d layer infos, landscape %s"),
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL ground rebuilt from the design everywhere: %d of %d vertices changed, up to %.0f cm, %d layer infos, landscape %s"),
         Changed, W * H, Worst, LayerInfos.Num(), New ? TEXT("ok") : TEXT("failed"));
     return New ? Changed : 0;
 #else

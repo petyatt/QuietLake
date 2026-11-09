@@ -93,6 +93,111 @@ void ALakeCharacter::RunPreviews()
             return;
         }
     }
+    // -BottomPreview: the lake bed — weed beds seen from above and from under the water, the rolling
+    // bottom with shoals and hollows, the sunken trees and log heaps, the weedy warm shallows.
+    if (FParse::Param(FCommandLine::Get(), TEXT("BottomPreview")) && GetNetMode() == NM_Standalone)
+    {
+        if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+        {
+            FLakeWeatherState Clear;
+            Clear.Cloud = 0.3f; Clear.Fog = 0; Clear.Rain = 0; Clear.Wind = 0.1f; Clear.WindYaw = 40;
+            Weather->SetWeatherNow(Clear);
+            Weather->SetHours(11.0f);
+        }
+        auto BedAt = [](const FVector2D& Q) { return LakeMap::Ground(Q.X, Q.Y); };
+        auto Shot = [this](const FString& File, const FVector& Eye, const FVector& Look, float Fov)
+        {
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(Eye, (Look - Eye).Rotation());
+            if (!Cam) return;
+            Cam->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetViewTarget(Cam);
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / File, true, false);
+        };
+        // The two weed beds (the same places as LakeMap's), the middle of the lake, the warm south bay.
+        const FVector2D Off = FVector2D(108, 4) * 100, Hump = FVector2D(70, -8) * 100;
+        const FVector2D Middle(2000, -3000), Bay(-11625, 10125);
+        struct FShot { float At; const TCHAR* File; FVector Eye; FVector Look; float Fov; };
+        TArray<FShot> Shots;
+        // A shallow, weedy place without lilies in front of it: the best place to see the bed from above.
+        FVector2D Weedy = Off;
+        {
+            float Best = -1;
+            const FBox2D Bounds = LakeMap::LakeBounds();
+            for (float Y = Bounds.Min.Y; Y <= Bounds.Max.Y; Y += 400)
+                for (float X = Bounds.Min.X; X <= Bounds.Max.X; X += 400)
+                {
+                    const FVector2D P(X, Y);
+                    if (!LakeMap::IsWater(P.X, P.Y)) continue;
+                    const float D = LakeMap::Depth(P.X, P.Y);
+                    if (D < 70 || D > 210) continue;
+                    if (LakeMap::SpotAmount(P) > 0.05f || LakeMap::LilyAmount(P.X, P.Y) > 0.05f) continue;
+                    const float Score = LakeMap::WeedAmount(P) + 0.5f * LakeMap::BackwaterAmount(P.X, P.Y)
+                        + 0.25f * FMath::PerlinNoise2D(P / 900);
+                    if (Score > Best) { Best = Score; Weedy = P; }
+                }
+        }
+        {
+            // Nearly straight down, so the sun's glare off the surface does not hide the bed.
+            const FVector Eye(Weedy - FVector2D(140, 90), LakeMap::SurfaceZ + 360);
+            Shots.Add({ 4.0f, TEXT("Bottom_Above.png"), Eye, FVector(Weedy + FVector2D(60, 40), LakeMap::SurfaceZ - 140), 55 });
+        }
+        {
+            const FVector2D P = Off;
+            const float Bed = LakeMap::Ground(P.X, P.Y);
+            const FVector Eye(P, Bed + FMath::Min(110.0f, (LakeMap::SurfaceZ - Bed) * 0.45f));
+            const FVector2D Dir = FVector2D(1, 0).GetRotated(30);
+            Shots.Add({ 6.0f, TEXT("Bottom_Weeds.png"), Eye, FVector(P + Dir * 480, BedAt(P + Dir * 480) + 30), 75 });
+        }
+        {
+            const FVector2D P = Hump;
+            const float Bed = LakeMap::Ground(P.X, P.Y);
+            const FVector Eye(P, Bed + FMath::Min(120.0f, (LakeMap::SurfaceZ - Bed) * 0.45f));
+            const FVector2D Dir = FVector2D(1, 0).GetRotated(200);
+            Shots.Add({ 8.0f, TEXT("Bottom_Hump.png"), Eye, FVector(P + Dir * 520, BedAt(P + Dir * 520) + 30), 75 });
+        }
+        {
+            const FVector2D P = Middle;
+            const float Bed = LakeMap::Ground(P.X, P.Y);
+            const FVector Eye(P, Bed + 150.0f);
+            const FVector2D Dir = FVector2D(1, 0).GetRotated(120);
+            Shots.Add({ 10.0f, TEXT("Bottom_Deep.png"), Eye, FVector(P + Dir * 900, BedAt(P + Dir * 900) + 60), 75 });
+        }
+        {
+            // The heap of old logs by the fishing spot of that name.
+            for (const LakeMap::FSpot& Spot : LakeMap::Spots())
+            {
+                if (!FString(Spot.Name).Contains(TEXT("Коряжник"))) continue;
+                const FVector2D P = Spot.Location - Spot.Outward * 500;
+                const float Bed = LakeMap::Ground(P.X, P.Y);
+                const FVector Eye(P, Bed + 130.0f);
+                const FVector2D Dir = -Spot.Outward;
+                Shots.Add({ 11.5f, TEXT("Bottom_Logs.png"), Eye, FVector(P + Dir * 420, BedAt(P + Dir * 420) + 40), 75 });
+                break;
+            }
+        }
+        {
+            const FVector Eye(Bay, LakeMap::SurfaceZ + 220);
+            Shots.Add({ 12.0f, TEXT("Bottom_Bay.png"), Eye, FVector(Bay + FVector2D(-700, 500), LakeMap::SurfaceZ - 160), 62 });
+        }
+        {
+            // Along the surface over the shallows, the weed tops showing through the water.
+            const FVector Eye(Weedy - FVector2D(900, 500), LakeMap::SurfaceZ + 125);
+            Shots.Add({ 14.0f, TEXT("Bottom_Surface.png"), Eye, FVector(Weedy + FVector2D(500, 300), LakeMap::SurfaceZ - 55), 70 });
+        }
+        for (const FShot& S : Shots)
+        {
+            FTimerHandle Handle;
+            const FShot Copy = S;
+            GetWorldTimerManager().SetTimer(Handle, [this, Shot, Copy] { Shot(Copy.File, Copy.Eye, Copy.Look, Copy.Fov); }, S.At, false);
+        }
+        FTimerHandle Exit;
+        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 18.0f, false);
+        return;
+    }
     // -ScreenshotTest: presses F12 through the real input path and checks that a file appears.
     if (FParse::Param(FCommandLine::Get(), TEXT("ScreenshotTest")) && GetNetMode() == NM_Standalone)
     {

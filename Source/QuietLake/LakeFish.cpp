@@ -1202,7 +1202,9 @@ FVector ALakeFish::AvoidBank(const FVector& Desired) const
     const float Depth = LakeMap::IsWater(Q.X, Q.Y) ? LakeMap::Depth(Q.X, Q.Y) : 0.0f;
     // Going for a bait it lets itself closer in (the bait may lie in the shallows by the bank).
     const bool bBait = State != EState::Roam && State != EState::Flee;
-    const float Edge = bBait ? 25.0f : 80.0f, Shoal = bBait ? 12.0f : 30.0f;
+    // The designed bed shelves out gently, so the shallow water reaches farther from the edge than the
+    // old brush bowl did: keep a little more room from the bank and off the shoals.
+    const float Edge = bBait ? 25.0f : 92.0f, Shoal = bBait ? 12.0f : 40.0f;
     const float Danger = FMath::Max(FMath::Clamp((Edge - Shore) / (0.75f * Edge), 0.0f, 1.0f), FMath::Clamp((Shoal - Depth) / (0.6f * Shoal), 0.0f, 1.0f));
     if (Danger <= 0) return Desired;
     const FVector2D Out = -LakeMap::NearestShore(FVector2D(P)).Outward;   // into the lake
