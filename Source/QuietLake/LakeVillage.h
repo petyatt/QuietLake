@@ -4,11 +4,8 @@
 #include "LakeVillage.generated.h"
 
 /**
- * The village on the hill above the middle of the lake (LakeMap::Village()): log houses with gardens,
- * fences and gates, the main street towards the pier, the cross street, the market square with its
- * stalls and fish, the fishing shop and the village store. Built from engine primitives and the
- * village props of Content/Village (Tools/GenerateVillageModels.py); visual only, the server keeps
- * no state here.
+ * The lakeside village from LakeMap::Village(): separate homesteads, a shop, yards and footpaths.
+ * Meshes come from Content/Village/Lakeside, prepared by Tools/PrepareVillageAssets.py.
  */
 UCLASS()
 class ALakeVillage : public AActor

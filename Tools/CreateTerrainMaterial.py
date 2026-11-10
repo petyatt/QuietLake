@@ -7,6 +7,7 @@ Terrain vertex colour carries the layer masks: R = meadow, G = forest, B = bare 
 M_LakeLandscape is the same material for the landscape of /Game/Maps/Lake: the masks come from its
 layers Meadow, Forest and Clay instead (painted by ULakeLevelLibrary::BuildLandscape).
 """
+import os
 import unreal
 
 lib = unreal.MaterialEditingLibrary
@@ -18,6 +19,22 @@ LAYERS = {
     'F': (SURF + 'Mossy_Forest_Floor_vfylbge/High/vfylbge_tier_1/Textures/', 'vfylbge', 160.0),
     'M': (SURF + 'Nordic_Moss_se4rwei/High/se4rwei_tier_1/Textures/', 'se4rwei', 200.0),
 }
+RAIN_RETURN = 'return c * lerp(1.0, 0.62, Wt);'
+LAWN_MARKER = '// Village lawn pilot. Keep the footprint aligned with LakeBiomes.cpp.'
+LAWN_COLOUR = """
+  %s
+  float lawnCover = LawnMask.r * V.r * (1 - V.g) * (1 - V.b);
+  float3 shortGrass = G * float3(0.56, 0.92, 0.41) * macro;
+  c = lerp(c, shortGrass, saturate(lawnCover));
+  """ % LAWN_MARKER
+
+
+def with_lawn_colour(code):
+    end = code.find(RAIN_RETURN)
+    if end < 0:
+        raise RuntimeError('Unexpected landscape colour expression')
+    start = code.find(LAWN_MARKER, 0, end)
+    return code[:start if start >= 0 else end].rstrip() + LAWN_COLOUR + code[end:]
 
 
 def node(mat, cls, **props):
@@ -44,6 +61,26 @@ def custom(mat, code, inputs, output=unreal.CustomMaterialOutputType.CMOT_FLOAT3
     for name, src in inputs:
         connect(src, '', n, name)
     return n
+
+
+def apply_lawn_colour(mat, colour, position):
+    inputs = list(colour.get_editor_property('inputs'))
+    if not any(str(item.get_editor_property('input_name')) == 'LawnMask' for item in inputs):
+        rect = unreal.LakeBiomeLibrary.village_lawn_map_rect()
+        mask = unreal.load_asset('/Game/Biomes/T_VillageLawnCoverage')
+        if not mask:
+            raise RuntimeError('Bake the village lawn coverage with BuildLakeBiomes.py first')
+        uv = custom(mat, 'return (P.xy - float2(%.1f, %.1f)) / float2(%.1f, %.1f);' %
+                    (rect.x, rect.y, rect.z - rect.x, rect.w - rect.y), [('P', position)],
+                    unreal.CustomMaterialOutputType.CMOT_FLOAT2)
+        sample = node(mat, unreal.MaterialExpressionTextureSample, texture=mask,
+                      sampler_type=unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+        connect(uv, '', sample, 'UVs')
+        item = unreal.CustomInput()
+        item.set_editor_property('input_name', 'LawnMask')
+        colour.set_editor_property('inputs', inputs + [item])
+        connect(sample, '', colour, 'LawnMask')
+    colour.set_editor_property('code', with_lawn_colour(colour.get_editor_property('code')))
 
 
 def sampler_for(tex):
@@ -103,7 +140,7 @@ def build(PATH, landscape):
   """, [('P', position), ('V', vertex)])
 
   BLEND = 'float g = W.x, m = W.y; float f = saturate(1 - g - m);\n'
-  color = custom(mat, BLEND + """
+  color_code = BLEND + """
   float3 c = G * (g * 0.78) + F * f + M * m;
   float2 cell = floor(P.xy / 900), blend = frac(P.xy / 900);
   blend = blend * blend * (3 - 2 * blend);
@@ -118,7 +155,11 @@ def build(PATH, landscape):
   c = lerp(c, clay, V.b);
   // After rain the ground darkens (MPC_Weather.Wetness).
   return c * lerp(1.0, 0.62, Wt);
-  """, [('W', weights), ('G', samples['GB']), ('F', samples['FB']), ('M', samples['MB']), ('P', position), ('V', vertex), ('Wt', wetness)])
+  """
+  color = custom(mat, color_code,
+                 [('W', weights), ('G', samples['GB']), ('F', samples['FB']), ('M', samples['MB']), ('P', position), ('V', vertex), ('Wt', wetness)])
+  if landscape and unreal.EditorAssetLibrary.does_asset_exist('/Game/Biomes/T_VillageLawnCoverage'):
+      apply_lawn_colour(mat, color, position)
   normal = custom(mat, BLEND + """
   float3 n = G * g + F * f + M * m;
   n.xy *= lerp(1.0, 0.6, W.z);                         // wet ground looks smoother
@@ -141,16 +182,25 @@ def build(PATH, landscape):
   unreal.log('QUIET_LAKE_TERRAIN_MATERIAL ' + PATH)
 
 
-build('/Game/Materials/M_TerrainScanned', False)
-build('/Game/Materials/M_LakeLandscape', True)
+if os.environ.get('QUIETLAKE_TERRAIN_LAWN_ONLY') == '1':
+    landscape = unreal.load_asset('/Game/Materials/M_LakeLandscape')
+    colour = lib.get_material_property_input_node(landscape, unreal.MaterialProperty.MP_BASE_COLOR)
+    if not isinstance(colour, unreal.MaterialExpressionCustom):
+        raise RuntimeError('Unexpected landscape colour graph')
+    apply_lawn_colour(landscape, colour, node(landscape, unreal.MaterialExpressionWorldPosition))
+    lib.recompile_material(landscape)
+    if not unreal.EditorAssetLibrary.save_loaded_asset(landscape):
+        raise RuntimeError('Could not save the landscape material')
+else:
+    build('/Game/Materials/M_TerrainScanned', False)
+    build('/Game/Materials/M_LakeLandscape', True)
 
-# Fab's Megascans master materials ship without the instanced-mesh usage flag; the scene draws
-# rocks with instanced components, so without it the engine falls back to the default material.
-for master in ('/Game/Fab/Materials/Standard/M_MS_Base_Fuzz', '/Game/Fab/Materials/Standard/M_MS_Base'):
-    m = unreal.load_asset(master)
-    if m and not m.get_editor_property('used_with_instanced_static_meshes'):
-        m.set_editor_property('used_with_instanced_static_meshes', True)
-        lib.recompile_material(m)
-        unreal.EditorAssetLibrary.save_asset(master)
-        unreal.log('Enabled instanced usage on ' + master)
+    # Fab's Megascans master materials ship without the instanced-mesh usage flag.
+    for master in ('/Game/Fab/Materials/Standard/M_MS_Base_Fuzz', '/Game/Fab/Materials/Standard/M_MS_Base'):
+        m = unreal.load_asset(master)
+        if m and not m.get_editor_property('used_with_instanced_static_meshes'):
+            m.set_editor_property('used_with_instanced_static_meshes', True)
+            lib.recompile_material(m)
+            unreal.EditorAssetLibrary.save_asset(master)
+            unreal.log('Enabled instanced usage on ' + master)
 unreal.log('QUIET_LAKE_TERRAIN_MATERIAL_READY')

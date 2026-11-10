@@ -35,12 +35,14 @@ public:
      *  the lake with 40 m round it, for a finer map of the narrow biomes by the water. */
     UFUNCTION(BlueprintCallable, Category = "Lake|Biomes")
     static FVector4 BiomeMapRect(bool bShore = false);
+    UFUNCTION(BlueprintCallable, Category = "Lake|Biomes")
+    static FVector4 VillageLawnMapRect();
 
     /** Paints the biomes over Rect (Width x Height, row 0 at min Y, column 0 at min X) into the texture
      *  asset at PackagePath (created or replaced; uncompressed, no mips, nearest filtering) and into
      *  Saved/<asset name>.png. Returns the share of the map each biome covers, as log lines. */
     UFUNCTION(BlueprintCallable, Category = "Lake|Biomes")
-    static FString BuildBiomeMap(const FString& PackagePath, FVector4 Rect, int32 Width = 2048, int32 Height = 2048);
+    static FString BuildBiomeMap(const FString& PackagePath, FVector4 Rect, int32 Width = 2048, int32 Height = 2048, bool bLawnCoverage = false);
 
     /** Copies every instanced mesh of Source (the Biome Core actor after generating) into hierarchical
      *  instanced meshes of a new plain actor labelled Label (one per mesh, with the same collision, cull

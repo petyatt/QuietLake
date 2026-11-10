@@ -14,6 +14,7 @@ lit softly like grass. QUIETLAKE_SHORE=Reed_A,Grass_A makes only those.
   Grass_A        - a tuft of meadow grass, knee-low, with a few loose seed heads.
   Grass_B        - tall unmown grass to the thigh with spiky seed heads (timothy) and panicles.
   Grass_Low      - short sparse dark grass for the forest floor and under the edge.
+  Lawn_A/B       - low overlapping meadow grass for the village.
   Flowers_A      - grass with chamomile and buttercups.
   Flowers_B      - grass with bellflowers, red clover and cornflowers.
 Floating on the water (origin at the water surface, M_Plant, normals as modelled):
@@ -344,6 +345,23 @@ def lilies(seed, pads, spread, flowers=0, yellow=False):
     return b
 
 
+def lawn(seed, tint):
+    """Short blades distributed across a broad patch, without a tall centre tuft."""
+    rnd = random.Random(seed)
+    b = Builder(0.16)
+    # Two times as many blades per clump, paired with 1.5 times as many PCG points.
+    for _ in range(160):
+        angle = rnd.uniform(0, 2 * math.pi)
+        radius = 0.32 * math.sqrt(rnd.random())
+        root = Vector((math.cos(angle) * radius, math.sin(angle) * radius, -0.012))
+        colour = jitter((0.105, 0.206 * tint, 0.024), rnd, 0.012)
+        tip = jitter((0.238, 0.398 * tint, 0.056), rnd, 0.024)
+        leaf(b, rnd, root, rnd.uniform(0, 2 * math.pi), rnd.uniform(0.096, 0.172),
+             rnd.uniform(0.0021, 0.0035), rnd.uniform(2, 12), rnd.uniform(13, 35),
+             colour, tip, segments=2, shape='strap')
+    return b
+
+
 PLANTS = {
     'Reed_A': lambda: reed(21, 26, 0.45, 1.9, 2.7, 0.15),
     'Reed_B': lambda: reed(22, 34, 0.6, 2.2, 3.0, 0.2),
@@ -353,6 +371,8 @@ PLANTS = {
     'Grass_A': lambda: grass(31, 90, 0.25, 0.25, 0.5, (0.12, 0.21, 0.05), (0.42, 0.50, 0.18), heads=5),
     'Grass_B': lambda: grass(32, 110, 0.3, 0.45, 0.85, (0.11, 0.20, 0.05), (0.46, 0.50, 0.20), heads=6, spikes=7),
     'Grass_Low': lambda: grass(33, 45, 0.22, 0.1, 0.25, (0.07, 0.14, 0.04), (0.25, 0.32, 0.10)),
+    'Lawn_A': lambda: lawn(136, 1.0),
+    'Lawn_B': lambda: lawn(217, 1.15),
     'Flowers_A': lambda: grass(34, 50, 0.25, 0.2, 0.4, (0.12, 0.21, 0.05), (0.40, 0.48, 0.17), flowers=((chamomile, 8, 0.38), (buttercup, 6, 0.42))),
     'Flowers_B': lambda: grass(35, 50, 0.25, 0.2, 0.42, (0.12, 0.21, 0.05), (0.40, 0.48, 0.17),
                                flowers=((bellflower, 5, 0.45), (clover, 6, 0.22), (cornflower, 4, 0.5))),

@@ -1,6 +1,7 @@
-﻿#include "LakeGame.h"
+#include "LakeGame.h"
 #include "LakeMap.h"
 #include "LakeVillage.h"
+#include "Components/BoxComponent.h"
 #include "LakeWeather.h"
 #include "LandscapeProxy.h"
 #include "WaterBodyActor.h"
@@ -146,7 +147,6 @@ void ALakeEnvironment::BeginPlay()
     const FVector2D Village = LakeMap::VillageCentre();
     const LakeMap::FPier& Pier = LakeMap::Pier();
     const FVector2D PierEnd = Pier.Root + Pier.Dir * Pier.Length;
-    const LakeMap::FShorePoint Landing = LakeMap::Landing();
     LakeMap::LilyBeds();
     LakeMap::Snags();
     const FBox2D LakeBox = LakeMap::LakeBounds();
@@ -581,79 +581,39 @@ void ALakeEnvironment::BeginPlay()
             Planted, UE_ARRAY_COUNT(Kinds), Algae, StoneCount);
     }
 
-    // --- the pier: planks on stringers over pairs of piles, a wider landing stage at the end --------
+    // The imported pier keeps the existing fishing spot, water clearance and walking approach.
+    if (UStaticMesh* PierMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Village/Lakeside/SM_Pier.SM_Pier")))
     {
-        const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);
+        const float DeckZ = LakeMap::SurfaceZ + 85.0f;
         const float Yaw = YawOf(Pier.Dir);
-        const float DeckZ = LakeMap::SurfaceZ + 85;
-        for (float A = 0; A < Pier.Length; A += 17)
-        {
-            const bool bHead = A > Pier.Length - 300;
-            if (!bHead && A > 300 && Random.FRand() < 0.02f) continue;     // a missing plank here and there
-            const float Width = (bHead ? 460 : Pier.Width) + Random.FRandRange(-6, 6);
-            const FVector2D C = Pier.Root + Pier.Dir * A + Side * Random.FRandRange(-4, 4);
-            Add(Wood, FVector(C, DeckZ + Random.FRandRange(-1.5f, 1.0f)), FVector(0.15f, Width / 100, 0.045f),
-                FRotator(Random.FRandRange(-0.8f, 0.8f), Yaw + Random.FRandRange(-1.5f, 1.5f), Random.FRandRange(-1, 1)));
-        }
-        for (float S : { -1.0f, 1.0f })
-            Add(Wood, FVector(Pier.Root + Pier.Dir * Pier.Length * 0.5f + Side * S * (Pier.Width * 0.5f - 15), DeckZ - 9), FVector(Pier.Length / 100, 0.12f, 0.14f), FRotator(0, Yaw, 0));
-        // Two steps down from the landward end: the bank there is about half a metre below the deck.
-        for (float Step : { -45.0f, -105.0f })
-        {
-            const FVector2D P = Pier.Root + Pier.Dir * Step;
-            const float Z = FMath::Lerp(DeckZ, Ground(P) + 8, Step < -60.0f ? 1.0f : 0.5f);
-            Add(Wood, FVector(P, Z), FVector(0.20f, 2.6f, 0.06f), FRotator(0, Yaw, 0));
-        }
-        for (float S : { -1.0f, 1.0f })
-            Add(Wood, FVector(Pier.Root + Pier.Dir * (Pier.Length - 150) + Side * S * 215, DeckZ - 9), FVector(3.0f, 0.12f, 0.14f), FRotator(0, Yaw, 0));
-        for (float A = 120; A < Pier.Length; A += 220)
-        {
-            const bool bHead = A > Pier.Length - 320;
-            for (float S : { -1.0f, 1.0f })
-            {
-                const FVector2D P = Pier.Root + Pier.Dir * A + Side * S * (bHead ? 215 : Pier.Width * 0.5f - 10);
-                const float Bottom = Ground(P) - 40;
-                const float Top = DeckZ + (Random.FRand() < 0.2f ? 60 : 4);  // some piles stand up as mooring posts
-                Add(Bark, FVector(P, (Bottom + Top) * 0.5f), FVector(0.2f, 0.2f, (Top - Bottom) / 100),
-                    FRotator(Random.FRandRange(-2, 2), 0, Random.FRandRange(-2, 2)));
-            }
-        }
-    }
+        const FVector2D Centre = Pier.Root + Pier.Dir * (Pier.Length * 0.5f);
+        const FVector Extent = PierMesh->GetBounds().BoxExtent;
+        auto* Deck = NewObject<UStaticMeshComponent>(this);
+        Deck->SetupAttachment(RootComponent);
+        Deck->SetStaticMesh(PierMesh);
+        Deck->SetCollisionProfileName(TEXT("NoCollision"));
+        Deck->SetWorldTransform(FTransform(FRotator(0, Yaw, 0), FVector(Centre, DeckZ),
+            FVector(Pier.Length / (Extent.X * 2.0f), Pier.Width / (Extent.Y * 2.0f), 1.0f)));
+        AddInstanceComponent(Deck);
+        Deck->RegisterComponent();
 
-    {
-        const FVector2D Side(-Pier.Dir.Y, Pier.Dir.X);
-        for (float A : { 380.0f, 1040.0f })
-            for (float Sign : { -1.0f, 1.0f })
-            {
-                const FVector2D Q = Pier.Root + Pier.Dir * A + Side * Sign * (Pier.Width * 0.5f - 20);
-                const FVector Low(Q, LakeMap::SurfaceZ - 12);
-                const FVector High(Q + Pier.Dir * 170, LakeMap::SurfaceZ + 37);
-                Add(Wood, (Low + High) * 0.5f, FVector(0.07f, 0.07f, FVector::Dist(Low, High) / 100), FRotationMatrix::MakeFromZ(High - Low).Rotator());
-            }
-    }
+        // The walking surface bridges narrow seams between the scanned planks.
+        auto* WalkSurface = NewObject<UBoxComponent>(this, TEXT("VillagePierWalkSurface"));
+        WalkSurface->SetupAttachment(RootComponent);
+        WalkSurface->SetBoxExtent(FVector(Pier.Length * 0.5f, Pier.Width * 0.5f - 3.0f, 6.0f));
+        WalkSurface->SetCollisionProfileName(TEXT("BlockAll"));
+        WalkSurface->SetWorldLocationAndRotation(FVector(Centre, DeckZ - 6.0f), FRotator(0, Yaw, 0));
+        AddInstanceComponent(WalkSurface);
+        WalkSurface->RegisterComponent();
 
-    // --- the landing: nets drying; the village itself comes later on the plateau above ---------------
-    {
-        auto Prop = [this](const TCHAR* Name, FVector Location, FRotator Rotation, bool bCollision)
-        {
-            auto* C = NewObject<UStaticMeshComponent>(this);
-            C->SetupAttachment(RootComponent);
-            C->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Village/SM_%s.SM_%s"), Name, Name)));
-            C->SetCollisionEnabled(bCollision ? ECollisionEnabled::QueryAndPhysics : ECollisionEnabled::NoCollision);
-            C->SetCollisionResponseToAllChannels(ECR_Block);
-            C->RegisterComponent();
-            AddInstanceComponent(C);
-            C->SetWorldLocationAndRotation(Location, Rotation);
-            return C;
-        };
-        const FVector2D Along(-Landing.Outward.Y, Landing.Outward.X);
-        // Nets hung to dry above the landing.
-        for (float S : { -1.0f, 1.0f })
-        {
-            const FVector2D P = Landing.Location + Landing.Outward * 900 + Along * S * 450;
-            Prop(TEXT("NetRack"), FVector(P, Ground(P)), FRotator(0, YawOf(Along) + Random.FRandRange(-8, 8), 0), false);
-        }
+        // A short timber ramp bridges the natural bank and the new deck.
+        const FVector2D Bank = Pier.Root - Pier.Dir * 250.0f;
+        const FVector RampStart(Bank, Ground(Bank) - 4.0f), RampEnd(Pier.Root + Pier.Dir * 10, DeckZ);
+        const FVector Slope = RampEnd - RampStart;
+        Add(Wood, (RampStart + RampEnd) * 0.5f - FVector(0, 0, 4), FVector(Slope.Size() / 100.0f, Pier.Width / 100.0f, 0.08f), Slope.Rotation());
     }
+    else
+        UE_LOG(LogTemp, Error, TEXT("QUIET_LAKE_LAKESIDE missing pier mesh"));
 
     // --- the west end: where an old weir once held the water. A ragged row of its rotten piles still
     // stands in the shallows, and an old boat lies upside down on the meadow bank. -------------------

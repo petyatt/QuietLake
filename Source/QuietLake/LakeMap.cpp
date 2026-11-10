@@ -792,8 +792,7 @@ bool LakeMap::OnPier(const FVector& P)
     const float Along = FVector2D::DotProduct(Local, Pr.Dir);
     const float Across = FMath::Abs(FVector2D::DotProduct(Local, FVector2D(-Pr.Dir.Y, Pr.Dir.X)));
     if (Along < -30 || Along > Pr.Length + 30) return false;
-    // A wider landing stage at the far end.
-    return Across <= (Along > Pr.Length - 300 ? 230.0f : Pr.Width * 0.5f + 30);
+    return Across <= Pr.Width * 0.5f + 30;
 }
 FShorePoint LakeMap::Landing()
 {
@@ -814,24 +813,24 @@ FVector2D LakeMap::VillageCentre() { return GVillage; }
 
 bool LakeMap::VillagePaved(const FVector2D& P)
 {
-    static const FVillage& V = Village();
-    auto OnLine = [](const FVector2D& Q, const TArray<FVector2D>& Line, float Half)
+    const FVillage& V = Village();
+    for (const FVillagePath& Path : V.Paths)
+        for (int32 I = 0; I + 1 < Path.Line.Num(); ++I)
+            if (SegmentDistance(P, Path.Line[I], Path.Line[I + 1]) < Path.Width * 0.5f + 70.0f) return true;
+
+    for (const FVillagePlot& Plot : V.Plots)
     {
-        for (int32 I = 0; I + 1 < Line.Num(); ++I)
-        {
-            const FVector2D A = Line[I], AB = Line[I + 1] - A;
-            const float T = FMath::Clamp(FVector2D::DotProduct(Q - A, AB) / FMath::Max(AB.SizeSquared(), 1.0f), 0.0f, 1.0f);
-            if (FVector2D::Distance(Q, A + AB * T) < Half) return true;
-        }
-        return false;
-    };
-    if (OnLine(P, V.MainStreet, V.StreetHalfWidth + 140)) return true;
-    if (OnLine(P, V.CrossStreet, 400)) return true;
-    if (OnLine(P, V.MarketLane, 380)) return true;
-    if (OnLine(P, V.PierPath, 210)) return true;
-    const FVector2D L = P - V.Market;
-    return FMath::Abs(FVector2D::DotProduct(L, V.Axis)) < V.MarketHalfAlong + 120
-        && FMath::Abs(FVector2D::DotProduct(L, V.Side)) < V.MarketHalfAcross + 120;
+        const FVector2D Offset = P - Plot.House;
+        const float Along = FVector2D::DotProduct(Offset, Plot.Facing);
+        const float Across = FVector2D::CrossProduct(Plot.Facing, Offset);
+        if (FMath::Abs(Along) < 460.0f && FMath::Abs(Across) < 540.0f) return true;
+        // Three beds behind each house, positioned as in ALakeVillage::Build.
+        if (!Plot.bShop && Along > 65.0f - Plot.Back && Along < 645.0f - Plot.Back
+            && FMath::Abs(Across - (Plot.HalfWidth - 290.0f)) < 173.0f) return true;
+    }
+    // Kitchen beds by the small cabin beyond the inlet.
+    if (P.X > -13120 && P.X < -12230 && FMath::Abs(P.Y - 15830.0f) < 150.0f) return true;
+    return false;
 }
 
 const FVillage& LakeMap::Village()
@@ -839,41 +838,34 @@ const FVillage& LakeMap::Village()
     static const FVillage Instance = []
     {
         FVillage V;
-        V.Centre = GVillage;
-        V.Radius = GVillageRadius;
-        // The street runs up to the footpath that comes from the pier.
         const FPier& Pier = LakeMap::Pier();
-        const FVector2D Approach = Pier.Root - Pier.Dir * 1450 + FVector2D(-Pier.Dir.Y, Pier.Dir.X) * 120;
-        V.Axis = (Approach - V.Centre).GetSafeNormal();
-        V.Side = FVector2D(-V.Axis.Y, V.Axis.X);
-        const FVector2D South = V.Centre - V.Axis * 4300;
-        const FVector2D North = V.Centre + V.Axis * 4400;
-        V.MainStreet = { South, V.Centre - V.Axis * 3100, V.Centre + V.Axis * 600, North };
-        // The market square lies in the west, past the last plots; a cross street runs east from it.
-        V.Market = V.Centre - V.Axis * 3300 - V.Side * 2300;
-        V.MarketLane = { V.Market + V.Side * 1050, V.Centre - V.Axis * 3300 };
-        V.CrossStreet = { V.Market + V.Side * 1050, V.Centre - V.Axis * 3300, V.Centre - V.Axis * 3300 + V.Side * 3900 };
-        V.Well = V.Market + V.Side * 520 - V.Axis * 420;
-        V.PierPath = { North, Approach };
-        // Four plots on each side of the main street, gardens behind the houses.
-        for (float Offset : { 3400.0f, 1900.0f, 400.0f, -1100.0f })
-            for (float SideSign : { -1.0f, 1.0f })
-            {
-                FVillagePlot P;
-                P.Street = V.Centre + V.Axis * Offset;
-                const FVector2D Out = V.Side * SideSign;
-                P.Facing = -Out;
-                P.House = P.Street + Out * 1650;
-                P.Gate = P.Street + Out * 800;
-                P.Garden = P.House - P.Facing * 1250;
-                P.HalfWidth = 700;
-                P.Front = 850;
-                P.Back = 1550;
-                P.Kind = 0;
-                if (Offset > 3000 && SideSign < 0) P.Kind = 1;   // the fishing shop at the pier end
-                if (Offset < -1000 && SideSign > 0) P.Kind = 2;  // the store by the cross street and the market
-                V.Plots.Add(P);
-            }
+        const FVector2D ShorePath = Pier.Root - Pier.Dir * 240.0f;
+
+        // The lane comes out of the woods, then bends along the far side of the inlet.
+        V.Paths.Add({ { At(111, 185), At(107, 168), At(98, 153), At(86, 141),
+            At(78, 128), At(69, 114), At(57, 103), At(42, 93), At(25, 90),
+            At(5, 94), At(-15, 101), At(-36, 114), At(-57, 131), At(-79, 145),
+            At(-104, 152), At(-129, 153), At(-151, 155) }, 470.0f, true });
+        V.Paths.Add({ { At(42, 93), At(38, 79), At(34, 66), At(29, 55), At(26, 42), ShorePath }, 245.0f, false });
+        V.Paths.Add({ { At(34, 66), At(48, 57), At(63, 52), At(80, 48), At(99, 50) }, 180.0f, false });
+
+        // Loosely grouped houses around the lane, with their own yards and short paths to the gate.
+        auto Plot = [&V](FVector2D House, FVector2D Street, float Width, float Front, float Back, bool bShop = false)
+        {
+            const FVector2D Facing = (Street - House).GetSafeNormal();
+            V.Plots.Add({ House, Facing, Width, Front, Back, bShop });
+            const FVector2D Door = House + Facing * 300.0f;
+            V.Paths.Add({ { Street, House + Facing * Front, Door }, bShop ? 200.0f : 120.0f, false });
+        };
+        Plot(At(121, 155), At(98, 153), 890, 800, 860);
+        Plot(At(59, 150), At(86, 141), 970, 960, 910);
+        Plot(At(27, 121), At(25, 90), 890, 850, 920);
+        Plot(At(102, 117), At(78, 128), 810, 810, 850);
+        Plot(At(78, 88), At(57, 103), 1010, 850, 990);
+        Plot(At(5, 73), At(5, 94), 870, 790, 900);
+        Plot(At(98, 69), At(99, 50), 910, 780, 880);
+        Plot(At(64, 69), At(63, 52), 790, 780, 840);
+        Plot(At(40, 45), At(26, 42), 700, 650, 550, true);
         return V;
     }();
     return Instance;

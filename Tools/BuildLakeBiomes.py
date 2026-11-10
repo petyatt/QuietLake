@@ -16,6 +16,7 @@ The plants are spawned into instanced meshes of the core actor and saved with th
 not run PCG.
 """
 import os
+import runpy
 
 import unreal
 
@@ -52,6 +53,7 @@ GENERATORS = {
     'Sedge': (0.25, 30, 4),
     'Grass': (1.0, 30, 5),
     'Ground': (0.12, 50, 6),
+    'Lawn': (10.8, 15, 5),
 }
 PV, SHORE = '/Game/Plants/PV/SM_PV_', '/Game/Plants/Shore/SM_'
 # Heights (world Z, cm; the water is at -25): trees and shrubs stand above the water, reeds no deeper than
@@ -63,6 +65,7 @@ REED = dict(extents=0.35, orient=0.6, collision=False, cull=15000, hmin=-135, hm
 SEDGE = dict(extents=0.6, orient=0.6, collision=False, cull=15000, hmin=-60, hmax=100000, shadow=True, gi=False)
 GRASS = dict(extents=0.6, orient=0.7, collision=False, cull=8000, hmin=-15, hmax=100000, shadow=False, gi=False)
 FLOWER = dict(extents=0.8, orient=0.7, collision=False, cull=6000, hmin=-5, hmax=100000, shadow=False, gi=False)
+LAWN = dict(GRASS, extents=(0.55, 0.55, 0.8), self_prune=False, orient=0.95, cull=4600, hmin=5)
 # Biome: (map: 'all' or 'shore', cache texel cm, blending range cm, priority, [(type, mesh, weight, generator, scale, options)])
 BIOMES = {
     'PineForest': ('all', 200, 400, 3, [
@@ -95,6 +98,10 @@ BIOMES = {
     'Meadow': ('all', 200, 300, 4, [
         ('Grass', SHORE + 'Grass_A', 3, 'Grass', 1.0, GRASS), ('Grass', SHORE + 'Grass_B', 1.5, 'Grass', 1.0, GRASS),
         ('Flowers', SHORE + 'Flowers_A', 0.6, 'Grass', 1.0, FLOWER), ('Flowers', SHORE + 'Flowers_B', 0.5, 'Grass', 1.0, FLOWER)]),
+    'VillageLawn': ('all', 70, 150, 4, [
+        ('Grass', SHORE + 'Lawn_A', 3.0, 'Lawn', 1.0, LAWN),
+        ('Grass', SHORE + 'Lawn_B', 2.0, 'Lawn', 0.93, LAWN),
+        ('Flowers', SHORE + 'Flowers_A', 0.04, 'Lawn', 0.40, LAWN)]),
     'AlderBank': ('shore', 100, 50, 1, [
         ('Alder', PV + 'Alder_A', 3, 'Trees', 1.0, TREE), ('Alder', PV + 'Alder_A', 1.5, 'Trees', 0.8, TREE),
         ('Birch', PV + 'Birch_B', 0.7, 'Trees', 0.9, TREE), ('Spruce', PV + 'Spruce_B', 0.3, 'Trees', 0.8, TREE),
@@ -195,13 +202,15 @@ def make_generator(name, density, extents, priority, seed):
 
 def entry(kind, mesh, weight, generator, scale, o):
     s = scale
+    extents = o['extents']
+    extent_text = '(X=%f,Y=%f,Z=%f)' % extents if isinstance(extents, tuple) else '%f' % extents
     return '(' + ','.join([
         '%s="%s"' % (ASSET['Type'], kind),
         '%s=%f' % (ASSET['Weight'], weight),
         '%s=%s' % (ASSET['Generator'], ref('/PCGBiomeCore/BiomeGenerators/Setup/BiomeGeneratorTemplate.BiomeGeneratorTemplate_C', generator)),
         '%s=%s' % (ASSET['Mesh'], ref('/Script/Engine.StaticMesh', mesh)),
-        '%s=(%s=(X=%f,Y=%f,Z=%f),%s=%f,%s=%f,%s=True)' % (ASSET['AssetOptions'], OPT['Scale'], s, s, s, OPT['Extents'], o['extents'],
-                                                         OPT['Orient'], o['orient'], OPT['SelfPrune']),
+        '%s=(%s=(X=%f,Y=%f,Z=%f),%s=%s,%s=%f,%s=%s)' % (ASSET['AssetOptions'], OPT['Scale'], s, s, s, OPT['Extents'], extent_text,
+                                                        OPT['Orient'], o['orient'], OPT['SelfPrune'], o.get('self_prune', True)),
         '%s=(%s=%s,%s=%d,%s=%s,%s=%s,%s=%s)' % (ASSET['MeshOptions'], MESH['Collision'], o['collision'], MESH['EndCull'], o['cull'],
                                                MESH['Shadow'], o['shadow'], MESH['DistanceField'], o['gi'], MESH['Indirect'], o['gi']),
         '%s=(%s=%f,%s=%f)' % (ASSET['FilterOptions'], FILTER['HeightMin'], o['hmin'], FILTER['HeightMax'], o['hmax']),
@@ -268,6 +277,26 @@ def instance_counts(core):
     return counts
 
 
+def clear_village_lawn_paths(core):
+    """The biome texture is filtered at its edges. Enforce the actual path mask before saving."""
+    grass_names = {'SM_Lawn_A', 'SM_Lawn_B', 'SM_Grass_A', 'SM_Grass_B', 'SM_Flowers_A', 'SM_Flowers_B'}
+    rect = BL.village_lawn_map_rect()
+    removed = 0
+    for component in core.get_components_by_class(unreal.InstancedStaticMeshComponent):
+        mesh = component.get_editor_property('static_mesh')
+        if not mesh or mesh.get_name() not in grass_names:
+            continue
+        blocked = []
+        for i in range(component.get_instance_count()):
+            p = component.get_instance_transform(i, True).translation
+            if rect.x <= p.x <= rect.z and rect.y <= p.y <= rect.w and BL.clearing_at(p.x, p.y):
+                blocked.append(i)
+        if blocked and not component.remove_instances(blocked):
+            raise RuntimeError('could not clear grass from the village paths')
+        removed += len(blocked)
+    log('trimmed %d grass instances from village paths and clearings' % removed)
+
+
 def check(core):
     """How many of the planted instances stand where the map puts their biome."""
     allowed = {}
@@ -315,6 +344,13 @@ def tick(delta):
                 for line in BL.build_biome_map(path, rect, width, height).split('\n'):
                     log(line)
                 unreal.EditorAssetLibrary.save_asset(path, only_if_is_dirty=False)
+            if 'VillageLawn' in BIOMES:
+                path = DST + '/T_VillageLawnCoverage'
+                log(BL.build_biome_map(path, BL.village_lawn_map_rect(), 1024, 640, True))
+                if not unreal.EditorAssetLibrary.save_asset(path, only_if_is_dirty=False):
+                    raise RuntimeError('could not save the village lawn coverage')
+                if os.environ.get('QUIETLAKE_TERRAIN_LAWN_ONLY') == '1':
+                    runpy.run_path(os.path.join(unreal.Paths.project_dir(), 'Tools', 'CreateTerrainMaterial.py'))
             state['made'] = make_assets()
             state.update(step=2, frames=0)
         elif step == 2 and frames > 10:
@@ -359,6 +395,10 @@ def tick(delta):
             if frames % 600 == 0:
                 log('generating: %d instances after %d frames' % (total, frames))
             if state['still'] >= 5 or frames > 36000:
+                if 'VillageLawn' in BIOMES:
+                    clear_village_lawn_paths(state['core'])
+                    counts = instance_counts(state['core'])
+                    total = sum(counts.values())
                 for mesh, n in sorted(counts.items()):
                     log('  %s %d' % (mesh, n))
                 log('total %d instances' % total)

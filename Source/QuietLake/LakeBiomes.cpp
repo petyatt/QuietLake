@@ -20,7 +20,7 @@
 
 namespace
 {
-    enum EBiome : int32 { Nothing = -1, Pine, Spruce, Mixed, Birch, Alder, Edge, Meadow, Reed, Cattail, Sedge, BiomeCount };
+    enum EBiome : int32 { Nothing = -1, Pine, Spruce, Mixed, Birch, Alder, Edge, Meadow, Reed, Cattail, Sedge, VillageLawn, BiomeCount };
     struct FBiomeInfo { const TCHAR* Name; FColor Color; };
     // Colours a half step apart in each channel at least, as Biome Core tells biomes apart by colour.
     const FBiomeInfo Biomes[BiomeCount] = {
@@ -34,6 +34,7 @@ namespace
         { TEXT("ReedBelt"), FColor(255, 128, 0) },
         { TEXT("Cattails"), FColor(128, 0, 255) },
         { TEXT("SedgeTussocks"), FColor(255, 0, 128) },
+        { TEXT("VillageLawn"), FColor(255, 128, 128) },
     };
 
     float S(float A, float B, float X) { const float T = FMath::Clamp((X - A) / (B - A), 0.0f, 1.0f); return T * T * (3 - 2 * T); }
@@ -43,6 +44,43 @@ namespace
         const FVector2D AB = B - A;
         const float T = FMath::Clamp(FVector2D::DotProduct(P - A, AB) / FMath::Max(AB.SizeSquared(), 1.0), 0.0, 1.0);
         return FVector2D::Distance(P, A + AB * T);
+    }
+
+    const FBox2D VillageLawnBounds(FVector2D(-17000, 1400), FVector2D(15500, 21200));
+
+    float VillageLawnCover(const FVector2D& P, float Inland, float Forest)
+    {
+        if (!VillageLawnBounds.IsInside(P) || Inland <= 0 || Forest >= 0.25f) return 0.0f;
+        const auto MeadowPatch = [&P](const FVector2D& Centre, const FVector2D& Radii)
+        {
+            const FVector2D Offset = P - Centre;
+            return 1.0f - S(0.78f, 1.12f, FVector2D(Offset.X / Radii.X, Offset.Y / Radii.Y).Size());
+        };
+        float Cover = FMath::Max(MeadowPatch({ 5600, 9200 }, { 6200, 5350 }),
+            MeadowPatch({ 9050, 14300 }, { 5100, 4450 }));
+
+        const LakeMap::FVillage& Village = LakeMap::Village();
+        for (const auto& Plot : Village.Plots)
+        {
+            const FVector2D Offset = P - Plot.House;
+            const float Along = FVector2D::DotProduct(Offset, Plot.Facing);
+            const float Across = FMath::Abs(FVector2D::CrossProduct(Plot.Facing, Offset));
+            const float Outside = FMath::Max3(Along - Plot.Front, -Along - Plot.Back, Across - Plot.HalfWidth);
+            Cover = FMath::Max(Cover, 1.0f - S(100, 1100, Outside));
+        }
+        for (const auto& Path : Village.Paths)
+            for (int32 I = 0; I + 1 < Path.Line.Num(); ++I)
+            {
+                const float Shoulder = Path.bRoad && P.X < -2500 ? 480.0f : 680.0f;
+                const float Distance = SegmentDistance(P, Path.Line[I], Path.Line[I + 1]);
+                Cover = FMath::Max(Cover, 1.0f - S(Path.Width * 0.5f + Shoulder, Path.Width * 0.5f + Shoulder + 980, Distance));
+            }
+
+        const LakeMap::FPier& Pier = LakeMap::Pier();
+        const float Approach = 1.0f - S(550, 1100, SegmentDistance(P, Pier.Root, Pier.Root - Pier.Dir * 1850));
+        const float ShoreMargin = FMath::Lerp(480.0f, 170.0f, Approach);
+        Cover *= S(ShoreMargin, FMath::Lerp(1750.0f, 500.0f, Approach), Inland);
+        return Cover * (1.0f - S(0.04f, 0.23f, Forest));
     }
 
     /** Places kept clear, or null: the fishing spots and their casting lanes, the camp, the pier and the
@@ -116,7 +154,10 @@ namespace
             if (0.7f * Wet + 0.4f * (1 - S(1.5f, 5, Above)) - 0.8f * Big + 0.3f * Middle > 0.45f) return Spruce;
             return Mixed;
         }
-        return Forest > 0.2f ? Edge : Meadow;
+        if (Forest > 0.2f) return Edge;
+        const float Cover = VillageLawnCover(P, Inland, Forest);
+        if (Cover > 0.53f + 0.42f * Noise(P, 490.0f)) return VillageLawn;
+        return Meadow;
     }
 
     FProperty* FindProperty(UObject* Object, const FString& Name)
@@ -167,7 +208,12 @@ FVector4 ULakeBiomeLibrary::BiomeMapRect(bool bShore)
     return FVector4(B.Min.X, B.Min.Y, B.Max.X, B.Max.Y);
 }
 
-FString ULakeBiomeLibrary::BuildBiomeMap(const FString& PackagePath, FVector4 Rect, int32 Width, int32 Height)
+FVector4 ULakeBiomeLibrary::VillageLawnMapRect()
+{
+    return FVector4(VillageLawnBounds.Min.X, VillageLawnBounds.Min.Y, VillageLawnBounds.Max.X, VillageLawnBounds.Max.Y);
+}
+
+FString ULakeBiomeLibrary::BuildBiomeMap(const FString& PackagePath, FVector4 Rect, int32 Width, int32 Height, bool bLawnCoverage)
 {
 #if WITH_EDITOR
     const FBox2D Bounds(FVector2D(Rect.X, Rect.Y), FVector2D(Rect.Z, Rect.W));
@@ -183,6 +229,14 @@ FString ULakeBiomeLibrary::BuildBiomeMap(const FString& PackagePath, FVector4 Re
         for (int32 Column = 0; Column < Width; ++Column)
         {
             const FVector2D P(Bounds.Min.X + (Column + 0.5) / Width * Extent.X, Bounds.Min.Y + (Row + 0.5) / Height * Extent.Y);
+            if (bLawnCoverage)
+            {
+                const float Shore = LakeMap::ShoreDistance(P.X, P.Y);
+                const float Cover = Clearing(P, Shore) ? 0.0f : VillageLawnCover(P, -Shore, LakeMap::ForestAmount(P));
+                const uint8 Value = FMath::RoundToInt(FMath::Clamp(Cover, 0.0f, 1.0f) * 255.0f);
+                Pixels[Row * Width + Column] = FColor(Value, Value, Value, 255);
+                continue;
+            }
             const int32 Biome = BiomeOf(P);
             FColor Colour = Biome == Nothing ? FColor::Black : Biomes[Biome].Color;
             Colour.A = 255;
@@ -206,11 +260,13 @@ FString ULakeBiomeLibrary::BuildBiomeMap(const FString& PackagePath, FVector4 Re
     Texture->SRGB = false;
     Texture->CompressionSettings = TC_VectorDisplacementmap;     // exact colours
     Texture->MipGenSettings = TMGS_NoMipmaps;
-    Texture->Filter = TF_Nearest;
+    Texture->Filter = bLawnCoverage ? TF_Bilinear : TF_Nearest;
     Texture->AddressX = Texture->AddressY = TA_Clamp;
     Texture->PostEditChange();
     if (bNew) FAssetRegistryModule::AssetCreated(Texture);
     Package->MarkPackageDirty();
+
+    if (bLawnCoverage) return FString::Printf(TEXT("%s %dx%d village lawn coverage"), *AssetName, Width, Height);
 
     TArray<int32> Total;
     Total.SetNumZeroed(BiomeCount + 1);

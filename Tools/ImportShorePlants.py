@@ -12,7 +12,7 @@ import os
 import unreal
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PLANTS = ['Reed_A', 'Reed_B', 'Bulrush', 'Sedge_A', 'Sedge_B', 'Grass_A', 'Grass_B', 'Grass_Low', 'Flowers_A', 'Flowers_B',
+PLANTS = ['Reed_A', 'Reed_B', 'Bulrush', 'Sedge_A', 'Sedge_B', 'Grass_A', 'Grass_B', 'Grass_Low', 'Lawn_A', 'Lawn_B', 'Flowers_A', 'Flowers_B',
           'LilyPads', 'LilyWhite', 'LilyNuphar']
 FOLDER = '/Game/Plants/Shore'
 only = [n for n in os.environ.get('QUIETLAKE_SHORE', '').split(',') if n]
@@ -21,6 +21,33 @@ floating = unreal.load_asset('/Game/Plants/M_Plant')
 if not grass or not floating:
     raise RuntimeError('M_GrassBlades or M_Plant is missing: run Tools/ImportPlants.py first')
 assets = unreal.AssetToolsHelpers.get_asset_tools()
+
+
+def lawn_material():
+    lib = unreal.MaterialEditingLibrary
+    path = FOLDER + '/M_VillageLawn'
+    if not unreal.EditorAssetLibrary.does_asset_exist(path):
+        if not unreal.EditorAssetLibrary.duplicate_asset('/Game/Plants/M_GrassBlades', path):
+            raise RuntimeError('Could not create the lawn material')
+    mat = unreal.load_asset(path)
+    colour = lib.get_material_property_input_node(mat, unreal.MaterialProperty.MP_BASE_COLOR)
+    colour.set_editor_property('code', 'return C * 1.04 * lerp(0.88, 1.12, frac(sin(dot(O.xy, float2(12.9898, 78.233))) * 43758.5453)) * lerp(1.0, 0.72, Wt);')
+    wind = lib.get_material_property_input_node(mat, unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
+    wind.set_editor_property('code', wind.get_editor_property('code').replace('lerp(3.0, 26.0, W)', 'lerp(0.9, 5.0, W)'))
+    mat.set_editor_property('tangent_space_normal', False)
+    normal = lib.get_material_property_input_node(mat, unreal.MaterialProperty.MP_NORMAL)
+    if normal is None:
+        normal = lib.create_material_expression(mat, unreal.MaterialExpressionConstant3Vector)
+    normal.set_editor_property('constant', unreal.LinearColor(0.0, 0.0, 1.0, 1.0))
+    if not lib.connect_material_property(normal, '', unreal.MaterialProperty.MP_NORMAL):
+        raise RuntimeError('Could not set the lawn normal')
+    lib.recompile_material(mat)
+    if not unreal.EditorAssetLibrary.save_loaded_asset(mat):
+        raise RuntimeError('Could not save the lawn material')
+    return mat
+
+
+lawn = lawn_material() if not only or any(name.startswith('Lawn_') for name in only) else None
 
 for name in PLANTS:
     if only and name not in only:
@@ -47,7 +74,7 @@ for name in PLANTS:
     mesh = unreal.load_asset(path)
     if not mesh:
         raise RuntimeError('Import failed: ' + name)
-    mesh.set_material(0, floating if name.startswith('Lily') else grass)
+    mesh.set_material(0, floating if name.startswith('Lily') else lawn if name.startswith('Lawn_') else grass)
     nanite = mesh.get_editor_property('nanite_settings')
     nanite.set_editor_property('enabled', True)
     mesh.set_editor_property('nanite_settings', nanite)
