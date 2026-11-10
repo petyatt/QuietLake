@@ -5,6 +5,7 @@
 #include "Camera/CameraComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/SceneComponent.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/HUD.h"
@@ -26,22 +27,9 @@ namespace
         return FString::Printf(TEXT("/Game/Village/Lakeside/SM_%s.SM_%s"), Name, Name);
     }
 
-    TArray<FVector2D> SampleLane(const TArray<FVector2D>& Line)
+    FString PlantMesh(const TCHAR* Name)
     {
-        TArray<FVector2D> Samples;
-        for (int32 I = 0; I + 1 < Line.Num(); ++I)
-        {
-            const FVector2D A = Line[FMath::Max(0, I - 1)], B = Line[I], C = Line[I + 1];
-            const FVector2D D = Line[FMath::Min(Line.Num() - 1, I + 2)];
-            const int32 Steps = FMath::Max(1, FMath::CeilToInt(FVector2D::Distance(B, C) / 95.0f));
-            for (int32 K = 0; K < Steps; ++K)
-            {
-                const float T = float(K) / Steps;
-                Samples.Add(FMath::CubicInterp(B, (C - A) * 0.5f, C, (D - B) * 0.5f, T));
-            }
-        }
-        Samples.Add(Line.Last());
-        return Samples;
+        return FString::Printf(TEXT("/Game/Plants/PV/SM_PV_%s.SM_PV_%s"), Name, Name);
     }
 }
 
@@ -66,9 +54,29 @@ void ALakeVillage::Build()
     FRandomStream Random(20261109);
     UMaterialInterface* Road = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Road.M_Road"));
     UMaterialInterface* Footpath = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_Path.M_Path"));
+    UMaterialInterface* Soil = LoadObject<UMaterialInterface>(nullptr,
+        TEXT("/Game/Village/Lakeside/M_GardenSoil.M_GardenSoil"));
+    auto GroundMesh = [this](UMaterialInterface* Material, const TArray<FVector>& Verts, const TArray<int32>& Tris,
+        const TArray<FVector>& Normals, const TArray<FVector2D>& UVs, const TArray<FProcMeshTangent>& Tangents)
+    {
+        auto* Component = NewObject<UProceduralMeshComponent>(this);
+        Component->SetupAttachment(RootComponent);
+        Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        Component->SetCastShadow(false);
+        Component->CreateMeshSection_LinearColor(0, Verts, Tris, Normals, UVs, {}, Tangents, false);
+        Component->SetMaterial(0, Material);
+        AddInstanceComponent(Component);
+        Component->RegisterComponent();
+    };
+    auto Quad = [](TArray<int32>& Tris, int32 Index, int32 Stride)
+    {
+        const int32 A = Index - Stride - 1;
+        const int32 B = A + 1, C = A + Stride, D = C + 1;
+        Tris.Append({ A, B, C, B, D, C });
+    };
     for (const LakeMap::FVillagePath& Path : V.Paths)
     {
-        const TArray<FVector2D> Line = SampleLane(Path.Line);
+        const TArray<FVector2D>& Line = Path.Line;
         constexpr int32 Columns = 7;
         TArray<FVector> Verts, Normals;
         TArray<FVector2D> UVs;
@@ -84,24 +92,14 @@ void ALakeVillage::Build()
             {
                 const float U = float(J) / (Columns - 1);
                 const FVector2D P = Line[I] + Across * ((U - 0.5f) * Path.Width);
-                Verts.Add(FVector(P, Ground(P) + (Path.bRoad ? 5.0f : 7.0f)));
+                Verts.Add(FVector(P, Ground(P) + Path.Height));
                 UVs.Add(FVector2D(U, Distance / 100.0f));
                 Normals.Add(FVector::UpVector);
                 Tangents.Add(FProcMeshTangent(FVector(Across, 0), false));
-                if (I == 0 || J == 0) continue;
-                const int32 A = (I - 1) * Columns + J - 1;
-                const int32 B = A + 1, C = A + Columns, D = C + 1;
-                Tris.Append({ A, B, C, B, D, C });
+                if (I > 0 && J > 0) Quad(Tris, I * Columns + J, Columns);
             }
         }
-        auto* Component = NewObject<UProceduralMeshComponent>(this);
-        Component->SetupAttachment(RootComponent);
-        Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-        Component->SetCastShadow(false);
-        Component->CreateMeshSection_LinearColor(0, Verts, Tris, Normals, UVs, {}, Tangents, false);
-        Component->SetMaterial(0, Path.bRoad ? Road : Footpath);
-        AddInstanceComponent(Component);
-        Component->RegisterComponent();
+        GroundMesh(Path.bRoad ? Road : Footpath, Verts, Tris, Normals, UVs, Tangents);
     }
 
     // Repeated fences, plants and small props use one component per mesh.
@@ -129,6 +127,12 @@ void ALakeVillage::Build()
     {
         if (auto* C = Group(VillageMesh(Name), bCollision))
             C->AddInstance(FTransform(FRotator(0, Yaw, 0), FVector(P, Ground(P) - 3.0f), FVector(Scale)), true);
+    };
+    auto Plant = [&Group, &Random](const TCHAR* Name, const FVector2D& P, float Scale, bool bTree = false)
+    {
+        if (auto* C = Group(PlantMesh(Name), bTree))
+            C->AddInstance(FTransform(FRotator(0, Random.FRandRange(0, 360), 0),
+                FVector(P, Ground(P) - 5.0f), FVector(Scale)), true);
     };
     auto Fence = [&Group](const TCHAR* Name, const FVector2D& A, const FVector2D& B)
     {
@@ -210,55 +214,142 @@ void ALakeVillage::Build()
             Name, P.X, P.Y, High - Low);
     };
 
+    auto Garden = [&](const LakeMap::FVillagePlot& Plot, int32 Index)
+    {
+        const FBox2D Bed = Plot.Garden();
+        const FVector2D Size = Bed.GetSize();
+        const int32 Rows = FMath::FloorToInt(Size.Y / 145.0f);
+        const float Spacing = Size.Y / Rows;
+        const float RowYaw = YawOf(Plot.Facing);
+        auto Height = [&](float Along, float Side)
+        {
+            const float Phase = (Side - Bed.Min.Y) / Spacing;
+            const float Crown = FMath::Square(FMath::Sin(PI * Phase));
+            const float Ends = FMath::SmoothStep(0.0, 55.0, FMath::Min(Along - Bed.Min.X, Bed.Max.X - Along));
+            return Ground(Plot.At(Along, Side)) + 3.0f + 12.0f * Crown * Ends;
+        };
+
+        const int32 Columns = Rows * 8 + 1;
+        const int32 LengthSteps = FMath::CeilToInt(Size.X / 32.0f);
+        TArray<FVector> Verts, Normals;
+        TArray<FVector2D> UVs;
+        TArray<int32> Tris;
+        TArray<FProcMeshTangent> Tangents;
+        for (int32 I = 0; I <= LengthSteps; ++I)
+        {
+            const float Along = FMath::Lerp(Bed.Min.X, Bed.Max.X, float(I) / LengthSteps);
+            for (int32 J = 0; J < Columns; ++J)
+            {
+                const float Side = FMath::Lerp(Bed.Min.Y, Bed.Max.Y, float(J) / (Columns - 1));
+                const float Slope = (Height(Along, Side + 3) - Height(Along, Side - 3)) / 6;
+                const float Grade = (Height(Along + 3, Side) - Height(Along - 3, Side)) / 6;
+                const FVector Tangent(Plot.Across(), Slope);
+                const FVector Forward(Plot.Facing, Grade);
+                Verts.Add(FVector(Plot.At(Along, Side), Height(Along, Side)));
+                Normals.Add(FVector::CrossProduct(Forward, Tangent).GetSafeNormal());
+                UVs.Add(FVector2D(float(J) / 8, (Along - Bed.Min.X) / 100));
+                Tangents.Add(FProcMeshTangent(Tangent.GetSafeNormal(), false));
+                if (I > 0 && J > 0) Quad(Tris, I * Columns + J, Columns);
+            }
+        }
+        GroundMesh(Soil, Verts, Tris, Normals, UVs, Tangents);
+
+        for (int32 Row = 0; Row < Rows; ++Row)
+        {
+            // Some rows have just been sown. The remaining crops sit along the raised soil.
+            if ((Row + Index) % 5 == 3) continue;
+            const bool bBox = Index % 3 == 0 && Row == Rows - 1;
+            auto* Crops = Group(VillageMesh(bBox ? TEXT("Vegetables") : TEXT("GardenCrops")), false);
+            if (!Crops) continue;
+            const FVector SizeCm = Crops->GetStaticMesh()->GetBounds().BoxExtent * 2.0f;
+            const float Side = Bed.Min.Y + (Row + 0.5f) * Spacing;
+            const int32 Count = FMath::Max(1, FMath::FloorToInt(Size.X / 230.0f));
+            const float Pitch = Size.X / Count;
+            for (int32 I = 0; I < Count; ++I)
+            {
+                const float Along = Bed.Min.X + (I + 0.5f) * Pitch + Random.FRandRange(-16, 16);
+                const float HeightScale = Random.FRandRange(0.75f, 1.05f) * (bBox ? 0.48f : 1.0f);
+                const FVector Scale(0.84f * Pitch / SizeCm.X, 0.71f * Spacing / SizeCm.Y, HeightScale);
+                Crops->AddInstance(FTransform(FRotator(0, RowYaw + Random.FRandRange(-8, 8) + (I % 2) * 180, 0),
+                    FVector(Plot.At(Along, Side), Height(Along, Side) - 4), Scale), true);
+            }
+        }
+    };
+
     const TCHAR* Sheds[] = { TEXT("PlankShed"), TEXT("LeanTo"), TEXT("LowShed"), TEXT("WoodShed") };
     for (int32 I = 0; I < V.Plots.Num(); ++I)
     {
         const LakeMap::FVillagePlot& Plot = V.Plots[I];
         const FVector2D F = Plot.Facing;
-        const FVector2D Side(-F.Y, F.X);
         const float Yaw = YawOf(F);
-        auto At = [&](float Ahead, float Across) { return Plot.House + F * Ahead + Side * Across; };
-        const FString Name = Plot.bShop ? TEXT("Shop") : FString::Printf(TEXT("House%02d"), I + 1);
-        Building(*Name, Plot.House, Yaw - 90.0f, FVector(1.0f, 1.0f, Plot.bShop ? 0.80f : 0.79f));
-        Prop(TEXT("Flowers"), At(410, 350), Yaw, 0.85f);
-        Prop(TEXT("FlowerBush"), At(200, -490), Yaw + 12, 0.9f);
-        if (Plot.bShop)
+        auto At = [&](float Ahead, float Across) { return Plot.At(Ahead, Across); };
+        const FString Name = Plot.IsShop() ? TEXT("Shop") : FString::Printf(TEXT("House%02d"), Plot.HouseVariant);
+        const float Scale = I == 8 ? 0.92f : I == 9 ? 0.88f : 1.0f;
+        Building(*Name, Plot.House, Yaw - 90.0f, FVector(Scale, Scale, 0.79f * Scale));
+        Prop(TEXT("Flowers"), At(Plot.Front - 210, 330), Yaw, 0.85f);
+        Prop(TEXT("FlowerBush"), At(Plot.Front - 270, -455), Yaw + 12, 0.9f);
+        if (Plot.IsShop())
         {
-            Building(TEXT("WoodShed"), At(-110, 560), Yaw - 70, FVector(0.36f));
-            Fence(TEXT("RailFence"), At(180, 720), At(-520, 720));
+            Building(TEXT("WoodShed"), At(-620, 560), Yaw - 70, FVector(0.46f));
+            Fence(TEXT("RailFence"), At(260, 810), At(-850, 810));
+            Plant(TEXT("Alder_A"), At(-720, -640), 0.36f, true);
+            Plant(TEXT("Shrub_B"), At(380, 640), 0.29f);
             continue;
         }
 
         const float W = Plot.HalfWidth;
         const FVector2D FL = At(Plot.Front, -W), FR = At(Plot.Front, W);
         const FVector2D BL = At(-Plot.Back, -W), BR = At(-Plot.Back, W);
-        Fence(TEXT("Fence"), FL, At(Plot.Front, -115));
-        Fence(TEXT("Fence"), At(Plot.Front, 115), FR);
+        Fence(TEXT("Fence"), FL, At(Plot.Front, -145));
+        Fence(TEXT("Fence"), At(Plot.Front, 145), FR);
         Fence(TEXT("RailFence"), BL, BR);
         Fence(TEXT("Fence"), FL, BL);
         Fence(TEXT("RailFence"), FR, BR);
-        if (I % 2 == 0)
-            Prop(TEXT("Gate"), At(Plot.Front - 65, -100), Yaw + 10.0f, 0.86f, true);
-        for (int32 Row = 0; Row < 3; ++Row)
-            Prop(TEXT("Vegetables"), At(-Plot.Back + 200 + Row * 155, W - 290), Yaw + 90, 0.96f);
-        if (I != 5)
+        Garden(Plot, I);
+        const int32 Kind = I % UE_ARRAY_COUNT(Sheds);
+        Building(Sheds[Kind], Plot.Shed(), Yaw - 90, FVector(Kind == 3 ? 0.38f : 0.90f));
+        if (I % 3 != 1 && Plot.Back > 1200)
+            Prop(TEXT("Clothesline"), At(-Plot.Back + 170, -210), Yaw, 0.95f);
+
+        Plant(I % 2 ? TEXT("Birch_A") : TEXT("Alder_A"), At(Plot.Front - 425, W - 280),
+            Random.FRandRange(0.31f, 0.40f), true);
+        Plant(TEXT("Shrub_A"), At(Plot.Front - 275, -W + 135), 0.31f);
+        Plant(TEXT("Shrub_B"), At(-Plot.Back + 105, -W + 105), 0.23f);
+        for (float Along = 20; Along < Plot.Front - 360; Along += 300)
         {
-            const FVector2D Shed = At(-Plot.Back + 225, -W + 215);
-            const int32 Kind = I % UE_ARRAY_COUNT(Sheds);
-            Building(Sheds[Kind], Shed, Yaw - 90, FVector(Kind == 3 ? 0.36f : 0.94f));
+            const float Side = (I % 2 ? -1 : 1) * (W - 140);
+            Prop(TEXT("Flowers"), At(Along, Side), Yaw + Random.FRandRange(-30, 30), 0.54f);
         }
-        if (I % 3 != 1)
-            Prop(TEXT("Clothesline"), At(-Plot.Back + 230, 95), Yaw + 75, 1.05f);
-        if (I % 3 != 0)
+    }
+
+    // Irregular verge planting stays away from junctions, gates, and the fenced lots.
+    TArray<FVector2D> VergePlants;
+    for (const LakeMap::FVillagePath& Path : V.Paths)
+    {
+        if (!Path.bRoad) continue;
+        for (int32 I = 5; I + 5 < Path.Line.Num(); I += 6)
         {
-            if (auto* Birch = Group(TEXT("/Game/Plants/PV/SM_PV_Birch_A.SM_PV_Birch_A"), false))
+            const FVector2D Direction = (Path.Line[I + 1] - Path.Line[I - 1]).GetSafeNormal();
+            const FVector2D Across(-Direction.Y, Direction.X);
+            for (float Sign : { -1.0f, 1.0f })
             {
-                const FVector2D P = At(-Plot.Back + 125, W - 125);
-                Birch->AddInstance(FTransform(FRotator(0, Random.FRandRange(0, 360), 0), FVector(P, Ground(P)),
-                    FVector(Random.FRandRange(0.34f, 0.50f))), true);
+                if (Random.FRand() < 0.26f) continue;
+                const FVector2D P = Path.Line[I] + Across * (Sign * (Path.Width * 0.5f + Random.FRandRange(145, 310)));
+                if (P.X < -3800 || P.Y > 18800 || LakeMap::VillageYard(P, 155)
+                    || LakeMap::VillagePaved(P, 90) || LakeMap::ShoreDistance(P.X, P.Y) > -550) continue;
+                if (VergePlants.ContainsByPredicate([&P](const FVector2D& Other) { return FVector2D::DistSquared(P, Other) < FMath::Square(405.0f); }))
+                    continue;
+                VergePlants.Add(P);
+                if (Random.FRand() < 0.22f && !LakeMap::VillageYard(P, 380) && !LakeMap::VillagePaved(P, 215))
+                    Plant(TEXT("Birch_B"), P, Random.FRandRange(0.27f, 0.40f), true);
+                Prop(TEXT("Flowers"), P + Across * (Sign * 55), Random.FRandRange(0, 360), 0.42f);
             }
         }
     }
+    Plant(TEXT("Birch_A"), { 9510, 6670 }, 0.49f, true);
+    Plant(TEXT("Birch_B"), { 9900, 6900 }, 0.39f, true);
+    Plant(TEXT("Shrub_A"), { 9100, 6510 }, 0.41f);
+    Plant(TEXT("Shrub_B"), { 9290, 6350 }, 0.34f);
 
     // The narrow bank beyond the inlet holds gardens and sheds, with open access to the water.
     const FVector2D WoodLot(-8500, 15650), Cabin(-13450, 16000);
@@ -331,13 +422,46 @@ void ALakeVillage::RunPreview()
     const auto& Shop = V.Plots.Last();
     if (FParse::Param(FCommandLine::Get(), TEXT("VillageLawnPreview")))
     {
-        const FVector2D Eye(5080, 5480), Target(5820, 6550);
+        const auto& Yard = V.Plots[1];
+        const FVector2D Eye = Yard.At(-Yard.Back + 95, -25), Target = Yard.At(-680, 335);
         Shot(TEXT("VillageLawn_Ground.png"), FVector(Eye, Ground(Eye) + 165),
             FVector(Target, Ground(Target) + 70), 69, 4);
-        const FVector2D RoadEye(7150, 11250), RoadTarget(9250, 14500);
+        const FVector2D RoadEye(11290, 7480), RoadTarget(11260, 10800);
         Shot(TEXT("VillageLawn_Road.png"), FVector(RoadEye, Ground(RoadEye) + 165),
             FVector(RoadTarget, Ground(RoadTarget) + 60), 71, 8);
-        Shot(TEXT("VillageLawn_Overview.png"), FVector(4200, -9100, 13400), FVector(1500, 10300, 220), 74, 12);
+        Shot(TEXT("VillageLawn_Overview.png"), FVector(6400, -5850, 14500), FVector(6400, 11500, 220), 67, 12);
+        FTimerHandle Check;
+        GetWorldTimerManager().SetTimer(Check, [this]
+        {
+            const auto& Village = LakeMap::Village();
+            int32 Checked = 0, Blocked = 0, Wet = 0;
+            for (const auto& Path : Village.Paths)
+            {
+                // Skip the last few steps onto each porch.
+                for (int32 I = 1; I + (Path.bRoad ? 0 : 4) < Path.Line.Num(); ++I)
+                {
+                    const FVector2D& P = Path.Line[I];
+                    ++Checked;
+                    if (LakeMap::IsWater(P.X, P.Y)) ++Wet;
+                    TArray<FOverlapResult> Hits;
+                    if (GetWorld()->OverlapMultiByChannel(Hits, FVector(P, Ground(P) + 94), FQuat::Identity,
+                        ECC_Pawn, FCollisionShape::MakeCapsule(34, 64)))
+                    {
+                        ++Blocked;
+                        for (const auto& Hit : Hits)
+                        {
+                            if (!Hit.bBlockingHit) continue;
+                            const auto* Mesh = Cast<UStaticMeshComponent>(Hit.GetComponent());
+                            UE_LOG(LogTemp, Warning, TEXT("QUIET_LAKE_LAKESIDE blocked path at %.0f %.0f by %s / %s"),
+                                P.X, P.Y, *GetNameSafe(Hit.GetActor()),
+                                Mesh ? *GetNameSafe(Mesh->GetStaticMesh()) : *GetNameSafe(Hit.GetComponent()));
+                        }
+                    }
+                }
+            }
+            UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LAKESIDE checked %d path points, %d blocked, %d underwater"),
+                Checked, Blocked, Wet);
+        }, 3.0f, false);
         FTimerHandle Exit;
         GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 16.0f, false);
         return;
@@ -376,8 +500,7 @@ void ALakeVillage::RunPreview()
         Porch(6, TEXT("LakesideVillage_PorchRepair.png"), 4, -210);
         Porch(5, TEXT("LakesideVillage_FoundationRepair.png"), 8, 465);
         Porch(0, TEXT("LakesideVillage_HouseDetail.png"), 12, -440);
-        const FVector2D Shed = V.Plots[0].House - V.Plots[0].Facing * (V.Plots[0].Back - 225)
-            + FVector2D(-V.Plots[0].Facing.Y, V.Plots[0].Facing.X) * (215 - V.Plots[0].HalfWidth);
+        const FVector2D Shed = V.Plots[0].Shed();
         const FVector2D Eye = Shed - V.Plots[0].Facing * 400 + FVector2D(90, 210);
         Shot(TEXT("LakesideVillage_ShedDetail.png"), FVector(Eye, Ground(Eye) + 160), FVector(Shed, Ground(Shed) + 130), 65, 16);
         FTimerHandle Exit;

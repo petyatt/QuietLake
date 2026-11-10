@@ -277,24 +277,27 @@ def instance_counts(core):
     return counts
 
 
-def clear_village_lawn_paths(core):
-    """The biome texture is filtered at its edges. Enforce the actual path mask before saving."""
-    grass_names = {'SM_Lawn_A', 'SM_Lawn_B', 'SM_Grass_A', 'SM_Grass_B', 'SM_Flowers_A', 'SM_Flowers_B'}
+def clear_village_planting(core):
+    """Keep generated plants out of the precise street and garden layout before baking."""
+    tall_prefixes = ('SM_PV_', 'SM_Reed', 'SM_Bulrush', 'SM_Sedge')
     rect = BL.village_lawn_map_rect()
     removed = 0
     for component in core.get_components_by_class(unreal.InstancedStaticMeshComponent):
         mesh = component.get_editor_property('static_mesh')
-        if not mesh or mesh.get_name() not in grass_names:
+        if not mesh:
             continue
+        tall = mesh.get_name().startswith(tall_prefixes)
         blocked = []
         for i in range(component.get_instance_count()):
             p = component.get_instance_transform(i, True).translation
-            if rect.x <= p.x <= rect.z and rect.y <= p.y <= rect.w and BL.clearing_at(p.x, p.y):
+            if not (rect.x - 1000 <= p.x <= rect.z + 2200 and rect.y <= p.y <= rect.w + 2200):
+                continue
+            if BL.village_plant_blocked(p.x, p.y, tall) or (not tall and BL.clearing_at(p.x, p.y)):
                 blocked.append(i)
         if blocked and not component.remove_instances(blocked):
             raise RuntimeError('could not clear grass from the village paths')
         removed += len(blocked)
-    log('trimmed %d grass instances from village paths and clearings' % removed)
+    log('trimmed %d generated plants from the village clearings' % removed)
 
 
 def check(core):
@@ -396,7 +399,7 @@ def tick(delta):
                 log('generating: %d instances after %d frames' % (total, frames))
             if state['still'] >= 5 or frames > 36000:
                 if 'VillageLawn' in BIOMES:
-                    clear_village_lawn_paths(state['core'])
+                    clear_village_planting(state['core'])
                     counts = instance_counts(state['core'])
                     total = sum(counts.values())
                 for mesh, n in sorted(counts.items()):

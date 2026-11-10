@@ -50,7 +50,9 @@ namespace
 
     float VillageLawnCover(const FVector2D& P, float Inland, float Forest)
     {
-        if (!VillageLawnBounds.IsInside(P) || Inland <= 0 || Forest >= 0.25f) return 0.0f;
+        if (!VillageLawnBounds.IsInside(P) || Inland <= 0) return 0.0f;
+        if (LakeMap::VillageYard(P)) return S(150, 450, Inland);
+        if (Forest >= 0.25f) return 0.0f;
         const auto MeadowPatch = [&P](const FVector2D& Centre, const FVector2D& Radii)
         {
             const FVector2D Offset = P - Centre;
@@ -62,19 +64,16 @@ namespace
         const LakeMap::FVillage& Village = LakeMap::Village();
         for (const auto& Plot : Village.Plots)
         {
-            const FVector2D Offset = P - Plot.House;
-            const float Along = FVector2D::DotProduct(Offset, Plot.Facing);
-            const float Across = FMath::Abs(FVector2D::CrossProduct(Plot.Facing, Offset));
-            const float Outside = FMath::Max3(Along - Plot.Front, -Along - Plot.Back, Across - Plot.HalfWidth);
+            const FVector2D Local = Plot.Local(P);
+            const float Outside = FMath::Max3(Local.X - Plot.Front, -Local.X - Plot.Back, FMath::Abs(Local.Y) - Plot.HalfWidth);
             Cover = FMath::Max(Cover, 1.0f - S(100, 1100, Outside));
         }
         for (const auto& Path : Village.Paths)
-            for (int32 I = 0; I + 1 < Path.Line.Num(); ++I)
-            {
-                const float Shoulder = Path.bRoad && P.X < -2500 ? 480.0f : 680.0f;
-                const float Distance = SegmentDistance(P, Path.Line[I], Path.Line[I + 1]);
-                Cover = FMath::Max(Cover, 1.0f - S(Path.Width * 0.5f + Shoulder, Path.Width * 0.5f + Shoulder + 980, Distance));
-            }
+        {
+            const float Shoulder = Path.Width * 0.5f + (Path.bRoad && P.X < -2500 ? 480.0f : 680.0f);
+            const float Distance = Path.DistanceTo(P, Shoulder + 980);
+            Cover = FMath::Max(Cover, 1.0f - S(Shoulder, Shoulder + 980, Distance));
+        }
 
         const LakeMap::FPier& Pier = LakeMap::Pier();
         const float Approach = 1.0f - S(550, 1100, SegmentDistance(P, Pier.Root, Pier.Root - Pier.Dir * 1850));
@@ -136,6 +135,7 @@ namespace
         const float Gy = LakeMap::Ground(P.X, P.Y + 100) - LakeMap::Ground(P.X, P.Y - 100);
         if (FMath::Sqrt(Gx * Gx + Gy * Gy) / 200 > 1.0f) return Nothing;
         const float Inland = -SD;
+        if (VillageLawnBounds.ExpandBy(2200).IsInside(P) && LakeMap::VillageYard(P)) return VillageLawn;
         if (Inland < 250 && bLowBank && 0.5f + 0.4f * Noise(P + FVector2D(700, 0), 1800) + 0.4f * Back - 0.2f * Forest > 0.45f) return Reed;
         if (Forest > 0.8f)
         {
@@ -211,6 +211,12 @@ FVector4 ULakeBiomeLibrary::BiomeMapRect(bool bShore)
 FVector4 ULakeBiomeLibrary::VillageLawnMapRect()
 {
     return FVector4(VillageLawnBounds.Min.X, VillageLawnBounds.Min.Y, VillageLawnBounds.Max.X, VillageLawnBounds.Max.Y);
+}
+
+bool ULakeBiomeLibrary::VillagePlantBlocked(float X, float Y, bool bTall)
+{
+    const FVector2D P(X, Y);
+    return LakeMap::VillagePaved(P, bTall ? 245.0f : 45.0f) || (bTall && LakeMap::VillageYard(P, 165.0f));
 }
 
 FString ULakeBiomeLibrary::BuildBiomeMap(const FString& PackagePath, FVector4 Rect, int32 Width, int32 Height, bool bLawnCoverage)

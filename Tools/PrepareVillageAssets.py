@@ -7,6 +7,7 @@ QUIETLAKE_VILLAGE_TEXTURES_ONLY=1 extracts textures without preparing FBX meshes
 import math
 import os
 import shutil
+from array import array
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
@@ -91,6 +92,58 @@ def extend_pier_piles(obj, size):
             vertex.co.z = under_deck + (vertex.co.z - under_deck) * stretch
         vertex.co.z -= deck.z
     obj.data.update()
+
+
+def export_garden_crops(obj, out):
+    """Reuse the leaf geometry and UVs of Vegetables for rows planted directly in the ground."""
+    image = bpy.data.images.load(str(out / 'Base.png'), check_existing=False)
+    width, height = image.size
+    pixels = array('f', [0]) * (4 * width * height)
+    image.pixels.foreach_get(pixels)
+    bpy.data.images.remove(image)
+
+    crop = obj.copy()
+    crop.data = obj.data.copy()
+    bpy.context.collection.objects.link(crop)
+    crop.data.transform(crop.matrix_world)
+    crop.matrix_world = Matrix.Identity(4)
+    mesh = bmesh.new()
+    mesh.from_mesh(crop.data)
+    uv_layer = mesh.loops.layers.uv.active
+
+    def is_plant(face):
+        z = face.calc_center_median().z
+        if z < 0.49:
+            return False
+        if z > 0.66:
+            return True
+        uv = sum((loop[uv_layer].uv for loop in face.loops), Vector((0, 0))) / len(face.loops)
+        i = 4 * ((int(uv.x * width) % width) + (int(uv.y * height) % height) * width)
+        r, g, b = pixels[i:i + 3]
+        return g > 0.13 and g > 1.10 * r and g > 1.35 * b
+
+    bmesh.ops.delete(mesh, geom=[f for f in mesh.faces if not is_plant(f)], context='FACES')
+    bmesh.ops.delete(mesh, geom=[v for v in mesh.verts if not v.link_faces], context='VERTS')
+    if not mesh.faces:
+        raise RuntimeError('No crops extracted from Vegetables')
+    for vertex in mesh.verts:
+        vertex.co.z -= 0.49
+    mesh.to_mesh(crop.data)
+    mesh.free()
+    bpy.ops.object.select_all(action='DESELECT')
+    crop.select_set(True)
+    bpy.context.view_layer.objects.active = crop
+    crop.data.calc_loop_triangles()
+    if len(crop.data.loop_triangles) > 5000:
+        modifier = crop.modifiers.new('CropsBudget', 'DECIMATE')
+        modifier.ratio = 5000 / len(crop.data.loop_triangles)
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+    dst = out.parent / 'GardenCrops'
+    dst.mkdir(exist_ok=True)
+    bpy.ops.export_scene.fbx(filepath=str(dst / 'SM_GardenCrops.fbx'), use_selection=True,
+                             object_types={'MESH'}, mesh_smooth_type='FACE',
+                             axis_forward='-Y', axis_up='Z', bake_space_transform=True)
+    bpy.data.objects.remove(crop, do_unlink=True)
 
 
 def prepare(name, archive, out, length, budget, resolution, textures_only):
@@ -182,6 +235,8 @@ def prepare(name, archive, out, length, budget, resolution, textures_only):
     bpy.ops.export_scene.fbx(filepath=str(out / ('SM_' + name + '.fbx')), use_selection=True,
                              object_types={'MESH'}, mesh_smooth_type='EDGE' if architectural else 'FACE',
                              axis_forward='-Y', axis_up='Z', bake_space_transform=True)
+    if name == 'Vegetables':
+        export_garden_crops(obj, out)
     print(f'VILLAGE_PREPARED {name} {original} -> {len(obj.data.loop_triangles)} tris, '
           f'dimensions {tuple(round(x * scale, 2) for x in size)} m', flush=True)
 

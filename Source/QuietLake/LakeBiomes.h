@@ -37,6 +37,8 @@ public:
     static FVector4 BiomeMapRect(bool bShore = false);
     UFUNCTION(BlueprintCallable, Category = "Lake|Biomes")
     static FVector4 VillageLawnMapRect();
+    UFUNCTION(BlueprintCallable, Category = "Lake|Biomes")
+    static bool VillagePlantBlocked(float X, float Y, bool bTall);
 
     /** Paints the biomes over Rect (Width x Height, row 0 at min Y, column 0 at min X) into the texture
      *  asset at PackagePath (created or replaced; uncompressed, no mips, nearest filtering) and into

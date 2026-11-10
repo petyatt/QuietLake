@@ -105,7 +105,10 @@ def import_mesh(name, source):
     if building:
         settings.set_editor_property('normal_import_method', unreal.FBXNormalImportMethod.FBXNIM_IMPORT_NORMALS)
     mesh = import_asset(source / f'SM_{name}.fbx', 'SM_' + name, folder, options)
-    surface = make_material(name, source)
+    surface = (unreal.load_asset(folder + '/M_Vegetables') if name == 'GardenCrops'
+               else make_material(name, source))
+    if not surface:
+        raise RuntimeError(f'{name}: import Vegetables first')
     for index, _ in enumerate(mesh.get_editor_property('static_materials')):
         mesh.set_material(index, surface)
     reduction = unreal.StaticMeshReductionOptions()
@@ -137,7 +140,7 @@ def main():
                if (path / ('Base.png' if textures_only else 'SM_' + path.name + '.fbx')).is_file()}
     if not sources or only - sources.keys():
         raise RuntimeError(f'Missing prepared assets: {only - sources.keys()}')
-    for name in sorted(only or sources):
+    for name in sorted(only or sources, key=lambda name: (name == 'GardenCrops', name)):
         (refresh_textures if textures_only else import_mesh)(name, sources[name])
     result = 'TEXTURES' if textures_only else 'ASSETS'
     unreal.log(f'QUIET_LAKE_LAKESIDE_{result}_READY {len(only or sources)}')

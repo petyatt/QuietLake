@@ -91,13 +91,29 @@ namespace LakeMap
         float HalfWidth;
         float Front;
         float Back;
-        bool bShop;
+        int32 HouseVariant; // Zero is the village shop.
+
+        bool IsShop() const { return HouseVariant == 0; }
+        FVector2D Across() const { return FVector2D(-Facing.Y, Facing.X); }
+        FVector2D At(float Along, float Side) const { return House + Facing * Along + Across() * Side; }
+        FVector2D Local(const FVector2D& P) const
+        {
+            const FVector2D Offset = P - House;
+            return FVector2D(FVector2D::DotProduct(Offset, Facing), FVector2D::CrossProduct(Facing, Offset));
+        }
+        FBox2D Lot() const { return FBox2D(FVector2D(-Back, -HalfWidth), FVector2D(Front, HalfWidth)); }
+        FBox2D Garden() const { return FBox2D(FVector2D(155.0f - Back, 35), FVector2D(-485, HalfWidth - 145.0f)); }
+        FVector2D Shed() const { return At(275.0f - Back, 250.0f - HalfWidth); }
     };
     struct FVillagePath
     {
         TArray<FVector2D> Line;
+        FBox2D Bounds;
         float Width;
         bool bRoad;
+        float Height;
+
+        float DistanceTo(const FVector2D& P, float Limit) const;
     };
     struct FVillage
     {
@@ -105,8 +121,9 @@ namespace LakeMap
         TArray<FVillagePath> Paths;
     };
     QUIETLAKE_API const FVillage& Village();
-    /** True on the village's paths and under its buildings. */
-    QUIETLAKE_API bool VillagePaved(const FVector2D& P);
+    /** True on the village's paths, garden beds and under its buildings. */
+    QUIETLAKE_API bool VillagePaved(const FVector2D& P, float PathMargin = 45.0f);
+    QUIETLAKE_API bool VillageYard(const FVector2D& P, float Margin = 0);
     /** The far end of the little bay at the west end, and a point beyond the rounded west end where the outflow leaves (its bank is the nearest shore). */
     QUIETLAKE_API FVector2D WestBay();
     QUIETLAKE_API FVector2D WestEnd();

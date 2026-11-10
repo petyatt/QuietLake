@@ -6,6 +6,7 @@ M_Road - a forest dirt road: two muddy wheel ruts, a strip of grass between them
 M_Path - a footpath: bare trodden earth fading into the grass at its ragged edges.
 Textures: the Megascans surfaces already used by the terrain (forest floor, uncut grass).
 """
+import os
 import unreal
 
 lib = unreal.MaterialEditingLibrary
@@ -142,17 +143,52 @@ return lerp(earth, mud, rut * 0.9);""", [('UV', uv), ('P', wp), ('F', smp['FB'])
     unreal.EditorAssetLibrary.save_asset(path)
 
 
-build_street('M_VillageRoad')
-# Road: ruts at a quarter of the width from each side, grass in the middle, earth between.
-build('M_Road', """
+def build_garden():
+    folder = '/Game/Village/Lakeside'
+    name = 'M_GardenSoil'
+    mat = unreal.load_asset(folder + '/' + name) if unreal.EditorAssetLibrary.does_asset_exist(folder + '/' + name) else None
+    if mat:
+        lib.delete_all_material_expressions(mat)
+    else:
+        mat = assets.create_asset(name, folder, unreal.Material, unreal.MaterialFactoryNew())
+    wp = node(mat, unreal.MaterialExpressionWorldPosition)
+    uv = node(mat, unreal.MaterialExpressionTextureCoordinate)
+    tex_dir, tex_id, _ = LAYERS['F']
+    coords = custom(mat, 'return P.xy / 76.0;', [('P', wp)], unreal.CustomMaterialOutputType.CMOT_FLOAT2)
+    samples = {}
+    for suffix in ('B', 'N'):
+        tex = unreal.load_asset('%sT_%s_4K_%s' % (tex_dir, tex_id, suffix))
+        samples[suffix] = node(mat, unreal.MaterialExpressionTextureSample, texture=tex, sampler_type=sampler_for(tex))
+        connect(coords, '', samples[suffix], 'UVs')
+    colour = custom(mat, """
+float grain = dot(F, float3(0.3, 0.59, 0.11));
+float ridge = pow(sin(3.141593 * frac(UV.x)), 2.0);
+return float3(0.165, 0.102, 0.057) * (0.48 + 2.0 * grain) * lerp(0.67, 1.15, ridge);
+""", [('F', samples['B']), ('UV', uv)])
+    roughness = node(mat, unreal.MaterialExpressionConstant, r=0.89)
+    for src, prop in ((colour, unreal.MaterialProperty.MP_BASE_COLOR), (samples['N'], unreal.MaterialProperty.MP_NORMAL),
+                      (roughness, unreal.MaterialProperty.MP_ROUGHNESS)):
+        if not lib.connect_material_property(src, '', prop):
+            raise RuntimeError('Cannot connect %s' % prop)
+    lib.recompile_material(mat)
+    if not unreal.EditorAssetLibrary.save_loaded_asset(mat, only_if_is_dirty=False):
+        raise RuntimeError('Cannot save ' + name)
+
+
+if os.environ.get('QUIETLAKE_GARDEN_ONLY') == '1':
+    build_garden()
+else:
+    build_street('M_VillageRoad')
+    # Road: ruts at a quarter of the width from each side, grass in the middle, earth between.
+    build('M_Road', """
 float u = UV.x;
 float wob = sin(P.x * 0.013 + P.y * 0.011) * 0.025;
 float rut = max(1.0 - smoothstep(0.05, 0.11, abs(u - 0.27 - wob)), 1.0 - smoothstep(0.05, 0.11, abs(u - 0.73 - wob)));
 float grass = (1.0 - smoothstep(0.06, 0.12, abs(u - 0.5 - wob))) + smoothstep(0.38, 0.47, abs(u - 0.5)) * 0.8;
 float earth = saturate(1.0 - rut - grass) + 0.05;
 return float3(rut, saturate(grass) * (1.0 - rut), earth);""", 0.16)
-# Path: trodden earth in the middle, thinning grass at the sides.
-build('M_Path', """
+    # Path: trodden earth in the middle, thinning grass at the sides.
+    build('M_Path', """
 float u = abs(UV.x - 0.5) * 2.0;
 float grass = smoothstep(0.35, 0.95, u);
 return float3(0.15 * (1.0 - u), grass, 1.0 - grass);""", 0.3)

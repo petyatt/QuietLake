@@ -811,22 +811,36 @@ FVector2D LakeMap::OldBoat(float* OutYaw)
 }
 FVector2D LakeMap::VillageCentre() { return GVillage; }
 
-bool LakeMap::VillagePaved(const FVector2D& P)
+float LakeMap::FVillagePath::DistanceTo(const FVector2D& P, float Limit) const
+{
+    if (!Bounds.ExpandBy(Limit).IsInside(P)) return Limit;
+    float Distance = Limit;
+    for (int32 I = 0; I + 1 < Line.Num(); ++I)
+        Distance = FMath::Min(Distance, SegmentDistance(P, Line[I], Line[I + 1]));
+    return Distance;
+}
+
+bool LakeMap::VillageYard(const FVector2D& P, float Margin)
+{
+    for (const FVillagePlot& Plot : Village().Plots)
+        if (Plot.Lot().ExpandBy(Margin).IsInside(Plot.Local(P))) return true;
+    return false;
+}
+
+bool LakeMap::VillagePaved(const FVector2D& P, float PathMargin)
 {
     const FVillage& V = Village();
     for (const FVillagePath& Path : V.Paths)
-        for (int32 I = 0; I + 1 < Path.Line.Num(); ++I)
-            if (SegmentDistance(P, Path.Line[I], Path.Line[I + 1]) < Path.Width * 0.5f + 70.0f) return true;
+    {
+        const float Edge = Path.Width * 0.5f + PathMargin;
+        if (Path.DistanceTo(P, Edge) < Edge) return true;
+    }
 
     for (const FVillagePlot& Plot : V.Plots)
     {
-        const FVector2D Offset = P - Plot.House;
-        const float Along = FVector2D::DotProduct(Offset, Plot.Facing);
-        const float Across = FVector2D::CrossProduct(Plot.Facing, Offset);
-        if (FMath::Abs(Along) < 460.0f && FMath::Abs(Across) < 540.0f) return true;
-        // Three beds behind each house, positioned as in ALakeVillage::Build.
-        if (!Plot.bShop && Along > 65.0f - Plot.Back && Along < 645.0f - Plot.Back
-            && FMath::Abs(Across - (Plot.HalfWidth - 290.0f)) < 173.0f) return true;
+        const FVector2D Local = Plot.Local(P);
+        if (FMath::Abs(Local.X) < 490.0f && FMath::Abs(Local.Y) < 540.0f) return true;
+        if (!Plot.IsShop() && (Plot.Garden().ExpandBy(27).IsInside(Local) || FVector2D::Distance(P, Plot.Shed()) < 190)) return true;
     }
     // Kitchen beds by the small cabin beyond the inlet.
     if (P.X > -13120 && P.X < -12230 && FMath::Abs(P.Y - 15830.0f) < 150.0f) return true;
@@ -841,31 +855,79 @@ const FVillage& LakeMap::Village()
         const FPier& Pier = LakeMap::Pier();
         const FVector2D ShorePath = Pier.Root - Pier.Dir * 240.0f;
 
-        // The lane comes out of the woods, then bends along the far side of the inlet.
-        V.Paths.Add({ { At(111, 185), At(107, 168), At(98, 153), At(86, 141),
+        // Reuse the same sampled curves for the road surface, entrances and vegetation.
+        auto AddPath = [&V](const TArray<FVector2D>& Controls, float Width, bool bRoad, float Height)
+        {
+            FVillagePath& Path = V.Paths.Add_GetRef({ {}, FBox2D(ForceInit), Width, bRoad, Height });
+            for (int32 I = 0; I + 1 < Controls.Num(); ++I)
+            {
+                const FVector2D& A = Controls[FMath::Max(0, I - 1)];
+                const FVector2D& B = Controls[I];
+                const FVector2D& C = Controls[I + 1];
+                const FVector2D& D = Controls[FMath::Min(Controls.Num() - 1, I + 2)];
+                const int32 Steps = FMath::Max(1, FMath::CeilToInt(FVector2D::Distance(B, C) / 95.0f));
+                for (int32 K = 0; K < Steps; ++K)
+                    Path.Line.Add(FMath::CubicInterp(B, (C - A) * 0.5f, C, (D - B) * 0.5f, float(K) / Steps));
+            }
+            Path.Line.Add(Controls.Last());
+            for (const FVector2D& P : Path.Line) Path.Bounds += P;
+        };
+
+        auto StreetPoint = [&V](int32 Road, const FVector2D& P)
+        {
+            FVector2D Street = P;
+            float Best = TNumericLimits<float>::Max();
+            const TArray<FVector2D>& Lane = V.Paths[Road].Line;
+            for (int32 I = 0; I + 1 < Lane.Num(); ++I)
+            {
+                float T;
+                const float Distance = SegmentDistance(P, Lane[I], Lane[I + 1], &T);
+                if (Distance < Best)
+                {
+                    Best = Distance;
+                    Street = FMath::Lerp(Lane[I], Lane[I + 1], T);
+                }
+            }
+            return Street;
+        };
+
+        // The main street bends above the inlet. The loop serves the outer row of houses.
+        const FVector2D UpperJunction = At(111, 185);
+        AddPath({ At(111, 218), At(110, 202), UpperJunction, At(107, 168), At(98, 153), At(86, 141),
             At(78, 128), At(69, 114), At(57, 103), At(42, 93), At(25, 90),
-            At(5, 94), At(-15, 101), At(-36, 114), At(-57, 131), At(-79, 145),
-            At(-104, 152), At(-129, 153), At(-151, 155) }, 470.0f, true });
-        V.Paths.Add({ { At(42, 93), At(38, 79), At(34, 66), At(29, 55), At(26, 42), ShorePath }, 245.0f, false });
-        V.Paths.Add({ { At(34, 66), At(48, 57), At(63, 52), At(80, 48), At(99, 50) }, 180.0f, false });
+            At(13, 92.5f), At(5, 94), At(-15, 101), At(-36, 114), At(-57, 131), At(-79, 145),
+            At(-104, 152), At(-129, 153), At(-151, 155) }, 470, true, 8);
+        AddPath({ UpperJunction, At(125, 176), At(137, 165), At(135, 150), At(127, 135),
+            At(119, 124), At(113, 114), At(112, 101), At(114, 85), At(114, 71), At(110, 58),
+            At(99, 51), At(82, 48.5f), At(65, 50), At(49, 55), At(34, 66),
+            At(27, 76), At(20, 85), At(13, 92.5f) }, 410, true, 6);
+        AddPath({ At(42, 93), At(38, 79), At(34, 66) }, 360, true, 4);
+        AddPath({ At(34, 66), At(29, 55), At(26, 42), ShorePath }, 245, false, 3);
+        const int32 BackLane = V.Paths.Num();
+        AddPath({ UpperJunction, At(99, 187), At(73, 180), At(52, 178.5f), At(42.5f, 172),
+            At(35, 162), At(16, 153), At(-7, 147), At(-21, 142), At(-32, 131),
+            StreetPoint(0, At(-38.7f, 118.8f)) }, 390, true, 6);
 
         // Loosely grouped houses around the lane, with their own yards and short paths to the gate.
-        auto Plot = [&V](FVector2D House, FVector2D Street, float Width, float Front, float Back, bool bShop = false)
+        auto Plot = [&V, &AddPath, &StreetPoint](int32 Variant, FVector2D House, int32 Road, float Width, float Front, float Back)
         {
+            const FVector2D Street = StreetPoint(Road, House);
             const FVector2D Facing = (Street - House).GetSafeNormal();
-            V.Plots.Add({ House, Facing, Width, Front, Back, bShop });
-            const FVector2D Door = House + Facing * 300.0f;
-            V.Paths.Add({ { Street, House + Facing * Front, Door }, bShop ? 200.0f : 120.0f, false });
+            V.Plots.Add({ House, Facing, Width, Front, Back, Variant });
+            AddPath({ Street, House + Facing * 320 }, Variant == 0 ? 230 : 145, false, 3);
         };
-        Plot(At(121, 155), At(98, 153), 890, 800, 860);
-        Plot(At(59, 150), At(86, 141), 970, 960, 910);
-        Plot(At(27, 121), At(25, 90), 890, 850, 920);
-        Plot(At(102, 117), At(78, 128), 810, 810, 850);
-        Plot(At(78, 88), At(57, 103), 1010, 850, 990);
-        Plot(At(5, 73), At(5, 94), 870, 790, 900);
-        Plot(At(98, 69), At(99, 50), 910, 780, 880);
-        Plot(At(64, 69), At(63, 52), 790, 780, 840);
-        Plot(At(40, 45), At(26, 42), 700, 650, 550, true);
+        Plot(1, At(117.5f, 156), 0, 900, 880, 950);
+        Plot(2, At(59, 150), 0, 1130, 1140, 1700);
+        Plot(3, At(27, 120), 0, 1110, 1030, 1680);
+        Plot(4, At(98, 119), 1, 1010, 840, 1280);
+        Plot(5, At(78, 90), 0, 1050, 900, 1240);
+        Plot(6, At(5, 73), 0, 1050, 950, 1500);
+        Plot(7, At(132, 68), 1, 1050, 920, 1680);
+        Plot(8, At(132, 101), 1, 1100, 1050, 1700);
+        Plot(4, At(145, 131), 1, 1030, 880, 1500);
+        Plot(2, At(63, 67), 1, 1000, 860, 1050);
+        Plot(3, At(-54, 154), BackLane, 1200, 920, 1480);
+        Plot(0, At(-2, 118), 0, 900, 900, 1050);
         return V;
     }();
     return Instance;
