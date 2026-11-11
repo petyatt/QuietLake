@@ -2,6 +2,8 @@
 
 QUIETLAKE_VILLAGE_ONLY optionally selects comma-separated prepared assets.
 QUIETLAKE_VILLAGE_TEXTURES_ONLY=1 updates only the existing texture packages.
+QUIETLAKE_VILLAGE_LODS_ONLY=1 updates the LOD transition sizes on existing meshes.
+QUIETLAKE_VILLAGE_PREPARED selects a prepared directory, including Saved/VillageRebaked.
 """
 import os
 import struct
@@ -10,12 +12,14 @@ from pathlib import Path
 import unreal
 
 
-root = Path(__file__).resolve().parents[1] / 'Saved' / 'VillageAssets'
+root = Path(os.environ.get('QUIETLAKE_VILLAGE_PREPARED',
+                           str(Path(__file__).resolve().parents[1] / 'Saved' / 'VillageAssets')))
 folder = '/Game/Village/Lakeside'
 assets = unreal.AssetToolsHelpers.get_asset_tools()
 editor = unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem)
 materials = unreal.MaterialEditingLibrary
 texture_folder = folder + '/Textures'
+LOD_SIZES = (1.0, 0.12, 0.042)
 
 
 def is_building(name):
@@ -39,7 +43,7 @@ def import_asset(source, name, path, options=None):
 def import_surface_texture(name, kind, source):
     tex = import_asset(source, f'T_{name}_{kind}', texture_folder)
     tex.set_editor_property('srgb', kind == 'Base')
-    if kind == 'Base' and is_building(name):
+    if kind == 'Base':
         tex.set_editor_property('compression_settings', unreal.TextureCompressionSettings.TC_BC7)
     elif kind == 'Normal':
         tex.set_editor_property('compression_settings', unreal.TextureCompressionSettings.TC_NORMALMAP)
@@ -76,7 +80,7 @@ def make_material(name, source):
     else:
         mat = assets.create_asset('M_' + name, folder, unreal.Material, unreal.MaterialFactoryNew())
     mat.set_editor_property('used_with_instanced_static_meshes', True)
-    mat.set_editor_property('two_sided', name in {'Reeds', 'Lilies', 'FlowerBush', 'Clothesline'})
+    mat.set_editor_property('two_sided', name in {'Reeds', 'Lilies', 'FlowerBush', 'Flowers', 'Vegetables', 'GardenCrops', 'Clothesline'})
     for kind, output, prop, sampler in (
         ('Base', 'RGB', unreal.MaterialProperty.MP_BASE_COLOR, unreal.MaterialSamplerType.SAMPLERTYPE_COLOR),
         ('Normal', 'RGB', unreal.MaterialProperty.MP_NORMAL, unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL),
@@ -102,10 +106,13 @@ def import_mesh(name, source):
         settings.set_editor_property(key, False)
     settings.set_editor_property('combine_meshes', True)
     building = is_building(name)
-    if building:
-        settings.set_editor_property('normal_import_method', unreal.FBXNormalImportMethod.FBXNIM_IMPORT_NORMALS)
+    rebaked = (source / 'completed.json').is_file()
+    if building or rebaked:
+        method = (unreal.FBXNormalImportMethod.FBXNIM_IMPORT_NORMALS_AND_TANGENTS if rebaked
+                  else unreal.FBXNormalImportMethod.FBXNIM_IMPORT_NORMALS)
+        settings.set_editor_property('normal_import_method', method)
     mesh = import_asset(source / f'SM_{name}.fbx', 'SM_' + name, folder, options)
-    surface = (unreal.load_asset(folder + '/M_Vegetables') if name == 'GardenCrops'
+    surface = (unreal.load_asset(folder + '/M_Vegetables') if name == 'GardenCrops' and not rebaked
                else make_material(name, source))
     if not surface:
         raise RuntimeError(f'{name}: import Vegetables first')
@@ -113,10 +120,10 @@ def import_mesh(name, source):
         mesh.set_material(index, surface)
     reduction = unreal.StaticMeshReductionOptions()
     reduction.set_editor_property('auto_compute_lod_screen_size', False)
+    fractions = (1.0, 0.28, 0.065 if building else 0.07)
     reduction.set_editor_property('reduction_settings', [
         unreal.StaticMeshReductionSettings(percent_triangles=fraction, screen_size=screen)
-        for fraction, screen in ([(1.0, 1.0), (0.28, 0.16), (0.065, 0.055)] if building
-                                 else [(1.0, 1.0), (0.28, 0.20), (0.07, 0.065)])
+        for fraction, screen in zip(fractions, LOD_SIZES)
     ])
     if editor.set_lods(mesh, reduction) != 3:
         raise RuntimeError(f'{name}: expected three LODs')
@@ -124,6 +131,7 @@ def import_mesh(name, source):
         body = mesh.get_editor_property('body_setup')
         body.set_editor_property('collision_trace_flag', unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE)
     elif name in {'Fence', 'RailFence', 'Gate', 'Boulders', 'FlatRock'}:
+        editor.remove_collisions(mesh)
         editor.add_simple_collisions(mesh, unreal.ScriptCollisionShapeType.BOX)
     if not unreal.EditorAssetLibrary.save_loaded_asset(mesh):
         raise RuntimeError(f'{name}: could not save mesh')
@@ -131,16 +139,50 @@ def import_mesh(name, source):
     unreal.log(f'VILLAGE_ASSET {name}: 3 LODs, bounds {bounds.origin} +/- {bounds.box_extent}')
 
 
+def refresh_lods(only):
+    names = []
+    for path in unreal.EditorAssetLibrary.list_assets(folder, recursive=False):
+        asset_name = path.split('.')[-1]
+        if not asset_name.startswith('SM_') or (only and asset_name[3:] not in only):
+            continue
+        mesh = unreal.load_asset(path)
+        if editor.get_lod_count(mesh) != len(LOD_SIZES) or not editor.set_lod_screen_sizes(mesh, list(LOD_SIZES)):
+            raise RuntimeError(f'{asset_name}: could not set LOD transition sizes')
+        if not unreal.EditorAssetLibrary.save_loaded_asset(mesh, only_if_is_dirty=False):
+            raise RuntimeError(f'{asset_name}: could not save mesh')
+        names.append(asset_name[3:])
+    if not names or only - set(names):
+        raise RuntimeError(f'Missing village meshes: {only - set(names)}')
+    unreal.log(f'QUIET_LAKE_LAKESIDE_LODS_READY {len(names)}')
+
+
 def main():
     if not editor:
         raise RuntimeError('Run this script in the full editor, with -ExecutePythonScript')
     only = set(filter(None, os.environ.get('QUIETLAKE_VILLAGE_ONLY', '').split(',')))
+    if os.environ.get('QUIETLAKE_VILLAGE_LODS_ONLY') == '1':
+        refresh_lods(only)
+        return
     textures_only = os.environ.get('QUIETLAKE_VILLAGE_TEXTURES_ONLY') == '1'
     sources = {path.name: path for path in root.iterdir()
                if (path / ('Base.png' if textures_only else 'SM_' + path.name + '.fbx')).is_file()}
     if not sources or only - sources.keys():
         raise RuntimeError(f'Missing prepared assets: {only - sources.keys()}')
-    for name in sorted(only or sources, key=lambda name: (name == 'GardenCrops', name)):
+    selected = sorted(only or sources, key=lambda name: (name == 'GardenCrops', name))
+    for name in selected:
+        source = sources[name]
+        if (source / 'surface_pending').exists():
+            raise RuntimeError(f'{name}: surface preparation is incomplete')
+        rebaked = (source / 'completed.json').is_file()
+        if (source / 'Working').is_dir() and not rebaked:
+            raise RuntimeError(f'{name}: rebake is incomplete')
+        if rebaked and textures_only:
+            raise RuntimeError(f'{name}: import rebaked maps and their FBX together')
+        if name != 'GardenCrops' or rebaked:
+            for kind in ('Base', 'Normal', 'Rough'):
+                if not (source / (kind + '.png')).is_file():
+                    raise RuntimeError(f'{name}: missing {kind} map')
+    for name in selected:
         (refresh_textures if textures_only else import_mesh)(name, sources[name])
     result = 'TEXTURES' if textures_only else 'ASSETS'
     unreal.log(f'QUIET_LAKE_LAKESIDE_{result}_READY {len(only or sources)}')

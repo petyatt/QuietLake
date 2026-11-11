@@ -488,6 +488,28 @@ void ALakeVillage::RunPreview()
         UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LAKESIDE collision pier %d/3, buildings %d/%d"),
             DeckHits, BuildingHits, LakeMap::Village().Plots.Num());
     }, 3.0f, false);
+    if (FParse::Param(FCommandLine::Get(), TEXT("VillageTexturePreview")))
+    {
+        const auto& Plot = V.Plots[0];
+        const FVector2D Fence = Plot.At(Plot.Front, Plot.HalfWidth * 0.55f);
+        const FVector2D FenceEye = Fence + Plot.Facing * 190 + Plot.Across() * 35;
+        Shot(TEXT("VillageTextures_Fence.png"), FVector(FenceEye, Ground(FenceEye) + 145),
+            FVector(Fence, Ground(Fence) + 95), 65, 4);
+        const FVector2D Shed = Plot.Shed();
+        const FVector2D ShedEye = Shed + Plot.Facing * 470 - Plot.Across() * 185;
+        Shot(TEXT("VillageTextures_Shed.png"), FVector(ShedEye, Ground(ShedEye) + 170),
+            FVector(Shed, Ground(Shed) + 150), 65, 8);
+        const auto& House = V.Plots[2];
+        const FVector2D HouseEye = House.At(-120, 780);
+        Shot(TEXT("VillageTextures_House.png"), FVector(HouseEye, Ground(HouseEye) + 190),
+            FVector(House.House, Ground(House.House) + 215), 65, 12);
+        const FVector2D RoofEye = House.At(-480, 360);
+        Shot(TEXT("VillageTextures_Roof.png"), FVector(RoofEye, Ground(RoofEye) + 640),
+            FVector(House.At(-60, 0), Ground(House.House) + 460), 67, 16);
+        FTimerHandle Exit;
+        GetWorldTimerManager().SetTimer(Exit, [] { FPlatformMisc::RequestExit(false); }, 21.0f, false);
+        return;
+    }
     if (FParse::Param(FCommandLine::Get(), TEXT("VillageDetails")))
     {
         auto Porch = [&Shot, &V](int32 PlotIndex, const TCHAR* File, float At, float Lateral)

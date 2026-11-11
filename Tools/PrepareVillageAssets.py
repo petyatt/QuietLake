@@ -3,10 +3,12 @@
 Set QUIETLAKE_VILLAGE_SOURCE to the archive directory. Set QUIETLAKE_VILLAGE_ONLY to
 comma-separated asset names to prepare a subset. Working files stay in Saved/VillageAssets.
 QUIETLAKE_VILLAGE_TEXTURES_ONLY=1 extracts textures without preparing FBX meshes.
+Geometry preparation also reprojects all surface maps onto the low mesh.
 """
 import math
 import os
 import shutil
+import sys
 from array import array
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
@@ -28,25 +30,32 @@ ASSETS = {
     'House07': ('143433', 9.5, 145000, 4096),
     'House08': ('143453', 8.3, 145000, 4096),
     'Shop': ('143514', 9.5, 160000, 4096),
-    'WoodShed': ('143534', 5.5, 90000, 2048),
-    'Cabin': ('143550', 4.7, 90000, 2048),
-    'PlankShed': ('143606', 3.4, 65000, 2048),
-    'LeanTo': ('143619', 3.2, 65000, 2048),
-    'LowShed': ('143634', 3.5, 65000, 2048),
-    'FlowerBush': ('143712', 1.8, 7500, 1024),
-    'Boulders': ('143739', 2.4, 7500, 1024),
-    'Pier': ('143755', 17.0, 30000, 2048),
-    'FlatRock': ('143806', 1.7, 5500, 512),
-    'Reeds': ('143819', 1.1, 6500, 512),
-    'Branch': ('143844', 2.5, 6000, 512),
-    'Fence': ('143857', 2.6, 6500, 1024),
+    'WoodShed': ('143534', 5.5, 90000, 4096),
+    'Cabin': ('143550', 4.7, 90000, 4096),
+    'PlankShed': ('143606', 3.4, 65000, 4096),
+    'LeanTo': ('143619', 3.2, 65000, 4096),
+    'LowShed': ('143634', 3.5, 65000, 4096),
+    'FlowerBush': ('143712', 1.8, 7500, 2048),
+    'Boulders': ('143739', 2.4, 7500, 2048),
+    'Pier': ('143755', 17.0, 30000, 4096),
+    'FlatRock': ('143806', 1.7, 5500, 1024),
+    'Reeds': ('143819', 1.1, 24000, 1024),
+    'Branch': ('143844', 2.5, 6000, 2048),
+    'Fence': ('143857', 2.6, 6500, 2048),
     'Gate': ('143908', 1.4, 6000, 1024),
-    'RailFence': ('143920', 2.8, 6000, 1024),
-    'Clothesline': ('143933', 3.8, 6500, 1024),
-    'Firewood': ('143945', 1.8, 9500, 1024),
-    'Vegetables': ('144007', 2.9, 9000, 1024),
-    'Flowers': ('144027', 1.9, 8000, 1024),
-    'Lilies': ('142422', 2.0, 4500, 512),
+    'RailFence': ('143920', 2.8, 6000, 2048),
+    'Clothesline': ('143933', 3.8, 6500, 2048),
+    'Firewood': ('143945', 1.8, 50000, 2048),
+    'Vegetables': ('144007', 2.9, 65000, 2048),
+    'Flowers': ('144027', 1.9, 60000, 2048),
+    'Lilies': ('142422', 2.0, 4500, 1024),
+}
+SCAN_CLEANUP = {
+    'FlowerBush': (0.015, 1800),
+    'Reeds': (0.008, 2300),
+    'Firewood': (0.012, 2200),
+    'Vegetables': (0.009, 2000),
+    'Flowers': (0.011, 1800),
 }
 
 
@@ -54,10 +63,10 @@ def mesh_bvh(obj):
     return BVHTree.FromObject(obj, bpy.context.evaluated_depsgraph_get())
 
 
-def clean_foliage(obj):
+def clean_foliage(obj, weld_distance, max_parts):
     # Weld dense scan fragments, then discard the smallest disconnected fragments.
     weld = obj.modifiers.new('FoliageWeld', 'WELD')
-    weld.merge_threshold = 0.015
+    weld.merge_threshold = weld_distance
     bpy.ops.object.modifier_apply(modifier=weld.name)
     mesh = bmesh.new()
     mesh.from_mesh(obj.data)
@@ -75,7 +84,7 @@ def clean_foliage(obj):
                     part.append(other)
         islands.append(part)
     islands.sort(key=len, reverse=True)
-    bmesh.ops.delete(mesh, geom=[v for part in islands[1800:] for v in part], context='VERTS')
+    bmesh.ops.delete(mesh, geom=[v for part in islands[max_parts:] for v in part], context='VERTS')
     mesh.to_mesh(obj.data)
     mesh.free()
 
@@ -133,10 +142,11 @@ def export_garden_crops(obj, out):
     bpy.ops.object.select_all(action='DESELECT')
     crop.select_set(True)
     bpy.context.view_layer.objects.active = crop
+    clean_foliage(crop, 0.007, 1500)
     crop.data.calc_loop_triangles()
-    if len(crop.data.loop_triangles) > 5000:
+    if len(crop.data.loop_triangles) > 30000:
         modifier = crop.modifiers.new('CropsBudget', 'DECIMATE')
-        modifier.ratio = 5000 / len(crop.data.loop_triangles)
+        modifier.ratio = 30000 / len(crop.data.loop_triangles)
         bpy.ops.object.modifier_apply(modifier=modifier.name)
     dst = out.parent / 'GardenCrops'
     dst.mkdir(exist_ok=True)
@@ -147,7 +157,7 @@ def export_garden_crops(obj, out):
 
 
 def prepare(name, archive, out, length, budget, resolution, textures_only):
-    architectural = budget >= 65000
+    architectural = name.startswith('House') or name in {'Shop', 'Cabin', 'WoodShed', 'LowShed', 'PlankShed', 'LeanTo'}
     if not textures_only:
         bpy.ops.wm.read_factory_settings(use_empty=True)
     out.mkdir(parents=True, exist_ok=True)
@@ -171,7 +181,7 @@ def prepare(name, archive, out, length, budget, resolution, textures_only):
             if kind != 'Base':
                 image.colorspace_settings.name = 'Non-Color'
             width, height = image.size
-            cap = min(resolution, 512) if kind == 'Rough' else resolution
+            cap = max(512, resolution // 2) if kind == 'Rough' else resolution
             if max(width, height) > cap:
                 factor = cap / max(width, height)
                 image.scale(round(width * factor), round(height * factor))
@@ -215,8 +225,8 @@ def prepare(name, archive, out, length, budget, resolution, textures_only):
     scale = length / max(size.x, size.y)
     origin = Vector(((low.x + high.x) * 0.5, (low.y + high.y) * 0.5, low.z))
     obj.data.transform(Matrix.Scale(scale, 4) @ Matrix.Translation(-origin))
-    if name in {'FlowerBush', 'Reeds', 'Flowers', 'Vegetables'}:
-        clean_foliage(obj)
+    if name in SCAN_CLEANUP:
+        clean_foliage(obj, *SCAN_CLEANUP[name])
     obj.data.calc_loop_triangles()
     original = len(obj.data.loop_triangles)
     if original > budget:
@@ -249,11 +259,31 @@ def main():
     textures_only = os.environ.get('QUIETLAKE_VILLAGE_TEXTURES_ONLY') == '1'
     if only - ASSETS.keys():
         raise ValueError(f'Unknown village assets: {only - ASSETS.keys()}')
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from RebakeVillageAssets import rebake, publish_rebaked
     for name, (key, length, budget, resolution) in ASSETS.items():
         if only and name not in only:
             continue
         archive, = (item for item in archives if f'_1109{key}_' in item.name)
+        if textures_only and (out / name / 'completed.json').is_file():
+            rebake(name, archive)
+            publish_rebaked(name)
+            if name == 'Vegetables' and (out / 'GardenCrops' / 'completed.json').is_file():
+                rebake('GardenCrops', archive)
+                publish_rebaked('GardenCrops')
+            continue
+        (out / name).mkdir(parents=True, exist_ok=True)
+        pending = out / name / 'surface_pending'
+        pending.write_text('Preparing mesh and matching surface maps')
         prepare(name, archive, out / name, length, budget, resolution, textures_only)
+        if textures_only:
+            pending.unlink()
+            continue
+        rebake(name, archive)
+        publish_rebaked(name)
+        if name == 'Vegetables':
+            rebake('GardenCrops', archive)
+            publish_rebaked('GardenCrops')
 
 
 if __name__ == '__main__':
