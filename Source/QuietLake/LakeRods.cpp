@@ -269,6 +269,8 @@ void ALakeCharacter::StowRodsInCase()
     bCaseOpen = false;
     bCaseWindow = false;
     bRigInHand = false;
+    if (RodVisuals.Num()) RodVisual = nullptr;   // (tests give a single simulation of their own: it stays)
+    ForceNetUpdate();
     UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_RODS the angler starts with empty hands: all %d rods in the case"), Rods.Num());
 }
 

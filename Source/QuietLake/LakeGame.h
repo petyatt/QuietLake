@@ -61,6 +61,7 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
     virtual void EndPlay(const EEndPlayReason::Type Reason) override;
     virtual void BeginPlay() override;
+    virtual void PossessedBy(AController* NewController) override;
     UPROPERTY(Replicated) EFishingState FishingState = EFishingState::Idle;
     UPROPERTY(Replicated) int32 CatchCount = 0;
     /** Balls of groundbait left in the bag (G throws one). */
@@ -199,6 +200,8 @@ public:
     bool HasRodInHands() const { return Rods.IsValidIndex((int32)RodKind) && Rods[(int32)RodKind].Place == ERodPlace::Hands; }
     /** A new game starts with empty hands: every rod in its compartment of the case on the back. */
     void StowRodsInCase();
+    /** StowRodsInCase for a real game start (not the previews), once the angler has a controller and has begun play. */
+    void StowRodsAtStart();
     /** The rod in the hands can go into the case or onto the ground: its rig held in the free hand, nothing going on. */
     bool CanPutRodAway() const;
     /** Where a rod on its stand rests (butt on the ground behind the fork). */

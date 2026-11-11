@@ -195,19 +195,25 @@ void ALakeCharacter::BeginPlay()
     RodVisual = HasRodInHands() ? RodVisuals[(int32)RodKind] : nullptr;
     // The case is only looked at: a dedicated server keeps its state, not its meshes.
     if (GetNetMode() != NM_DedicatedServer) CaseVisual = GetWorld()->SpawnActor<ALakeRodCase>();
-    // A real match starts with the rods packed: the angler walks up to the water empty-handed, opens his
-    // case and takes a rod. The preview runs skip this (they drive the rods themselves).
-    if (GetNetMode() != NM_DedicatedServer && HasAuthority() && !IsPreviewRun())
-    {
-        FTimerHandle StartHandle;
-        GetWorldTimerManager().SetTimer(StartHandle, [this]
-        {
-            if (GetController()) StowRodsInCase();
-        }, 0.5f, false);
-    }
+    // The local player of a standalone or listen game is possessed while the map loads, before play begins.
+    if (GetController()) StowRodsAtStart();
 #if !UE_BUILD_SHIPPING
     RunPreviews();
 #endif
+}
+void ALakeCharacter::PossessedBy(AController* NewController)
+{
+    Super::PossessedBy(NewController);
+    // Players joining a running game are possessed after the pawn began play.
+    if (HasActorBegunPlay()) StowRodsAtStart();
+}
+void ALakeCharacter::StowRodsAtStart()
+{
+    // A real match starts with the rods packed: the angler walks up to the water empty-handed, opens his
+    // case and takes a rod. Done on the server (listen or dedicated) before the pawn first replicates, so
+    // no client ever sees a rod in the hands at the start. The preview runs drive the rods themselves; the
+    // automated tests' worlds never begin play and set up the rods they need.
+    if (HasAuthority() && !IsPreviewRun()) StowRodsInCase();
 }
 void ALakeCharacter::SetupPlayerInputComponent(UInputComponent* Input)
 {
