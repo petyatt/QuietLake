@@ -1657,6 +1657,7 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
         {
             Fish->SetActorLocation(Open);
             Fish->Stamina = Fish->MaxStamina; // isolate the species' fresh rhythm
+            Fish->ApplyLineForce(FVector(-40, 0, 0));   // a taut line: on a slack one it makes off instead
             Fish->Simulate(0.025f);
             T.Bursts += Fish->FightPhase == EPhase::Burst && Previous != EPhase::Burst;
             T.Gaps += Fish->FightPhase == EPhase::Gap && Previous != EPhase::Gap;
@@ -1687,15 +1688,26 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
             Fish->MoveHooked(FVector(S.BurstSpeed, 0, 0), S.BurstSpeed, 0.025f);
         }
         TestTrue(S.Id + TEXT(": resisting the line costs stamina"), Fish->Stamina < BeforeLoad - 0.2f);
-        // A rest is a rest only on a slack line: leaning against a pull is work too.
+        // A rest is a rest only on a slack line: leaning against a pull is work too. (The body's
+        // stamina alone: on a slack line a fresh fish would rather make off, see ChooseEscapeTarget.)
         Fish->ApplyLineForce(FVector::ZeroVector);
         Fish->FightPhase = EPhase::Pause;
         Fish->FightRemaining = 4;
         Fish->Vel = FVector::ZeroVector;
         Fish->RoamTarget = Fish->GetActorLocation();
         const float BeforeRest = Fish->Stamina;
-        Fish->Simulate(0.05f);
+        Fish->MoveHooked(FVector::ZeroVector, 0, 0.05f);
         TestTrue(S.Id + TEXT(": Hooked pause really recovers stamina"), Fish->Stamina > BeforeRest);
+        // Given slack, a fish with strength left makes off somewhere in the water instead of waiting.
+        Fish->SetActorLocation(Open);
+        Fish->Stamina = Fish->MaxStamina;
+        Fish->FightPhase = EPhase::Pause;
+        Fish->FightRemaining = 4;
+        Fish->bWasSlack = false;
+        Fish->ApplyLineForce(FVector::ZeroVector);
+        Fish->Simulate(0.025f);
+        TestTrue(S.Id + TEXT(": on a slack line it makes off to water of its choosing"), Fish->FightPhase != EPhase::Pause
+            && LakeMap::IsWater(Fish->RoamTarget.X, Fish->RoamTarget.Y) && FVector::Dist2D(Fish->RoamTarget, Open) > 100);
         // Neither a current burst nor the common movement tail can restore a tired fish to full speed.
         Fish->FightPhase = EPhase::Burst;
         Fish->FightRemaining = 2;
@@ -1886,11 +1898,12 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
     for (ERodKind Kind : { ERodKind::Light, ERodKind::Medium, ERodKind::Heavy })
     {
         const FLakeTackle Gear = ALakeCharacter::TackleOf(Kind);
-        TestTrue(TEXT("The line parts before the rod breaks"), Gear.LineBreak < Gear.RodBreak && Gear.Weakest() == Gear.LineBreak);
+        TestTrue(TEXT("A rod breaks from its bend: it stands a pull of its own"), Gear.RodBreak > 1000);
         TestTrue(TEXT("The hook's hold wears below the line's strength"), Gear.HookSafe < Gear.LineBreak);
         TestTrue(TEXT("The arms give behind the blank"), ALakeCharacter::HandSeries(Gear) > 0.1f && ALakeCharacter::HandSeries(Gear) < 0.6f);
     }
     const FLakeTackle Soft = ALakeCharacter::TackleOf(ERodKind::Light), Stiff = ALakeCharacter::TackleOf(ERodKind::Heavy);
+    TestTrue(TEXT("Held across the line the light pole breaks before the line; the heavy one outlasts it"), Soft.RodBreak < Soft.LineBreak && Stiff.RodBreak > Stiff.LineBreak);
     auto Spring = [](const FLakeTackle& Gear) { return ALakeRod::TetherForce(FVector::ZeroVector, FVector(700, 0, 0), FVector::ZeroVector, 600, 0.4f, Gear.RodSpring).Size() * ALakeCharacter::HandSeries(Gear); };
     TestTrue(TEXT("A softer rod loads the line less for the same run"), Spring(Soft) < Spring(Stiff));
     ALakeFish* F = SpawnFish(World, EFishSpecies::Perch, 0.4f, Open);

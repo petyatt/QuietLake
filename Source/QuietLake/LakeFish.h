@@ -25,7 +25,7 @@ struct FLakeTackle
 {
     float LineBreak = 2600.0f;            // what the line stands (0.2 mm mono)
     float HookSafe = 1170.0f;             // a harder pull wears the hook's hold in the lip (a small single hook)
-    float RodBreak = 4000.0f;             // what the blank stands before it breaks
+    float RodBreak = 3000.0f;             // the pull square to the rod at its tip that breaks the blank (along the rod it bends it hardly at all)
     float RodSpring = 2600.0f / 140.0f;   // gf per cm the tip is drawn off the unbent rod: its stiffness
     /** The load the tackle as a whole stands: the line or the rod, whichever goes first. */
     float Weakest() const { return FMath::Min(LineBreak, RodBreak); }
@@ -807,6 +807,11 @@ private:
     int32 FightPulses = 0;
     bool bFightJump = false, bShoreTried = false, bShoreRun = false;
     bool bFirstRunDone = false;       // the rush a fish makes the moment it feels the hook
+    float SurfaceRoll = 0;            // degrees: how far a hooked fish has turned on its side at the top
+    bool bWasSlack = false;           // the line was slack last step
+    float NextEscape = 0;             // when a fish on a slack line picks where to make off to again
+    /** On a slack line: somewhere it would rather be (weeds, snags, the deep, or back at the angler). */
+    void ChooseEscapeTarget();
     float Activity = 1;               // see LakeFish::Activity
     float NextMoodCheck = 0;
     FFishConditions Seen;             // the time and the weather, looked at with the mood

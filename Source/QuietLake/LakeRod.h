@@ -35,6 +35,8 @@ struct FRodInput
     float FishGrams = 0, FishLength = 0;
     /** Landing with the rod let down: a fish lying on the bank flops back towards the water. */
     bool bFishLowered = false;
+    /** The fish is in the angler's free hand, the hook still in its mouth. */
+    bool bFishHeld = false;
     FVector HandPoint = FVector::ZeroVector;
 };
 

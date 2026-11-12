@@ -308,7 +308,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
     const bool bFishOut = In.FishingState == EFishingState::Landing && In.FishGrams > 0;
     if (!bFishOut) LandLine = -1;
     const float WholeLine = MainLength + LeaderLength;
-    if (In.LineFish && (In.FishingState == EFishingState::Bite || In.FishingState == EFishingState::Fight))
+    if (In.LineFish && (In.FishingState == EFishingState::Bite || In.FishingState == EFishingState::Fight || In.bFishHeld))
     {
         bHookHeld = true;
         HookTarget = In.LineFish->MouthLocation();

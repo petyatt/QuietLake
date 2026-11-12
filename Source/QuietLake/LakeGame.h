@@ -388,9 +388,16 @@ private:
     void PlaceBait();
     UFUNCTION(Server, Reliable) void ServerSelectBait(EBait NewBait);
     FVector RodTip() const;
+    /** Where the free hand holds a fish it has taken: up in front of the chest. */
+    FVector HeldFishPoint() const;
     /** The line's own load on a fish (gf): the rod's and the arms' spring, without the damping that steadies the fish. */
     float LineLoad(ALakeFish* Fish) const;
     bool bRodLaidFlat = false;   // a fish has dragged the rod down along the line: nothing gives any more
+    /** The pull in the line (gf), and the part of it square to the rod that bends (and may break) the blank. */
+    UPROPERTY(Replicated) float LineLoadGf = 0;
+    float RodLoadGf = 0;
+    /** The rod, not the line, is nearer what it stands (held across the line). */
+    UPROPERTY(Replicated) bool bRodStrained = false;
     void ToggleRod();
     void ToggleView();
     void ToggleLifePanel();

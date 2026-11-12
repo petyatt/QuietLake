@@ -109,14 +109,14 @@ void ALakeHUD::DrawHUD()
         // The line's load in kilograms-force against what it stands (the bar's whole length). Green:
         // the hands hold it. Amber, past the notch: the hook's hold wears, ease off. Red: about to break.
         const FLakeTackle Gear = Fisher->Tackle();
-        const float Safe = FMath::Min(1.0f, Gear.HookSafe / Gear.Weakest());
+        const float Safe = FMath::Min(1.0f, Gear.HookSafe / Gear.LineBreak);
         const float Shown = Fisher->Tension;
         const FLinearColor Fill = Shown > 0.8f ? FLinearColor(0.95f, 0.25f, 0.2f) : Shown > Safe ? FLinearColor(0.96f, 0.72f, 0.2f) : FLinearColor(0.35f, 0.8f, 0.55f);
         DrawRect(FLinearColor(0, 0, 0, 0.4f), BarX, BarY, BarW, BarH);
         DrawRect(Fill, BarX, BarY, BarW * Shown, BarH);
         DrawRect(FLinearColor(0.93f, 0.91f, 0.86f, 0.8f), BarX + BarW * Safe - 1 * S, BarY - 3 * S, 2 * S, BarH + 6 * S);
-        const FString Load = FString::Printf(TEXT("%.1f кг"), Shown * Gear.Weakest() / 1000).Replace(TEXT("."), TEXT(","));
-        const FString Label = Shown > 0.8f ? FString(Gear.RodBreak < Gear.LineBreak ? TEXT("Удилище на пределе — шагните к рыбе") : TEXT("Леска на пределе — шагните к рыбе"))
+        const FString Load = FString::Printf(TEXT("%.1f кг"), Fisher->LineLoadGf / 1000).Replace(TEXT("."), TEXT(","));
+        const FString Label = Shown > 0.8f ? FString(Fisher->bRodStrained ? TEXT("Удилище на пределе — опустите его к рыбе") : TEXT("Леска на пределе — шагните к рыбе"))
             : Shown > Safe ? FString::Printf(TEXT("Рыба рвётся: %s — крючок может вырвать"), *Load)
             : FString::Printf(TEXT("Тянет %s   ·   до рыбы %.1f м"), *Load, Fisher->FishDistance / 100);
         Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);

@@ -9,6 +9,8 @@
 #include "LakeMap.h"
 #include "LakeRod.h"
 #include "LakeWeather.h"
+#include "Camera/CameraActor.h"
+#include "Camera/CameraComponent.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
@@ -24,6 +26,8 @@ namespace
         EFishSpecies Species = EFishSpecies::Roach;
         float Weight = 0.15f;
         bool bEases = true;
+        bool bSlackBreak = false;        // "ease": LMB let go from 4 to 7 s of the fight (the fish gets slack)
+        ERodKind Rod = ERodKind::Medium; // "light" / "heavy": that rod in the hands
         float Hold = 1.0f;
     };
     struct FBench
@@ -35,6 +39,9 @@ namespace
         EBiteMotion LastMotion = EBiteMotion::None;
         EFishingState LastState = EFishingState::Idle;
         TWeakObjectPtr<ALakeFish> Fish;
+        TWeakObjectPtr<ACameraActor> SideCam;
+        int32 SideShots = 0, LandShots = 0;
+        float NextLandShot = 0;
         float MaxTension = 0, SumTension = 0, HardTime = 0, SlackTime = 0, MaxSpeed = 0, MaxDepth = 0, MaxOut = 0, HeldTime = 0;
         FTimerHandle Timer;
         int32 Frames = 0;
@@ -70,17 +77,24 @@ void ALakeCharacter::RunFishingBench()
                 if (LakeFish::Info((EFishSpecies)S).Id.Equals(Parts[0], ESearchCase::IgnoreCase)) { Case.Species = (EFishSpecies)S; bFound = true; }
             if (!bFound) { UE_LOG(LogTemp, Warning, TEXT("BENCH unknown species %s"), *Parts[0]); continue; }
             Case.Weight = FCString::Atof(*Parts[1]);
-            Case.bEases = Parts.Num() < 3 || !Parts[2].Equals(TEXT("hold"), ESearchCase::IgnoreCase);
-            if (Parts.Num() > 3) Case.Hold = FCString::Atof(*Parts[3]);
+            for (int32 K = 2; K < Parts.Num(); ++K)
+            {
+                if (Parts[K].Equals(TEXT("ease"), ESearchCase::IgnoreCase)) Case.bSlackBreak = true;
+                else if (Parts[K].Equals(TEXT("light"), ESearchCase::IgnoreCase)) Case.Rod = ERodKind::Light;
+                else if (Parts[K].Equals(TEXT("heavy"), ESearchCase::IgnoreCase)) Case.Rod = ERodKind::Heavy;
+            }
         }
         Bench->Cases.Add(Case);
     }
     const bool bDirect = FParse::Param(FCommandLine::Get(), TEXT("BenchDirect"));
     const bool bShots = FParse::Param(FCommandLine::Get(), TEXT("BenchShots"));
+    // -BenchSide: a camera beside the fish films the fight (under the water, ClearWater shows it) and
+    // the lift out (from the side, above the water): Saved/BenchSide_<case>_<n>.png.
+    const bool bSide = FParse::Param(FCommandLine::Get(), TEXT("BenchSide"));
     float Depth = 110;
     FParse::Value(FCommandLine::Get(), TEXT("BenchDepth="), Depth);
 
-    GetWorldTimerManager().SetTimer(Bench->Timer, FTimerDelegate::CreateWeakLambda(this, [this, Bench, bDirect, bShots, Depth]
+    GetWorldTimerManager().SetTimer(Bench->Timer, FTimerDelegate::CreateWeakLambda(this, [this, Bench, bDirect, bShots, bSide, Depth]
     {
         FBench& B = *Bench;
         const float Now = ServerNow();
@@ -108,7 +122,7 @@ void ALakeCharacter::RunFishingBench()
         }
         const FBenchCase& Case = B.Cases[B.Index];
         const FString Label = Case.bCastOnly ? FString::Printf(TEXT("cast %.1f m"), Case.Hold)
-            : FString::Printf(TEXT("%s %.2f kg %s"), *LakeFish::Info(Case.Species).Id, Case.Weight, TEXT(""));
+            : FString::Printf(TEXT("%s %.2f kg %s"), *LakeFish::Info(Case.Species).Id, Case.Weight, Case.bSlackBreak ? TEXT("ease 4-7 s") : Case.Rod == ERodKind::Light ? TEXT("light rod") : Case.Rod == ERodKind::Heavy ? TEXT("heavy rod") : TEXT(""));
         switch (B.Stage)
         {
         case 0:   // the place, the weather, the rod
@@ -131,6 +145,7 @@ void ALakeCharacter::RunFishingBench()
             Go(1);
             return;
         case 1:   // ready to cast: the rig in the free hand
+            if (RodKind != Case.Rod && FishingState == EFishingState::Idle) { UseRod(Case.Rod); B.StageStart = Now; return; }
             if (FishingState == EFishingState::Idle && bRigInHand && In > 1.0f)
             {
                 // Look at the water this far out (cast:<metres>; a fish case casts 5 m).
@@ -259,7 +274,8 @@ void ALakeCharacter::RunFishingBench()
                 // The hand follows the bar: past the notch it lets go, a quarter of a second late.
                 bool bWant = true;
                 const float Notch = Tackle().HookSafe / Tackle().Weakest();
-                if (false && Case.bEases && FishingState == EFishingState::Fight) bWant = B.bWantHeld ? Tension < Notch : Tension < Notch * 0.6f;
+                if (Case.bSlackBreak && FishingState == EFishingState::Fight && T > 4 && T < 7) bWant = false;
+                (void)Notch;
                 if (bWant != B.bWantHeld) { B.bWantHeld = bWant; B.ActAt = Now + 0.25f; }
                 if (B.ActAt >= 0 && Now >= B.ActAt) { Hold(B.bWantHeld); B.ActAt = -1; }
                 const FVector Mouth = Fish->MouthLocation();
@@ -278,14 +294,59 @@ void ALakeCharacter::RunFishingBench()
                 if (Now >= B.NextLog)
                 {
                     B.NextLog = Now + 0.25f;
-                    UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f"),
+                    UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f rodload %4.0f"),
                         T, (int32)FishingState, B.bHeld ? 1 : 0, Tension, LoadOnFish(Fish).Size(), RodLift, RodElevation, Out, Down,
                         Fish->SpeedNow(), Fish->StaminaFraction(), (int32)Fish->FightPhase, Fish->IsFightAwake() ? 1 : 0, SlackTime,
                         RodVisual ? (float)FVector::Dist(RodVisual->Tip(), Mouth) : -1.0f, RodVisual ? RodVisual->TipBend() : -1.0f,
-                        LandProgress, RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, Fish->HookGrip);
+                        LandProgress, RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, Fish->HookGrip, RodLoadGf);
                 }
-                if (bShots && B.Shots < 3 && ((B.Shots == 0 && T > 2.5f) || (B.Shots == 1 && T > 8) || (B.Shots == 2 && FishingState == EFishingState::Landing)))
+                if (bShots && B.Shots < 2 && ((B.Shots == 0 && T > 2.5f) || (B.Shots == 1 && T > 8)))
                     FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_%d_%d.png"), B.Index, B.Shots++), true, false);
+                // The lift out as the angler sees it, every 0.6 s.
+                if (bShots && FishingState == EFishingState::Landing && Now >= B.NextLandShot && B.LandShots < 8)
+                {
+                    B.NextLandShot = Now + 0.6f;
+                    FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_%d_land%d.png"), B.Index, B.LandShots++), true, false);
+                }
+                if (bSide)
+                {
+                    // Beside the fish, square to the line from the angler: under the water while it
+                    // fights, above the water (wider) once it is being lifted out.
+                    APlayerController* PC = Cast<APlayerController>(GetController());
+                    if (!B.SideCam.IsValid() && PC)
+                    {
+                        B.SideCam = GetWorld()->SpawnActor<ACameraActor>();
+                        B.SideCam->GetCameraComponent()->SetFieldOfView(60);
+                        PC->SetViewTarget(B.SideCam.Get());
+                        if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+                    }
+                    if (ACameraActor* Cam = B.SideCam.Get())
+                    {
+                        const FVector P = Fish->GetActorLocation();
+                        const FVector Out2D = (P - GetActorLocation()).GetSafeNormal2D();
+                        const FVector Side(-Out2D.Y, Out2D.X, 0);
+                        const bool bAir = FishingState == EFishingState::Landing;
+                        const FVector Eye = bAir ? FMath::Lerp(GetActorLocation(), P, 0.5f) + Side * 420 + FVector(0, 0, 60)
+                            : P + Side * 230 - Out2D * 40 + FVector(0, 0, 10);
+                        const FVector Look = bAir ? FMath::Lerp(GetActorLocation(), P, 0.55f) + FVector(0, 0, 60) : P;
+                        Cam->SetActorLocationAndRotation(FVector(Eye.X, Eye.Y, bAir ? Eye.Z : FMath::Min(Eye.Z, LakeFish::SurfaceZ - 15)), (Look - Eye).Rotation());
+                    }
+                    static const float Times[] = { 0.3f, 0.6f, 0.9f, 1.2f, 1.5f, 1.8f, 2.2f, 2.6f, 3.0f, 4.0f, 5.0f, 6.5f, 8.0f, 10.0f, 12.0f, 15.0f, 18.0f, 22.0f };
+                    const bool bFightShot = FishingState == EFishingState::Fight && B.SideShots < UE_ARRAY_COUNT(Times) && T > Times[B.SideShots];
+                    const bool bLandShot = FishingState == EFishingState::Landing && B.SideShots < 20 && LandProgress > 0.3f * (B.SideShots >= 100 ? 0 : 1)
+                        && Now >= B.NextLandShot;
+                    if (bFightShot || bLandShot)
+                    {
+                        if (bLandShot) B.NextLandShot = Now + 0.7f;
+                        const int32 N = bLandShot ? 50 + B.LandShots++ : B.SideShots++;
+                        if (bLandShot && B.LandShots > 5) B.NextLandShot = 1e9f;
+                        const FVector ShotMouth = Fish->MouthLocation();
+                        UE_LOG(LogTemp, Display, TEXT("BENCH   side shot %d at t=%.1f: state %d, mouth %.0f cm under, body pitch %.0f, hook %.0f cm up, mouth-hook %.0f cm"),
+                            N, T, (int32)FishingState, LakeFish::SurfaceZ - ShotMouth.Z, Fish->GetActorRotation().Pitch,
+                            RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, RodVisual ? (float)FVector::Dist(RodVisual->HookLocation(), ShotMouth) : -1.0f);
+                        FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("BenchSide_%d_%02d.png"), B.Index, N), false, false);
+                    }
+                }
             }
             const bool bCaught = CatchCount > B.Caught;
             if (bCaught || !bOn || T > 150)
@@ -301,6 +362,9 @@ void ALakeCharacter::RunFishingBench()
             return;
         }
         case 8:   // put everything away for the next case
+            // (The fish in the free hand, as the angler sees it.)
+            if (bShots && bFishInHand && In > 0.35f && B.Shots < 9) { B.Shots = 9; FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_%d_hand.png"), B.Index), true, false); }
+            if (bShots && bFishInHand && In < 0.6f) return;
             Hold(false);
             if (In > 0.5f)
             {
@@ -315,7 +379,12 @@ void ALakeCharacter::RunFishingBench()
                 if (Case.bCastOnly) UE_LOG(LogTemp, Display, TEXT("BENCH   rig back in the hand %.1f s after LMB (in hand %d)"), In, bRigInHand ? 1 : 0);
                 Hold(false);
                 ++B.Index;
-                B.Shots = 0;
+                B.Shots = 0; B.SideShots = 0; B.LandShots = 0; B.NextLandShot = 0;
+                if (ACameraActor* Cam = B.SideCam.Get())
+                {
+                    Cam->Destroy();
+                    if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(this);
+                }
                 Go(1);
             }
             return;
