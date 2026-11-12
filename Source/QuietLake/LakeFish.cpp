@@ -684,7 +684,8 @@ void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int3
     // Bigger fish of a species hold out longer, and are calmer: slower to turn and to speed up.
     Size01 = LakeFish::Size01(Species, WeightKg);
     Agility = FMath::Lerp(1.25f, 0.7f, Size01);
-    MaxStamina = S.Stamina * FMath::Lerp(0.6f, 1.8f, Size01);
+    // (The passport's seconds of hard pulling, and as much again: a fight is bouts and rests.)
+    MaxStamina = S.Stamina * FMath::Lerp(0.6f, 1.8f, Size01) * 1.8f;
     Stamina = MaxStamina;
     WanderSeed = Random.FRandRange(0, 100);
     // Reuse an individual draw without changing the random sequence of free swimming.
@@ -1919,6 +1920,7 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     FightRemaining = 0;
     FightPulses = 0;
     bFightJump = bShoreTried = bShoreRun = false;
+    bFirstRunDone = false;
     HookGrip = 1; HookTurnSpeed = 0; HookAngularVelocity = FVector::ZeroVector;
     bFightAwake = false;   // it feels the strike as the line pulls, not before
     NextFightJump = SimTime;
@@ -2299,6 +2301,24 @@ void ALakeFish::UpdateFightMotion(float DeltaSeconds, FVector& Desired, float& M
     const float Fresh = StaminaFraction();
     FightRemaining -= DeltaSeconds;
     ReadyToLand();
+    // The moment it feels the hook it rushes off, down and away: the first run of every fish.
+    if (!bFirstRunDone)
+    {
+        bFirstRunDone = true;
+        ChooseFightTarget(true);
+        FightPulses = FMath::Max(1, F.SeriesMin);
+        StartFightBurst();
+    }
+    // Hauled up to the surface with strength left, it does not wait for its next bout: it sees the
+    // bank, bores down and away at once and thrashes — and tires itself the sooner for it.
+    if (!bFightJump && !bShoreRun && FightPhase != EFightPhase::Burst && Fresh > 0.3f && PendingLineForce.Z > 30.0f + WeightKg * 60.0f
+        && MouthLocation().Z > LakeFish::SurfaceZ - LakeFish::LengthCm(Species, WeightKg) * 0.35f)
+    {
+        ChooseFightTarget(true);
+        FightPulses = 1;
+        StartFightBurst();
+        if (SimTime >= NextSign) FightSplash();
+    }
     if (FightRemaining <= 0 && !bFightJump)
     {
         if (FightPhase == EFightPhase::Burst && --FightPulses > 0)
@@ -2333,6 +2353,21 @@ void ALakeFish::UpdateFightMotion(float DeltaSeconds, FVector& Desired, float& M
     const float Pace = bRest ? F.PauseSpeed : FightPhase == EFightPhase::Burst ? 1.0f : F.PullSpeed;
     MaxSpeed = S.BurstSpeed * Pace * FMath::Lerp(0.12f, 1.0f, Fresh) * FightIndividual;
     Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * MaxSpeed;
+    // A hooked fish pulls against the line whatever way it meant to go: drawn up it bores down, drawn
+    // in it heads out. Its own way (along the bank, for the weeds, up to the top) only bends that.
+    if (!bFightJump && PendingLineForce.SizeSquared() > 400)
+    {
+        FVector Way = Desired.GetSafeNormal() * 0.45f - PendingLineForce.GetSafeNormal() * 0.75f;
+        // Above all it wants the depth: a fish with strength left keeps to the lower water and bores
+        // for the bottom when the line has it near the top, rather than skimming away along the
+        // surface at the line's end. Tiring, it lets itself come up.
+        const FVector Here = GetActorLocation();
+        const float Column = FMath::Max(20.0f, LakeFish::SurfaceZ - BottomZ(Here.X, Here.Y));
+        const float Keeps = FMath::Max(25.0f, Column * FMath::Lerp(0.2f, 0.8f, FMath::SmoothStep(0.25f, 0.8f, Fresh)));
+        const float Shallow = FMath::Clamp((Keeps - (LakeFish::SurfaceZ - (float)Here.Z)) / 50.0f, 0.0f, 1.5f);
+        Way.Z -= 1.3f * Shallow;
+        Desired = Way.GetSafeNormal() * MaxSpeed;
+    }
     if (Effort > 0.4f && Vel.Size() > 30 && SimTime >= NextFightDisturb)
     {
         if (auto* Life = ALakeLife::Get(GetWorld())) Life->Disturb(GetActorLocation(), 120 + WeightKg * 100, FMath::Min(1.0f, Effort * (float)Vel.Size() / 100));
@@ -2348,13 +2383,19 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     FVector Heading = GetActorForwardVector();
     const bool bBurst = BurstTime > 0;
     const float TurnRate = S.TurnRate * (bBurst ? 1.2f : 0.8f) * Agility * FightIndividual;
-    const float Water = FMath::Clamp(0.5f + (LakeFish::SurfaceZ - GetActorLocation().Z) / FMath::Max(8.0f, LakeFish::LengthCm(Species, WeightKg) * 0.45f), 0.0f, 1.0f);
+    // How much of the fish the water still holds: by the middle of its body, not its nose. A fish
+    // with its head hauled out hangs from the line with its tail in the water and all its strength;
+    // it is helpless only when most of the body is clear.
+    const float BodyLength = LakeFish::LengthCm(Species, WeightKg);
+    const float MidZ = MouthLocation().Z - BodyLength * 0.5f;
+    const float Water = FMath::Clamp(0.5f + (LakeFish::SurfaceZ - MidZ) / FMath::Max(8.0f, BodyLength * 0.6f), 0.0f, 1.0f);
     // On the line the fish throws itself about: the body turns straight at the wanted heading,
     // limited by the species' turn rate. Fish keep their back up: pitch is limited.
     if (Desired.SizeSquared() > 4)
     {
         FVector Want = Desired.GetSafeNormal();
-        Want.Z = FMath::Clamp(Want.Z, -0.5f, 0.5f);
+        // (Boring down it stands almost on its head; it never points up that steeply by itself.)
+        Want.Z = FMath::Clamp(Want.Z, -0.9f, 0.5f);
         Want.Normalize();
         const FQuat From = Heading.ToOrientationQuat(), To = Want.ToOrientationQuat();
         const float Angle = FMath::RadiansToDegrees(From.AngularDistance(To));
@@ -2368,18 +2409,31 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     const float Inertia = FMath::Max(0.2f, WeightKg * Len * Len * 0.1f);
     const FVector Lever = Heading * (Len * 0.4f);
     HookAngularVelocity += (FVector::CrossProduct(Lever, PendingLineForce) / Inertia - HookAngularVelocity * (2 + 4 * Water)) * DeltaSeconds;
-    HookAngularVelocity = HookAngularVelocity.GetClampedToMaxSize(3.0f);
+    // A fish with strength left holds its body against the line: the pull turns it no faster than a
+    // part of its own turning, so it keeps its head down and away and goes on boring. Only a spent
+    // fish, or one hauled out of the water, swings round to hang along the line.
+    const float Holds = bFightAwake ? Water * StaminaFraction() : 0.0f;
+    HookAngularVelocity = HookAngularVelocity.GetClampedToMaxSize(FMath::Lerp(3.0f, FMath::DegreesToRadians(TurnRate) * 0.35f, Holds));
     const float AngularSpeed = HookAngularVelocity.Size();
     if (AngularSpeed > 0.001f) Heading = FQuat(HookAngularVelocity / AngularSpeed, AngularSpeed * DeltaSeconds).RotateVector(Heading);
-    // Thrust only along the body axis, like a real tail; reverse thrust is weak.
-    float Accel = S.Acceleration * (bBurst ? 2.5f : 1.0f);
+    // The fish pulls the way it strives to go: the tail and the whole body work at it, and the body
+    // comes round after (it turns faster than a bout lasts). Lying across its way it pulls less.
+    // (Thrust along the body axis alone left a fish whose head the line had turned up helpless,
+    // whatever its strength: it was hauled to the top in a second and hung there.)
+    float Accel = S.Acceleration * (bBurst ? 1.6f : 1.0f);
     const bool bRest = FightPhase == EFightPhase::Pause || FightPhase == EFightPhase::Gap;
-    Accel *= Water * S.Strength * FMath::Lerp(0.08f, 1.0f, StaminaFraction()) * FightIndividual * (bRest && bFightAwake ? 0.08f : 1.0f);
-    const float ForwardSpeed = FVector::DotProduct(Vel, Heading);
-    const float TargetSpeed = Desired.Size() * FMath::Max(0.0f, FVector::DotProduct(Heading, Desired.GetSafeNormal()));
-    const float Thrust = bFightJump ? 0 : FMath::Clamp((TargetSpeed - ForwardSpeed) * 3.0f, -Accel * 0.3f, Accel);
+    // Between its bouts a fish with strength left does not go limp: it stands and leans against the
+    // line. Only a tired one lets itself be drawn while it rests.
+    Accel *= Water * S.Strength * FMath::Lerp(0.08f, 1.0f, StaminaFraction()) * FightIndividual
+        * (bRest && bFightAwake ? FMath::Lerp(0.08f, 0.7f, StaminaFraction()) : 1.0f);
+    const FVector PullDir = Desired.GetSafeNormal();
+    const float ForwardSpeed = FVector::DotProduct(Vel, PullDir);
+    const float Aligned = FMath::Lerp(0.6f, 1.0f, FMath::Max(0.0f, float(FVector::DotProduct(Heading, PullDir))));
+    // (Held back by the line it does not ease off as a free fish nearing its speed does: it pulls
+    // with all it has until it is moving as fast as it means to.)
+    const float Thrust = bFightJump || PullDir.IsNearlyZero() ? 0.0f : FMath::Clamp((float(Desired.Size()) - ForwardSpeed) * 10.0f, 0.0f, Accel * Aligned);
     // Passive towing is not exercise. Count propulsion and opposition to the line while active.
-    const float Opposition = FMath::Max(0.0f, float(-FVector::DotProduct(PendingLineForce, Heading)))
+    const float Opposition = FMath::Max(0.0f, float(-FVector::DotProduct(PendingLineForce, PullDir)))
         / FMath::Max(1.0f, WeightKg * S.Acceleration * S.Strength);
     HookGrip -= DeltaSeconds * (1 - HookGrip) * 0.06f * FMath::Max(0.0f, Opposition - 0.8f);
     if (HookGrip <= 0) { Release(6); return; }
@@ -2387,8 +2441,10 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
         + (bRest || bFightJump ? 0 : FMath::Max(0.0f, ForwardSpeed) / S.BurstSpeed * 0.4f + Opposition * 0.35f), 0.0f, 1.0f);
     const float Recover = bRest && !bFightJump ? S.Fight.Recovery * FMath::Max(0.0f, 1 - Effort / 0.2f) : 0;
     Stamina = FMath::Clamp(Stamina + DeltaSeconds * (Recover - S.Fight.EffortCost * Effort), 0.0f, MaxStamina);
+    // Its head held out of the water it gulps air and is soon spent: this is how a fish is subdued.
+    if (!bFightJump && MouthLocation().Z > LakeFish::SurfaceZ + 2) Stamina = FMath::Max(0.0f, Stamina - MaxStamina * 0.12f * DeltaSeconds);
 
-    Vel += Heading * Thrust * DeltaSeconds;
+    Vel += PullDir * Thrust * DeltaSeconds;
     if (!bFightJump) Vel.Z -= 980.0f * (1 - Water) * DeltaSeconds;
     // External pull from the fishing line, divided by the fish's mass.
     Vel += PendingLineForce / FMath::Max(0.03f, WeightKg) * DeltaSeconds;

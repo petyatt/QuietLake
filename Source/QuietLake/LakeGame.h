@@ -98,6 +98,9 @@ public:
     bool bRetrieveAuto = false;
     /** Seconds of LMB held to raise the rod from the water to upright: slow, the pole is heavy. */
     static constexpr float RetrieveTime = 3.6f;
+    /** A rig lying far out is lifted more slowly (times RetrieveTime): it skates in over the water
+     *  and leaves it nearer the angler, instead of swinging in from afar and past him. */
+    float RetrieveSlow = 1;
     /** At the top of the lift: the rod almost upright. */
     static constexpr float RetrieveTopElevation = 84;
     /**
@@ -115,6 +118,19 @@ public:
     float CastLoadTime() const { return CastLoad * RodHeft(); }
     UPROPERTY(Replicated) ECastResult CastResult = ECastResult::Good;
     UPROPERTY(Replicated) float CastSeverity = 0;            // 0..1: how much too soon the rig was let go
+    /**
+     * The cast is aimed: the rig is laid on the water where the angler looks, as far as the line
+     * reaches from where he stands (CastReach). The owner shows the spot (a ring on the water) and
+     * sends it with the release; the server keeps it within reach and on the water.
+     */
+    UPROPERTY(Replicated) FVector_NetQuantize CastTarget;
+    FVector CastAimPoint() const;
+    float CastReach() const;
+    FVector ValidCastTarget(FVector Wanted) const;
+    static constexpr float CastNearest = 220.0f;
+    FVector PendingCastAim = FVector::ZeroVector;   // the owner's aim sent with the release (zero: none)
+    FVector HandFishFrom = FVector::ZeroVector;     // where the fish hung when the free hand took it
+    bool bHandFishSeen = false;
     UPROPERTY(Replicated) FVector_NetQuantize10 CastHookLanding;   // where the hook came down (beyond the float when laid out straight)
     /** Seconds since LMB was pressed for the cast (0 when not casting). */
     float SwingTime(float Now) const { return bCharging ? FMath::Max(0.0f, Now - ChargeServerStart) : 0.0f; }
@@ -180,8 +196,33 @@ public:
     static constexpr float MinDepth = 10.0f;
     static constexpr float MaxDepth = 500.0f;   // about 17% short of the 6 m rod
     UPROPERTY(Replicated) bool bReeling = false;            // fighting: LMB held = lifting the rod, pulling
-    UPROPERTY(Replicated) float RodLift = 0;                // fighting: 0 = rod lowered towards the fish, 1 = raised high
+    /**
+     * A bite or a fight: how far the hands have raised the rod above where the mouse aims it, in parts
+     * of RodLiftDegrees. 1 = raised high; below zero a fish has dragged it down past the aim, at the
+     * lowest the rod lies along the line and gives no more.
+     */
+    UPROPERTY(Replicated) float RodLift = 0;
     float RodLiftShown = 0;   // the lift the pose shows: follows RodLift, then eases out when the fish leaves
+    float ArmGiveShown = 0;   // degrees the loaded rod is drawn down in the hands at once (from Tension), smoothed
+    // The tackle in the hands (what its line, hook and rod stand: FLakeTackle) and the hands on a
+    // loaded rod. Forces in gf at the rod tip.
+    static FLakeTackle TackleOf(ERodKind Kind);
+    FLakeTackle Tackle() const { return TackleOf(RodKind); }
+    static constexpr float HandPullForce = 380.0f;     // the most the hands lift with (LMB held): a 6 m lever
+    static constexpr float HandHoldForce = 220.0f;     // what they hold against once LMB is let go
+    static constexpr float HandLandWeight = 1.2f;      // kg: a heavier fish is not lifted on the line, it is led to the bank
+    static constexpr float RodLiftDegrees = 55.0f;
+    static constexpr float RodLiftSpeed = 1.0f;        // parts per second on a slack line
+    /**
+     * The arms give under load like a second spring behind the rod's bend: ArmGiveForce gf at the tip
+     * draws the rod down a degree at once (a degree moves the tip 10.5 cm). In series with the blank
+     * (ALakeRod::TetherForce) this leaves HandSeries of the blank's own stiffness: with the medium rod
+     * about 4.4 m of give before the line breaks instead of 1.4.
+     */
+    static constexpr float ArmGiveForce = 90.0f;
+    static float HandSeries(const FLakeTackle& T) { return 1.0f / (1.0f + T.RodSpring * 10.47f / ArmGiveForce); }
+    /** The hands on a loaded rod: LMB lifts against the load, a harder pull drags the rod down (LakeGame.cpp). */
+    void UpdateRodHands(float DeltaSeconds, float Force);
     // --- the three rods and the case ---
     static constexpr int32 NumRods = (int32)ERodKind::Count;
     /** Every rod: in the case, in the hands, on its stand (fishing) or lying on the ground. */
@@ -347,6 +388,9 @@ private:
     void PlaceBait();
     UFUNCTION(Server, Reliable) void ServerSelectBait(EBait NewBait);
     FVector RodTip() const;
+    /** The line's own load on a fish (gf): the rod's and the arms' spring, without the damping that steadies the fish. */
+    float LineLoad(ALakeFish* Fish) const;
+    bool bRodLaidFlat = false;   // a fish has dragged the rod down along the line: nothing gives any more
     void ToggleRod();
     void ToggleView();
     void ToggleLifePanel();
@@ -365,6 +409,8 @@ private:
     UFUNCTION(Server, Reliable) void ServerDevWeather();
     /** -LakePreview, -BitePreview, -LandPreview: scripted scenes, filmed and logged (LakePreviews.cpp). */
     void RunPreviews();
+    /** -FishingBench: casts, bites and fights played by a scripted hand and measured (LakeBench.cpp). */
+    void RunFishingBench();
     /** Previews: this rod in the hands at once, the one held put into its compartment. */
     void UseRod(ERodKind Kind);
     void RunRodDiagnostics(float DeltaSeconds);
@@ -391,7 +437,7 @@ private:
     FVector LeftShoulder() const;
     static constexpr float ArmReach = 62.0f;
     /** Fastest the shot may pass (cm/s, relative to the angler) and still be taken in the fingers. */
-    static constexpr float CatchSpeed = 320.0f;
+    static constexpr float CatchSpeed = 480.0f;
     /** 0..1: how far the free hand reaches out for the rig coming in on the line. */
     float RigReach() const;
     /** Rod elevation while waiting (deg): with a deep float the main line is short, so the tip goes down to the water. */
@@ -420,7 +466,7 @@ private:
     void MoveRodAxis(float Delta, bool bPitch);
     UFUNCTION(Server, Unreliable) void ServerSwing(float Pitch, float Yaw);
     UFUNCTION(Server, Unreliable) void ServerSteer(float Pitch);
-    UFUNCTION(Server, Reliable) void ServerReleaseWithAim(float Pitch, float Yaw);
+    UFUNCTION(Server, Reliable) void ServerReleaseWithAim(float Pitch, float Yaw, FVector_NetQuantize Aim);
     float NextAimSend = 0;
     void Right(float Value);
     void Fish();

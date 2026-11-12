@@ -37,7 +37,7 @@
   "learning": { "fright": 0.8, "forgetHours": 12, "schoolShare": 0.5 },
   "oxygenMin": 2.5,
   "mood": { "dawn": 1.0, "day": 0.4, "dusk": 1.0, "night": 0.8, "tempLow": 10, "tempBest": 20, "tempHigh": 27, "overcast": 0.3, "front": 0.9 },
-  "strength": 1.1, "stamina": 14, "runBurst": 0.6,
+  "strength": 3.8, "stamina": 14, "runBurst": 0.6,
   "fight": {
     "alongWeight": 0.22, "awayWeight": 0.25, "diveWeight": 0.53, "surfaceWeight": 0,
     "pullMin": 2.2, "pullMax": 4, "pullSpeed": 0.7, "pauseMin": 0.9,

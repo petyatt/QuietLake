@@ -54,7 +54,7 @@
   "mood": { "dawn": 1.0, "day": 0.75, "dusk": 0.9, "night": 0.15, "tempLow": 6, "tempBest": 18, "tempHigh": 27, "overcast": 0.1,
             "lightRain": 1.0, "heavyRain": 0.5, "ripple": 1.15, "strongWind": 0.6, "fog": 0.85, "front": 0.8 },
 
-  "strength": 1.0,
+  "strength": 2.3,
   "stamina": 9,
   "runBurst": 0.5,
   "fight": {

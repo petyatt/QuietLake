@@ -213,7 +213,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->ServerFish_Implementation();
     TestTrue(TEXT("LMB after the cast starts drawing the rig out"), Fisher->bRetrieving);
     // The rod rises only while LMB is held; let go, it stops where it is; held again, it goes on.
-    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.4f);
+    // (A rig lying far out is lifted more slowly: RetrieveSlow.)
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * Fisher->RetrieveSlow * 0.4f);
     const float Held = Fisher->RetrieveLift;
     TestTrue(TEXT("Holding LMB raises the rod"), Held > 0.35f && Held < 0.45f);
     Fisher->ServerRelease_Implementation();
@@ -221,9 +222,9 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Releasing LMB lowers the rod back"), !Fisher->bRetrieving && Fisher->RetrieveLift < 0.05f);
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.1f);
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * Fisher->RetrieveSlow * 0.1f);
     TestTrue(TEXT("Holding LMB again starts from the lowered rod"), Fisher->bRetrieving && Fisher->RetrieveLift > 0.05f && Fisher->RetrieveLift < Held);
-    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * Fisher->RetrieveSlow);
     TestTrue(TEXT("Raised to the top the rig is out"), !Fisher->bRetrieving && Fisher->FishingState == EFishingState::Idle);
 
     // An early LMB during a bite must not cut the lift short: when the fish lets go, the rod settles
@@ -252,7 +253,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->OnFishTake(Pike);
     StrikeHome(Pike);
     Fisher->ServerFish_Implementation();
-    Pike->SetActorLocation(Fisher->RodTip() + FVector(Facing, 0) * (ALakeRod::LineLength + 300));
+    // (The rod's bend and the give of the arms take up about 4.4 m before the line parts.)
+    Pike->SetActorLocation(Fisher->RodTip() + FVector(Facing, 0) * (ALakeRod::LineLength + 520));
     Fisher->UpdateFight(0.05f);
     TestTrue(TEXT("Exceeding the fixed line's stretch limit breaks it"), Fisher->FishingState == EFishingState::Idle);
     TestEqual(TEXT("Broken line awards no fish"), Fisher->CatchCount, 1);
@@ -1685,6 +1687,8 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
             Fish->MoveHooked(FVector(S.BurstSpeed, 0, 0), S.BurstSpeed, 0.025f);
         }
         TestTrue(S.Id + TEXT(": resisting the line costs stamina"), Fish->Stamina < BeforeLoad - 0.2f);
+        // A rest is a rest only on a slack line: leaning against a pull is work too.
+        Fish->ApplyLineForce(FVector::ZeroVector);
         Fish->FightPhase = EPhase::Pause;
         Fish->FightRemaining = 4;
         Fish->Vel = FVector::ZeroVector;
@@ -1877,6 +1881,18 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
     const FVector PlayerPull = ALakeRod::TetherForce(FVector(-20,0,0), FVector(600,0,0), FVector::ZeroVector, 600, 0.4f);
     TestTrue(TEXT("Player moving away produces the same stretch force"), (PlayerPull - Load(620)).IsNearlyZero());
     TestTrue(TEXT("Damping opposes outward motion"), Load(620, 100).Size() > Load(620).Size());
+    // The tackle: a softer blank loads the line less for the same pull-out, the arms behind it give
+    // too, and with matched tackle the line is the weakest link of every rod.
+    for (ERodKind Kind : { ERodKind::Light, ERodKind::Medium, ERodKind::Heavy })
+    {
+        const FLakeTackle Gear = ALakeCharacter::TackleOf(Kind);
+        TestTrue(TEXT("The line parts before the rod breaks"), Gear.LineBreak < Gear.RodBreak && Gear.Weakest() == Gear.LineBreak);
+        TestTrue(TEXT("The hook's hold wears below the line's strength"), Gear.HookSafe < Gear.LineBreak);
+        TestTrue(TEXT("The arms give behind the blank"), ALakeCharacter::HandSeries(Gear) > 0.1f && ALakeCharacter::HandSeries(Gear) < 0.6f);
+    }
+    const FLakeTackle Soft = ALakeCharacter::TackleOf(ERodKind::Light), Stiff = ALakeCharacter::TackleOf(ERodKind::Heavy);
+    auto Spring = [](const FLakeTackle& Gear) { return ALakeRod::TetherForce(FVector::ZeroVector, FVector(700, 0, 0), FVector::ZeroVector, 600, 0.4f, Gear.RodSpring).Size() * ALakeCharacter::HandSeries(Gear); };
+    TestTrue(TEXT("A softer rod loads the line less for the same run"), Spring(Soft) < Spring(Stiff));
     ALakeFish* F = SpawnFish(World, EFishSpecies::Perch, 0.4f, Open);
     auto Holding = [&](float Reach)
     {

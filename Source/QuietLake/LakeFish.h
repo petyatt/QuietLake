@@ -17,6 +17,21 @@ UENUM()
 enum class EBait : uint8 { Worm, Maggot, Bread, Count UMETA(Hidden) };
 
 /**
+ * What a set of tackle stands and how it gives. A fight is lost at its weakest link: the line parts,
+ * the hook tears out of the lip, or the rod breaks. Forces in gf at the rod tip. One set per rod for
+ * now (ALakeCharacter::TackleOf); other lines, hooks and rods only change these numbers.
+ */
+struct FLakeTackle
+{
+    float LineBreak = 2600.0f;            // what the line stands (0.2 mm mono)
+    float HookSafe = 1170.0f;             // a harder pull wears the hook's hold in the lip (a small single hook)
+    float RodBreak = 4000.0f;             // what the blank stands before it breaks
+    float RodSpring = 2600.0f / 140.0f;   // gf per cm the tip is drawn off the unbent rod: its stiffness
+    /** The load the tackle as a whole stands: the line or the rod, whichever goes first. */
+    float Weakest() const { return FMath::Min(LineBreak, RodBreak); }
+};
+
+/**
  * What a free fish is doing with its day (see ALakeLife, "Live Fish"): feeding (predators hunt),
  * resting in cover, or cruising its patch of water. Chosen from hunger, tiredness, the species'
  * daily rhythm and the weather; school members follow their leader.
@@ -791,6 +806,7 @@ private:
     bool bFightAwake = false;         // the line has pulled: it now knows and fights
     int32 FightPulses = 0;
     bool bFightJump = false, bShoreTried = false, bShoreRun = false;
+    bool bFirstRunDone = false;       // the rush a fish makes the moment it feels the hook
     float Activity = 1;               // see LakeFish::Activity
     float NextMoodCheck = 0;
     FFishConditions Seen;             // the time and the weather, looked at with the mood

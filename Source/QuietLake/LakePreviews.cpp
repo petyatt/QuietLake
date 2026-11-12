@@ -55,6 +55,7 @@ void ALakeCharacter::RunRodDiagnostics(float DeltaSeconds)
 
 void ALakeCharacter::RunPreviews()
 {
+    RunFishingBench();
     // -LookFrom=X,Y,Yaw,Pitch (world cm, degrees): a still camera exactly there, for reproducing a
     // player's screenshot, plus the ground profile straight ahead.
     if (FString Look; FParse::Value(FCommandLine::Get(), TEXT("LookFrom="), Look, false) && GetNetMode() == NM_Standalone)

@@ -368,11 +368,29 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
     // length: let go, the rig swings out on it from where the hand held it, like a swing.
     const FVector ShotTarget = In.HandPoint;
     const FVector HandFrom = ShotPos;
+    // Let go for an aimed cast: the swing of the rod throws the shot at the spot. From here to the
+    // water it is a thrown weight, nothing more: where it is now, the speed that carries it there.
+    if (bFlying && !bWasFlying && !In.CastTarget.IsZero() && !bShotHeld)
+    {
+        const FVector To(In.CastTarget.X, In.CastTarget.Y, LakeFish::SurfaceZ);
+        CastFrom = ShotPos;
+        CastTime = FMath::Clamp(0.5f + float(FVector::Dist2D(To, CastFrom)) / 1300.0f, 0.65f, 1.15f) * FMath::Sqrt(FMath::Max(0.5f, In.RodHeft));
+        CastVel = (To - CastFrom) / CastTime + FVector(0, 0, 0.5f * Gravity * CastTime);
+        CastT = 0;
+        bCastFlight = true;
+    }
+    if (!bFlying) bCastFlight = false;
+    bWasFlying = bFlying;
     TipReach = -1;
     if (bShotHeld)
     {
         TipAnchor = ShotTarget;
         TipReach = MainLength + ToShot;
+    }
+    else if (bHookHeld && In.LineFish)
+    {
+        TipAnchor = HookTarget;
+        TipReach = WholeLine;
     }
     const TArray<FFloatSlice>& Slices = FloatSlices();
     // The water under the float: the live waves where they are simulated (they move it up and down
@@ -448,6 +466,14 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             // Closed fingers are a kinematic contact, acquired only at the rig's actual position.
             ShotPos = FMath::Lerp(HandFrom, ShotTarget, float(Step + 1) / Steps);
         }
+        else if (bCastFlight)
+        {
+            // The thrown shot: a parabola to the spot aimed at. It ends on the water and sinks from there.
+            CastT = FMath::Min(CastT + H, CastTime);
+            ShotPrev = ShotPos;
+            ShotPos = CastFrom + CastVel * CastT - FVector(0, 0, 0.5f * Gravity * CastT * CastT);
+            if (CastT >= CastTime) bCastFlight = false;
+        }
         else Integrate(ShotPos, ShotPrev, FMath::Pow(bShotWet ? 0.0005f : 0.8f, H), FVector(0, 0, -Gravity * (bShotWet ? 0.91f : 1.0f))
             + (bShotWet ? FVector::ZeroVector : AirDrag(ShotPos, ShotPrev, 0.00035f)));
         if (bHookHeld)
@@ -522,14 +548,14 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             }
         }
         // --- line and stick constraints, by mass ---
-        const float WK = 1 / KeelMass, WT = 1 / TipMass, WS = bShotHeld ? 0.0f : 1 / ShotMass, WH = bHookHeld ? 0.0f : bFishOut ? 1 / In.FishGrams : 1 / HookMass;
+        const float WK = 1 / KeelMass, WT = 1 / TipMass, WS = bShotHeld || bCastFlight ? 0.0f : 1 / ShotMass, WH = bHookHeld ? 0.0f : bFishOut ? 1 / In.FishGrams : 1 / HookMass;
         // The rig hanging from the tip, or flying out on the line, pulls it through the line. A fish
         // and the cast draw load it as a force instead (TipForce); a hand-held rig not at all.
         const float WRodTip = In.FishingState >= EFishingState::Fight || bShotHeld ? 0.0f : BlankW.Last();
         const float WRig = WK + WT;
         for (int32 Pass = 0; Pass < 8; ++Pass)
         {
-            if (bShotHeld) Rope(RodTip, BlankW.Last(), ShotPos, 0, MainLength + ToShot);
+            if (bShotHeld || bCastFlight) Rope(RodTip, BlankW.Last(), ShotPos, 0, MainLength + ToShot);
             Rope(FloatK, WK, FloatT, WT, FloatLength, true);
             Rope(FloatK, WK, ShotPos, WS, ToShot);
             Rope(ShotPos, WS, HookPos, WH, ShotToHook);
@@ -679,14 +705,14 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
     LeaderNow = bInitialised && Input.FishingState == EFishingState::Idle ? FMath::FInterpConstantTo(LeaderNow, TargetLeader, FMath::Min(DeltaSeconds, 1 / 30.0f), 120.0f) : TargetLeader;
     FRodInput In = Input;
     In.HookDepth = LeaderNow;
-    // Loads on the tip given as a force (dyn): a fish pulling (the line tension the server reports,
-    // up to ~1.2 kgf), a fish lifted out (its weight). The rig's weight and the hand drawing it back
-    // for the cast pull through the line itself (UpdateBobber).
+    // Loads on the tip given as a force (dyn): a fish lifted out (its weight). A fish in the water
+    // holds the tip through the line itself: the line does not stretch, so the tip stays within the
+    // line's length of its mouth and the blank bends as far as that takes (UpdateBobber); so do the
+    // rig's weight and the hand drawing it back for the cast.
     TipForce = FVector::ZeroVector;
     if (Points.Num())
     {
-        if (In.LineFish && In.FishingState <= EFishingState::Fight) TipForce = (FloatK - Tip()).GetSafeNormal() * (In.Tension * 2600.0f * 1000.0f);
-        else if (In.FishingState == EFishingState::Landing)
+        if (In.FishingState == EFishingState::Landing)
         {
             const float Support = ALakeEnvironment::IsWater(HookPos) ? FishSupport(HookPos.Z, In.FishLength) : 0;
             const float Load = 980.0f * (1 - 0.98f * Support) + Support * FMath::Min(250.0f, float(HookVel.Size())) * 1.2f;
@@ -695,6 +721,12 @@ void ALakeRod::UpdateRod(const FRodInput& Input, float DeltaSeconds)
     }
     Heft = FMath::Max(0.5f, In.RodHeft);
     bLyingDown = In.bOnGround;
+    {
+        const FVector Straight = In.Hold.TransformPosition(FVector(RodLength, 0, 0));
+        StraightTipVel = bInitialised && DeltaSeconds > 1e-4f && FVector::Dist(Straight, StraightTip) < 300
+            ? (Straight - StraightTip) / DeltaSeconds : FVector::ZeroVector;
+        StraightTip = Straight;
+    }
     PrepareBlank(In.Hold);
     // First frame or a teleport: hang the rig straight down from the tip.
     const bool bReset = !bInitialised || FVector::Dist(Tip(), LastTip) > 300;
@@ -752,12 +784,12 @@ bool ALakeRod::FloatDown() const
     return ALakeEnvironment::IsWater(FloatK) ? FloatK.Z <= LakeFish::SurfaceZ + 1.0f : FloatK.Z <= ALakeEnvironment::GroundHeight(FloatK.X, FloatK.Y) + 2.0f;
 }
 
-FVector ALakeRod::TetherForce(FVector Anchor, FVector Mouth, FVector RelativeVelocity, float FreeLength, float Mass)
+FVector ALakeRod::TetherForce(FVector Anchor, FVector Mouth, FVector RelativeVelocity, float FreeLength, float Mass, float Spring)
 {
     const FVector To = Anchor - Mouth;
     const float Stretch = FMath::Max(0.0f, float(To.Size()) - FreeLength);
     if (Stretch <= 0) return FVector::ZeroVector;
-    const float K = 2600.0f / 140.0f;
+    const float K = Spring;
     const float Damping = 1.4f * FMath::Sqrt(K * FMath::Max(0.03f, Mass));
     const float Opening = FMath::Clamp(float(-FVector::DotProduct(RelativeVelocity, To.GetSafeNormal())), -200.0f, 200.0f);
     return To.GetSafeNormal() * FMath::Max(0.0f, K * Stretch + Damping * Opening);
@@ -765,9 +797,10 @@ FVector ALakeRod::TetherForce(FVector Anchor, FVector Mouth, FVector RelativeVel
 FVector ALakeRod::PullOnFish(FVector Mouth, FVector Velocity, float Mass) const
 {
     if (!bInitialised) return FVector::ZeroVector;
-    const float BeforeHook = FVector::Dist(Tip(), FloatK) + FVector::Dist(FloatK, ShotPos);
-    const float Rest = LineLength - KeelDepth;
-    return TetherForce(ShotPos, Mouth, Velocity - ShotVel, FMath::Max(0.0f, Rest - BeforeHook), Mass);
+    // The line does not stretch: the rod's bend is the spring. Its measure is how far the tip of the
+    // unbent rod would have to come towards the fish for the line to reach. (The rig's own points are
+    // no measure: pulled past the line's length they cannot follow, and the load came out near zero.)
+    return TetherForce(StraightTip, Mouth, Velocity - StraightTipVel, LineLength, Mass);
 }
 
 

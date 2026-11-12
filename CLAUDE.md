@@ -78,6 +78,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-CasePreview` | чехол для удочек: за спиной и от первого лица, призрак после B, на земле, подсказка «Открыть / Надеть», открытая крышка и окно, все удочки в чехле, контур удочки при удержании R и удочка на земле, три снасти на рогатках; лог `QUIET_LAKE_CASE` | `LakePreviews.cpp` |
 | `-FisherPreview` | рыбак-MetaHuman в одежде: вид спереди, сбоку, сзади и лицо крупно (`Saved/Fisher_Front/Side/Back/Face.png`) | `LakePreviews.cpp` |
 | `-PlantPreview` | растения нового мира в ряд за лагерем в ясный полдень: весь ряд, хвойные, лиственные с кустами, тростник с рогозом и осокой, кора берёзы, ольхи и сосны крупно (`Saved/Plants_*.png`); размеры в логе `QUIET_LAKE_PLANT` | `LakePreviews.cpp` |
+| `-FishingBench` | стенд ловли: скриптовая рука забрасывает (`cast:<метры>`), ждёт поклёвку, подсекает, вываживает и пишет замеры строками `BENCH` (куда легла снасть, натяжение, глубина и силы рыбы 4 раза в секунду, итог); `-BenchCases=cast:6,perch:0.8,pike:2`, `-BenchDirect` — рыба сразу на крючке, `-BenchShots` — кадры `Saved/Bench_*.png`. Запускать по одному окну: несколько экземпляров роняют частоту кадров, и физика замедляется | `LakeBench.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
 | `-ScreenshotTest` | нажимает F12 через настоящий путь ввода и проверяет, что снимок появился | `LakePreviews.cpp` |
 | `-LookFrom=X,Y,Yaw,Pitch` | камера ровно в точке (мировые см, градусы), кадр `Saved/LookFrom.png` и профиль высот вперёд | `LakePreviews.cpp` |
@@ -99,6 +100,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   рисуются для самого рыбака (`SetOwnerNoSee`), на выделенном сервере не создаются; проверка — `-FisherPreview`;
   поза удилища), `ALakeEnvironment` (объявление), `ALakeGameMode`.
 - `LakePreviews.cpp` — сценарии `-LakePreview`, `-BitePreview`, `-LandPreview`.
+- `LakeBench.cpp` — стенд `-FishingBench`: замер заброса, поклёвки и вываживания (`ALakeCharacter::RunFishingBench`).
 - `LakeRods.cpp` — три удочки рыбака (`ALakeCharacter::Rods`: чехол, руки, рогатка, земля; снасть удочки на рогатке ловит сама, рыба выбирает снасть по `ALakeFish::TargetRig`) и чехол (на спине / на земле, открыт): серверные запросы и локальный интерфейс владельца — призрак (B, R 2 с), подсказка над чехлом (колесо, F), окно чехла. Вид чехла и призрака — `LakeRodCase.h/.cpp` (`ALakeRodCase`, `ALakeGhost`); окно и подсказки рисует `LakeHUD.cpp`. Модели — `GenerateTackleModels.py`/`ImportTackle.py` с `QUIETLAKE_TACKLE=RodCase,RodCaseLid,RodCaseStrap,RodPacked_Light,RodPacked_Medium,RodPacked_Heavy`.
 - `LakeHUD.h/.cpp` — экран: карточка статуса, полосы натяжения и заброса, погода, панель F3.
 - `LakeRod.h/.cpp` — удочка только для вида (`ALakeRod`): физическое удилище (цепочка с упругостью),
@@ -127,13 +129,16 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   (удочку, поплавок, рыбу на леске, знаки на воде).
 - Цикл ловли — `EFishingState`: `Idle` → `Waiting` (наживка в воде) → `Bite` (рыба держит наживку,
   время на подсечку) → `Fight` → `Landing` (рыба на леске в воздухе, засчитывается в руке).
-  `bRetrieving` — снасть поднимается из воды в состоянии `Waiting`. Заброс автоматический: `bCharging` — ЛКМ зажата,
-  сила растёт (`CastCharge`, `CastChargeTime`); отпускание (`DoCast`) выбирает точку (`CastTargetFor`: куда
-  смотрит рыбак, дальность от силы, не дальше `CastReach`) в `FloatPosition`, `bRigFlying` — поплавок летит
-  к ней по дуге за `CastFlight` (`ALakeRod`), остальная снасть по физике; приводнение — по симуляции сервера
+  `bRetrieving` — снасть поднимается из воды в состоянии `Waiting`. Заброс прицельный: `bCharging` — ЛКМ зажата, на воде круг там, куда смотрит рыбак (`CastAimPoint`, не дальше `CastReach`);
+  отпускание (`DoCast`) берёт точку (`CastTarget`, сервер проверяет её `ValidCastTarget`), `bRigFlying` — грузило летит
+  в неё по параболе (`ALakeRod`, `bCastFlight`), остальная снасть по физике; приводнение — по симуляции сервера
   (`OnRigLanded`). ЛКМ после заброса — вытаскивание (`StartRetrieve`, `bRetrieveReturns`), ПКМ — подсечка
   (`Strike`). Мышь ведёт удилище и камеру (`MoveRodAxis`); ловля оснастки рукой — `bRigInHand`. Вес удилища (`ERodKind`, `RodHeft`) замедляет
   и смягчает все движения.
+- Вываживание: леска не тянется, сила на рыбу — от кончика несогнутого удилища (`LoadOnFish`, `LineLoad`), пружинят бланк и руки
+  (`UpdateRodHands`: ЛКМ тянет до `HandPullForce`, сильная рыба утягивает удилище вниз, `RodLift` может уйти ниже нуля). Прочность
+  лески, крючка и удилища — `FLakeTackle` (`TackleOf`): бой проигрывается по слабому звену. Рыба на крючке — `UpdateFightMotion`,
+  `MoveHooked` (первый рывок, тяга против лески и в глубину, усталость). Настраивать по стенду `-FishingBench`.
 - Рыба видна игроку в радиусе 150 м (`NetCullDistance`), вдали её симуляция грубее.
 - Новые превью: добавить ветку в `ALakeCharacter::RunPreviews` (или `RunPreview` у нужного актора)
   и флаг в список пропуска меню в `LakeMenu.cpp`.
