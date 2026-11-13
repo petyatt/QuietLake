@@ -1129,7 +1129,9 @@ void ALakeCharacter::RunPreviews()
                 if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(Try.Pitch, GetActorRotation().Yaw, 0));
             });
             At(Try.At, [this] { NextActionTime = 0; ServerFish_Implementation(); });
-            At(Try.At + (Try.Held > 0 ? ReleaseAt : 0.0f), [this] { ServerRelease_Implementation(); });
+            // (LMB held as long as the try says: the longer, the farther the rod's sweep carries the rig.)
+            At(Try.At + Try.Held, [this] { ServerRelease_Implementation(); });
+            (void)ReleaseAt;
             At(Try.At + Try.Held + 1.7f, [this]
             {
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CASTRESULT result=%d severity=%.2f out=%.0f cm hook beyond float=%.0f cm: %s"), (int32)CastResult, CastSeverity,

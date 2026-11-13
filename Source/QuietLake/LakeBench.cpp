@@ -1,7 +1,7 @@
 // -FishingBench: the whole of a catch played by a scripted hand, measured and logged (BENCH lines):
 // the cast for a given hold, the bite as the float shows it, the strike, the fight sampled four times
 // a second, the lift out. Several fish in one run:
-//   -BenchCases=roach:0.15,crucian:0.8,cast:6   (cast:<metres> only casts at a spot that far out)
+//   -BenchCases=roach:0.15,crucian:0.8,cast:1.2   (cast:<seconds LMB held> only casts; a fish case holds 1.2 s)
 // The hand plays as any player does: LMB held from the strike until the fish is in the hand.
 // -BenchDirect hooks the fish without waiting for its bite.
 #include "LakeGame.h"
@@ -45,6 +45,9 @@ namespace
         float MaxTension = 0, SumTension = 0, HardTime = 0, SlackTime = 0, MaxSpeed = 0, MaxDepth = 0, MaxOut = 0, HeldTime = 0;
         FTimerHandle Timer;
         int32 Frames = 0;
+        float ReleaseOut = 0, ReleaseHeight = 0, ReleasedAt = 0, NextPath = 0, NextCastShot = 0;
+        int32 CastShots = 0;
+        bool bByItself = false;
         float RateFrom = 0;
         uint64 RateFrame = 0;
     };
@@ -55,7 +58,7 @@ void ALakeCharacter::RunFishingBench()
 #if !UE_BUILD_SHIPPING
     if (!FParse::Param(FCommandLine::Get(), TEXT("FishingBench")) || GetNetMode() != NM_Standalone) return;
     auto Bench = MakeShared<FBench>();
-    FString List = TEXT("cast:3,cast:6,cast:9,roach:0.12,crucian:0.8");
+    FString List = TEXT("cast:0.3,cast:0.8,cast:1.4,cast:2.5,roach:0.12,crucian:0.8");
     FParse::Value(FCommandLine::Get(), TEXT("BenchCases="), List, false);
     TArray<FString> Items;
     List.ParseIntoArray(Items, TEXT(","), true);
@@ -94,7 +97,40 @@ void ALakeCharacter::RunFishingBench()
     float Depth = 110;
     FParse::Value(FCommandLine::Get(), TEXT("BenchDepth="), Depth);
 
-    GetWorldTimerManager().SetTimer(Bench->Timer, FTimerDelegate::CreateWeakLambda(this, [this, Bench, bDirect, bShots, bSide, Depth]
+    // The rig's way during a cast, ten times a second: out ahead, aside (+ right), up from the water,
+    // speed, and the rod's angle (cast:<s> cases only, -BenchPath).
+    const bool bPath = FParse::Param(FCommandLine::Get(), TEXT("BenchPath"));
+    const bool bCastSide = FParse::Param(FCommandLine::Get(), TEXT("BenchSide"));
+    auto LogRigPath = [this, bPath, bCastSide](FBench& B, float Now)
+    {
+        // (-BenchSide on a cast case: the whole cast from the side, a frame every 0.3 s.)
+        if (bCastSide && B.Index < B.Cases.Num() && B.Cases[B.Index].bCastOnly && Now >= B.NextCastShot && B.CastShots < 14 && (bCharging || bRigFlying))
+        {
+            APlayerController* PC = Cast<APlayerController>(GetController());
+            if (!B.SideCam.IsValid() && PC)
+            {
+                B.SideCam = GetWorld()->SpawnActor<ACameraActor>();
+                B.SideCam->GetCameraComponent()->SetFieldOfView(70);
+                PC->SetViewTarget(B.SideCam.Get());
+            }
+            if (ACameraActor* Cam = B.SideCam.Get())
+            {
+                const FVector Ahead = GetActorLocation() + GetActorForwardVector() * 420 + FVector(0, 0, 120);
+                const FVector Eye = Ahead + GetActorRightVector() * 1150 + FVector(0, 0, 60);
+                Cam->SetActorLocationAndRotation(Eye, (Ahead - Eye).Rotation());
+            }
+            B.NextCastShot = Now + 0.3f;
+            FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("BenchCast_%d_%02d.png"), B.Index, B.CastShots++), false, false);
+        }
+        if (!bPath || !RodVisual || Now < B.NextPath) return;
+        B.NextPath = Now + 0.1f;
+        const FVector Shot = RodVisual->ShotLocation() - GetActorLocation();
+        const FVector Tip = RodVisual->Tip() - GetActorLocation();
+        UE_LOG(LogTemp, Display, TEXT("BENCH   path t=%.1f rod %4.1f lmb %d | shot out %4.0f aside %4.0f up %4.0f speed %4.0f | tip out %4.0f up %4.0f"),
+            Now - B.StageStart, RodElevation, bCharging ? 1 : 0, FVector::DotProduct(Shot, GetActorForwardVector()), FVector::DotProduct(Shot, GetActorRightVector()),
+            RodVisual->ShotLocation().Z - LakeFish::SurfaceZ, RodVisual->ShotVelocity().Size(), FVector::DotProduct(Tip, GetActorForwardVector()), RodVisual->Tip().Z - LakeFish::SurfaceZ);
+    };
+    GetWorldTimerManager().SetTimer(Bench->Timer, FTimerDelegate::CreateWeakLambda(this, [this, Bench, bDirect, bShots, bSide, Depth, LogRigPath]
     {
         FBench& B = *Bench;
         const float Now = ServerNow();
@@ -121,7 +157,7 @@ void ALakeCharacter::RunFishingBench()
             return;
         }
         const FBenchCase& Case = B.Cases[B.Index];
-        const FString Label = Case.bCastOnly ? FString::Printf(TEXT("cast %.1f m"), Case.Hold)
+        const FString Label = Case.bCastOnly ? FString::Printf(TEXT("cast held %.2f s"), Case.Hold)
             : FString::Printf(TEXT("%s %.2f kg %s"), *LakeFish::Info(Case.Species).Id, Case.Weight, Case.bSlackBreak ? TEXT("ease 4-7 s") : Case.Rod == ERodKind::Light ? TEXT("light rod") : Case.Rod == ERodKind::Heavy ? TEXT("heavy rod") : TEXT(""));
         switch (B.Stage)
         {
@@ -148,13 +184,9 @@ void ALakeCharacter::RunFishingBench()
             if (RodKind != Case.Rod && FishingState == EFishingState::Idle) { UseRod(Case.Rod); B.StageStart = Now; return; }
             if (FishingState == EFishingState::Idle && bRigInHand && In > 1.0f)
             {
-                // Look at the water this far out (cast:<metres>; a fish case casts 5 m).
+                // Facing the water, looking a little down at it, as a player casting would.
                 if (APlayerController* PC = Cast<APlayerController>(GetController()))
-                {
-                    const float Out = (Case.bCastOnly ? Case.Hold : 8.0f) * 100;
-                    const float Down = FMath::RadiansToDegrees(FMath::Atan2(GetActorLocation().Z + 64 - LakeFish::SurfaceZ, Out));
-                    PC->SetControlRotation(FRotator(-Down, PC->GetControlRotation().Yaw, 0));
-                }
+                    PC->SetControlRotation(FRotator(-8, PC->GetControlRotation().Yaw, 0));
                 UE_LOG(LogTemp, Display, TEXT("BENCH case %d: %s"), B.Index, *Label);
                 Hold(true);
                 Go(2);
@@ -167,29 +199,43 @@ void ALakeCharacter::RunFishingBench()
                 B.StageStart = Now;
             }
             return;
-        case 2:   // the swing held, then let go
-            // (-BenchShots: the aim ring as the player sees it, LMB held.)
-            if (bShots && In >= 0.4f && B.Shots == 0 && Case.bCastOnly)
+        case 2:   // LMB held for the cast, then let go (or the rig comes down by itself, held to the end)
+        {
+            LogRigPath(B, Now);
+            // (-BenchShots: the cast as the player sees it, at the middle of the hold.)
+            const float HoldFor = Case.bCastOnly ? Case.Hold : 1.2f;
+            if (bShots && In >= HoldFor * 0.5f && B.Shots == 0 && Case.bCastOnly)
             {
                 ++B.Shots;
-                FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_aim_%d.png"), B.Index), true, false);
+                FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_cast_%d.png"), B.Index), true, false);
             }
-            if (In >= (bShots && Case.bCastOnly ? 1.0f : 0.6f)) { Hold(false); Go(3); }
+            const bool bDownByItself = !bCharging && FishingState == EFishingState::Waiting;
+            if (In >= HoldFor || bDownByItself)
+            {
+                B.ReleaseOut = RodVisual ? (float)FVector::DotProduct(RodVisual->ShotLocation() - GetActorLocation(), GetActorForwardVector()) : 0.0f;
+                B.ReleaseHeight = RodVisual ? float(RodVisual->ShotLocation().Z - LakeFish::SurfaceZ) : 0.0f;
+                B.ReleasedAt = In;
+                B.bByItself = bDownByItself;
+                Hold(false);
+                Go(3);
+            }
             return;
+        }
         case 3:   // the rig comes down
+            if (bRigFlying) LogRigPath(B, Now);
             if (FishingState == EFishingState::Waiting && !bRigFlying && In > 0.3f)
             {
                 const FVector Float = RodVisual ? RodVisual->FloatKeel() : FVector(FloatPosition);
                 const FVector Hook = RodVisual ? RodVisual->HookLocation() : FVector(BaitPoint);
-                UE_LOG(LogTemp, Display, TEXT("BENCH cast aimed %.0f cm out (reach %.0f): flight %.2f s, float %.0f cm out, %.0f cm aside, hook %.0f cm beyond the float, water there %.0f cm | %s"),
-                    FVector::Dist2D(FVector(CastTarget), GetActorLocation()), CastReach(), CastFlight, FVector::DotProduct(Float - GetActorLocation(), GetActorForwardVector()),
+                UE_LOG(LogTemp, Display, TEXT("BENCH cast held %.2f s%s (shot %.0f cm out, %.0f cm up then): down after %.2f s, float %.0f cm out, %.0f cm aside, hook %.0f cm beyond the float, water there %.0f cm | %s"),
+                    B.ReleasedAt, B.bByItself ? TEXT(" (came down by itself)") : TEXT(""), B.ReleaseOut, B.ReleaseHeight, CastFlight, FVector::DotProduct(Float - GetActorLocation(), GetActorForwardVector()),
                     FVector::DotProduct(Float - GetActorLocation(), GetActorRightVector()),
                     FVector::DotProduct(Hook - Float, GetActorForwardVector()), LakeMap::Depth(Float.X, Float.Y), *Status);
                 Go(Case.bCastOnly ? 8 : 4);
             }
             else if (In > 8)
             {
-                UE_LOG(LogTemp, Display, TEXT("BENCH cast aimed %.2f m: no landing (state %d flying %d retrieving %d) | %s"), Case.Hold, (int32)FishingState, bRigFlying ? 1 : 0, bRetrieving ? 1 : 0, *Status);
+                UE_LOG(LogTemp, Display, TEXT("BENCH cast held %.2f s: no landing (state %d flying %d retrieving %d) | %s"), Case.Hold, (int32)FishingState, bRigFlying ? 1 : 0, bRetrieving ? 1 : 0, *Status);
                 Go(8);
             }
             return;
@@ -373,13 +419,14 @@ void ALakeCharacter::RunFishingBench()
             }
             return;
         case 9:   // lift the rig out if it is still in the water
+            if (bRetrieving || (FishingState == EFishingState::Idle && !bRigInHand)) LogRigPath(B, Now);
             if (FishingState == EFishingState::Waiting && !bRigInHand) Hold(true);
             if ((FishingState == EFishingState::Idle && bRigInHand) || In > 40)
             {
                 if (Case.bCastOnly) UE_LOG(LogTemp, Display, TEXT("BENCH   rig back in the hand %.1f s after LMB (in hand %d)"), In, bRigInHand ? 1 : 0);
                 Hold(false);
                 ++B.Index;
-                B.Shots = 0; B.SideShots = 0; B.LandShots = 0; B.NextLandShot = 0;
+                B.Shots = 0; B.SideShots = 0; B.LandShots = 0; B.NextLandShot = 0; B.CastShots = 0; B.NextCastShot = 0;
                 if (ACameraActor* Cam = B.SideCam.Get())
                 {
                     Cam->Destroy();

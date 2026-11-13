@@ -75,32 +75,16 @@ void ALakeHUD::DrawHUD()
 
     // Line tension while fighting a fish.
     const float BarW = 360 * S, BarH = 8 * S, BarX = (Canvas->ClipX - BarW) / 2, BarY = Canvas->ClipY - 70 * S;
-    // The cast is aimed by the eyes: a ring on the water where the rig will be laid. Faint while the
-    // rig is in the hand ready to cast, bright while LMB is held.
-    if (Fisher->HasRodInHands() && Fisher->FishingState == EFishingState::Idle && (Fisher->bCharging || Fisher->bRigInHand))
+    // The cast: how far through its sweep the rod is (the longer LMB is held, the farther the rig goes).
+    if (Fisher->HasRodInHands() && Fisher->bCharging)
     {
-        const FVector Aim = Fisher->CastAimPoint();
-        if (LakeMap::IsWater(Aim.X, Aim.Y) && FVector::Dist2D(Aim, Fisher->GetActorLocation()) < Fisher->CastReach() + 60)
+        const float Sweep = Fisher->CastSweep(Fisher->ServerNow());
+        DrawRect(FLinearColor(0, 0, 0, 0.4f), BarX, BarY, BarW, BarH);
+        DrawRect(FLinearColor(1.0f, 0.86f, 0.45f), BarX, BarY, BarW * Sweep, BarH);
+        // (What to do is in the status card; over the bar only a word once the swing is at its top.)
+        if (Sweep >= 1)
         {
-            const FLinearColor Ring(1.0f, 0.93f, 0.55f, Fisher->bCharging ? 0.95f : 0.35f);
-            constexpr int32 Points = 28;
-            FVector Last = Canvas->Project(Aim + FVector(32, 0, 0.5f));
-            for (int32 I = 1; I <= Points; ++I)
-            {
-                const float A = 2 * PI * I / Points;
-                const FVector Next = Canvas->Project(Aim + FVector(32 * FMath::Cos(A), 32 * FMath::Sin(A), 0.5f));
-                if (Last.Z > 0 && Next.Z > 0) DrawLine(Last.X, Last.Y, Next.X, Next.Y, Ring, (Fisher->bCharging ? 2.0f : 1.2f) * S);
-                Last = Next;
-            }
-            if (Fisher->bCharging)
-            {
-                const FString Label = FString::Printf(TEXT("Заброс на %.1f м — отпустите ЛКМ"), FVector::Dist2D(Aim, Fisher->GetActorLocation()) / 100).Replace(TEXT("."), TEXT(","));
-                Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
-            }
-        }
-        else if (Fisher->bCharging)
-        {
-            const FString Label(TEXT("Отсюда до воды не достать — подойдите ближе к берегу"));
+            const FString Label(TEXT("Полный мах"));
             Text(Label, FLinearColor(0.93f, 0.91f, 0.86f), (Canvas->ClipX - Width(Label, 0.8f)) / 2, BarY - 26 * S, 0.8f);
         }
     }
@@ -147,7 +131,7 @@ void ALakeHUD::DrawHUD()
     const float HintAlpha = FMath::Clamp((15.0f - (Now - PlayStart)) / 2.0f, 0.0f, 1.0f);
     if (HintAlpha > 0)
     {
-        const FString Hint = TEXT("Мышь — взгляд и удилище   ·   ЛКМ держать — прицел, отпустить — заброс в круг   ·   ЛКМ после заброса — поднять снасть   ·   ЛКМ с рыбой — тянуть   ·   ПКМ — подсечка   ·   +/− — глубина   ·   G — прикормка   ·   R — рогатка (держать — на землю)   ·   B — чехол   ·   F — открыть / взять   ·   V — вид   ·   Esc — меню");
+        const FString Hint = TEXT("Мышь — взгляд и удилище   ·   ЛКМ держать — заброс (дольше — дальше), отпустить — опустить снасть   ·   ЛКМ после заброса — поднять снасть   ·   ЛКМ с рыбой — тянуть   ·   ПКМ — подсечка   ·   +/− — глубина   ·   G — прикормка   ·   R — рогатка (держать — на землю)   ·   B — чехол   ·   F — открыть / взять   ·   V — вид   ·   Esc — меню");
         Text(Hint, FLinearColor(0.85f, 0.87f, 0.85f, 0.75f * HintAlpha), Canvas->ClipX - Width(Hint, 0.75f) - 28 * S, WeatherTop - 30 * S, 0.75f);
     }
     DrawInteraction(Fisher, S);

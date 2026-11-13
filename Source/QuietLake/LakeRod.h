@@ -13,7 +13,7 @@ struct FRodInput
     FVector FloatTarget = FVector::ZeroVector;   // where the bobber sits / lands (server)
     float HookDepth = 100;        // leader length under the bobber
     bool bRigFlying = false;      // let go and not yet down on the water (the server says when it lands)
-    FVector CastTarget = FVector::ZeroVector;    // where the angler lays the rig (on the water); zero: not aimed
+
     bool bFreeRig = false;        // no network drift correction during casts, pulls or settling
     float HookHold = 0;           // 0..1: how firmly the angler's left hand has the rig (1: the shot held in the fingers)
     float RodHeft = 1;            // how sluggish the rod is: 1 medium, less for a light rod, more for a heavy one
@@ -65,6 +65,15 @@ public:
     static constexpr float RodLength = 600.0f;
     static constexpr float LineLength = 600.0f;  // tip to hook: the same as the rod, so the rig never drags
     static constexpr float GripPoint = 12.0f;    // right hand, from the butt (at the end of the handle)
+    /**
+     * The pendulum cast's numbers: the rod's angle as the fingers let go (Start), how high it is raised
+     * while the rig swings down under it (Raise, by RaiseTime seconds for the medium rod), and how far it
+     * is brought forward and down while the rig swings up beyond the tip (Follow, by LayAfter); held on,
+     * the rod lays the rig down at the top of its swing (over LayTime). Development builds take
+     * -CastTune=Start,Raise,RaiseTime,Follow,LayAfter,LayTime to try others without a rebuild.
+     */
+    struct FCastTuning { float Start = 45, Raise = 68, RaiseTime = 1.0f, Follow = 34, LayAfter = 1.95f, LayTime = 0.35f; };
+    static const FCastTuning& CastTuning();
 
     FVector Tip() const { return Points.Num() ? Points.Last() : FVector::ZeroVector; }
     static float FishSupport(float MouthZ, float Length);
@@ -96,8 +105,7 @@ public:
     }
     /** The float has come down: on the water's surface, or on the ground. */
     bool FloatDown() const;
-    /** The cast is still in the air: the shot has not reached the water yet. */
-    bool IsCastFlying() const { return bCastFlight; }
+
     /** How far the tip is bent off the line of the butt (cm). */
     float TipBend() const
     {
@@ -129,9 +137,7 @@ private:
     FVector ShotVel = FVector::ZeroVector, HookVel = FVector::ZeroVector;
     // The cast: the shot, the rig's weight, is thrown to the spot aimed at and flies there like any
     // thrown weight (a parabola); the float, the hook and the line fly after it on their own.
-    bool bCastFlight = false, bWasFlying = false;
-    FVector CastFrom = FVector::ZeroVector, CastVel = FVector::ZeroVector;
-    float CastT = 0, CastTime = 1;
+
     /** Once a frame: the blank's weights and stiffness for this rod, and where the hands are. */
     void PrepareBlank(const FTransform& Hold);
     /** One substep of the blank (S: 0..1 through the frame, moving the hands smoothly). */

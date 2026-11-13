@@ -35,7 +35,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods, StartLoadout);
+Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods, StartLoadout, CastHold);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
@@ -78,7 +78,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-CasePreview` | чехол для удочек: за спиной и от первого лица, призрак после B, на земле, подсказка «Открыть / Надеть», открытая крышка и окно, все удочки в чехле, контур удочки при удержании R и удочка на земле, три снасти на рогатках; лог `QUIET_LAKE_CASE` | `LakePreviews.cpp` |
 | `-FisherPreview` | рыбак-MetaHuman в одежде: вид спереди, сбоку, сзади и лицо крупно (`Saved/Fisher_Front/Side/Back/Face.png`) | `LakePreviews.cpp` |
 | `-PlantPreview` | растения нового мира в ряд за лагерем в ясный полдень: весь ряд, хвойные, лиственные с кустами, тростник с рогозом и осокой, кора берёзы, ольхи и сосны крупно (`Saved/Plants_*.png`); размеры в логе `QUIET_LAKE_PLANT` | `LakePreviews.cpp` |
-| `-FishingBench` | стенд ловли: скриптовая рука забрасывает (`cast:<метры>`), ждёт поклёвку, подсекает, вываживает и пишет замеры строками `BENCH` (куда легла снасть, натяжение, глубина и силы рыбы 4 раза в секунду, итог); `-BenchCases=cast:6,perch:0.8,pike:2`, `-BenchDirect` — рыба сразу на крючке, `-BenchShots` — кадры от первого лица `Saved/Bench_*.png` (вынимание, рыба в руке), `-BenchSide` — камера сбоку от рыбы `Saved/BenchSide_*.png` (с `-ClearWater` видно под водой); третье поле случая: `ease` — отпустить ЛКМ с 4 до 7 с боя, `light`/`heavy` — это удилище. Запускать по одному окну: несколько экземпляров роняют частоту кадров, и физика замедляется | `LakeBench.cpp` |
+| `-FishingBench` | стенд ловли: скриптовая рука забрасывает (`cast:<метры>`), ждёт поклёвку, подсекает, вываживает и пишет замеры строками `BENCH` (куда легла снасть, натяжение, глубина и силы рыбы 4 раза в секунду, итог); `-BenchCases=cast:1.5,perch:0.8,pike:2` (`cast:<секунды удержания ЛКМ>`), `-BenchPath` — путь снасти в забросе и вынимании, `-CastTune=Start,Raise,RaiseTime,Follow,LayAfter,LayTime` — другие числа маха без пересборки, `-BenchDirect` — рыба сразу на крючке, `-BenchShots` — кадры от первого лица `Saved/Bench_*.png` (вынимание, рыба в руке), `-BenchSide` — камера сбоку от рыбы `Saved/BenchSide_*.png` (с `-ClearWater` видно под водой); третье поле случая: `ease` — отпустить ЛКМ с 4 до 7 с боя, `light`/`heavy` — это удилище. Запускать по одному окну: несколько экземпляров роняют частоту кадров, и физика замедляется | `LakeBench.cpp` |
 | `-ExposureProbe` | свободная экспозиция с ShowFlag.VisualizeHDR, для калибровки света | `LakeWeather.cpp` |
 | `-ScreenshotTest` | нажимает F12 через настоящий путь ввода и проверяет, что снимок появился | `LakePreviews.cpp` |
 | `-LookFrom=X,Y,Yaw,Pitch` | камера ровно в точке (мировые см, градусы), кадр `Saved/LookFrom.png` и профиль высот вперёд | `LakePreviews.cpp` |
@@ -129,9 +129,9 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   (удочку, поплавок, рыбу на леске, знаки на воде).
 - Цикл ловли — `EFishingState`: `Idle` → `Waiting` (наживка в воде) → `Bite` (рыба держит наживку,
   время на подсечку) → `Fight` → `Landing` (рыба на леске в воздухе, засчитывается в руке).
-  `bRetrieving` — снасть поднимается из воды в состоянии `Waiting`. Заброс прицельный: `bCharging` — ЛКМ зажата, на воде круг там, куда смотрит рыбак (`CastAimPoint`, не дальше `CastReach`);
-  отпускание (`DoCast`) берёт точку (`CastTarget`, сервер проверяет её `ValidCastTarget`), `bRigFlying` — грузило летит
-  в неё по параболе (`ALakeRod`, `bCastFlight`), остальная снасть по физике; приводнение — по симуляции сервера
+  `bRetrieving` — снасть поднимается из воды в состоянии `Waiting`. Заброс маятником: `bCharging` — ЛКМ зажата, пальцы отпускают грузило, снасть качается под кончиком,
+  удилище поднимается и подаётся вперёд (`ALakeRod::CastTuning`, время — `CastClock` по симуляции); чем дольше держать, тем дальше;
+  отпускание (`DoCast`) — удилище опускается, `bRigFlying` — снасть ложится по физике; приводнение — по симуляции сервера
   (`OnRigLanded`). ЛКМ после заброса — вытаскивание (`StartRetrieve`, `bRetrieveReturns`), ПКМ — подсечка
   (`Strike`). Мышь ведёт удилище и камеру (`MoveRodAxis`); ловля оснастки рукой — `bRigInHand`. Вес удилища (`ERodKind`, `RodHeft`) замедляет
   и смягчает все движения.

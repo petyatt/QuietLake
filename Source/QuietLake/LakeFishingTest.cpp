@@ -266,7 +266,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->OnFishTake(Crucian);
     StrikeHome(Crucian);
     Fisher->ServerRelease_Implementation();
-    for (int32 Step = 0; Step < 3000 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); Crucian->Simulate(0.05f); }
+    // (On a slack line it may throw the hook at any time; if it does not, the fight ends at its limit, 240 s.)
+    for (int32 Step = 0; Step < 5000 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); Crucian->Simulate(0.05f); }
     TestTrue(TEXT("Abandoned fight times out"), Fisher->FishingState == EFishingState::Idle);
     TestEqual(TEXT("Timeout awards no fish"), Fisher->CatchCount, 1);
 
@@ -785,7 +786,8 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
         TestFalse(TEXT("Cast remains finite"), Landed.ContainsNaN());
         TestTrue(TEXT("Cast settles on water"), !Fisher->bRigFlying && !Fisher->bRetrieving && ALakeEnvironment::IsWater(Landed) && Fisher->RodVisual->FloatDown());
         TestTrue(TEXT("Fixed length line bounds the cast"), FVector::Dist(Landed, Fisher->RodVisual->Tip()) < ALakeRod::LineLength - Fisher->HookDepth + 15);
-        TestTrue(TEXT("Underhand flight stays below head height"), Highest < Fisher->GetActorLocation().Z + 70);
+        // The held pendulum can rise above the angler, but cannot fly above the raised pole.
+        TestTrue(TEXT("Cast stays below the pole's overhead reach"), Highest < Fisher->GetActorLocation().Z + ALakeRod::RodLength);
         Fisher->BaitActiveTime = -10;
         Fisher->NextActionTime = 0;
         Fisher->ServerFish_Implementation();
@@ -885,6 +887,88 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
 }
 
 // Wind: it drifts a float whose bait hangs free downwind until the line holds it; a rig on the bottom stays put.
+// The pendulum cast by holding LMB: no throw, the rig swings out on its line; the longer LMB is held,
+// the farther it comes down; held to the end, the rod lays it down by itself; LMB again lifts it out
+// and the free hand takes the shot within its reach, in front of the body, not off to the right.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeCastHoldTest, "QuietLake.Fishing.CastHold", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeCastHoldTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FVector2D Facing;
+    const FVector2D Bank = LakeMap::StartSpot(&Facing);
+    const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+    struct FResult { float Out = 0; bool bLanded = false, bByItself = false, bCaught = false; float StartSpeed = 0, CatchGap = 1e6f, CatchAside = 0; };
+    auto Cast = [&](float Hold, float Fps)
+    {
+        FResult R;
+        ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Bank, ALakeEnvironment::GroundHeight(Bank.X, Bank.Y) + 95), FRotator(0, Yaw, 0));
+        APlayerController* PC = World->SpawnActor<APlayerController>();
+        PC->Possess(Fisher);
+        PC->SetControlRotation(FRotator(-8, Yaw, 0));
+        Fisher->RodVisual = World->SpawnActor<ALakeRod>();
+        Fisher->FloatDepth = Fisher->HookDepth = 110;
+        Fisher->bRigInHand = true;
+        const float Dt = 1 / Fps;
+        auto Step = [&]()
+        {
+            // (This world's clock does not tick: move the phase clocks back instead.)
+            if (Fisher->bCharging) Fisher->ChargeServerStart -= Dt;
+            Fisher->CastServerTime -= Dt;
+            Fisher->RigGripTime -= Dt;
+            Fisher->Tick(Dt);
+        };
+        auto Run = [&](float Seconds) { for (int32 I = 0; I < FMath::RoundToInt(Seconds * Fps); ++I) Step(); };
+        Run(2);
+        Fisher->NextActionTime = 0;
+        Fisher->ServerFish_Implementation();
+        for (int32 I = 0; I < FMath::RoundToInt(Hold * Fps) && Fisher->bCharging; ++I)
+        {
+            Step();
+            if (I == FMath::RoundToInt(0.15f * Fps)) R.StartSpeed = Fisher->RodVisual->ShotVelocity().Size();
+        }
+        R.bByItself = !Fisher->bCharging;
+        if (Fisher->bCharging) Fisher->ServerRelease_Implementation();
+        Run(6);
+        const FVector Float = Fisher->RodVisual->FloatKeel();
+        R.bLanded = Fisher->FishingState == EFishingState::Waiting && !Fisher->bRigFlying && ALakeEnvironment::IsWater(Float) && Fisher->RodVisual->FloatDown();
+        R.Out = FVector::Dist2D(Float, Fisher->GetActorLocation());
+        // LMB again: the rod comes up, the rig swings in and the free hand takes it.
+        Fisher->BaitActiveTime = -10;
+        Fisher->NextActionTime = 0;
+        Fisher->ServerFish_Implementation();
+        for (int32 I = 0; I < FMath::RoundToInt(14 * Fps) && !Fisher->bRigInHand; ++I)
+        {
+            Step();
+            if (Fisher->bRigInHand)
+            {
+                const FVector Shot = Fisher->RodVisual->ShotLocation();
+                R.CatchGap = FVector::Dist(Shot, Fisher->LeftShoulder());
+                R.CatchAside = FVector::DotProduct(Shot - Fisher->GetActorLocation(), Fisher->GetActorRightVector());
+            }
+        }
+        R.bCaught = Fisher->bRigInHand;
+        AddInfo(FString::Printf(TEXT("Cast held %.1f s at %.0f fps: %s %.0f cm out%s, first speed %.0f cm/s, caught %d at %.0f cm from the shoulder, %.0f cm aside"),
+            Hold, Fps, R.bLanded ? TEXT("landed") : TEXT("NOT landed"), R.Out, R.bByItself ? TEXT(" (laid by itself)") : TEXT(""), R.StartSpeed, R.bCaught ? 1 : 0, R.CatchGap, R.CatchAside));
+        Fisher->RodVisual->Destroy(); Fisher->Destroy(); PC->Destroy();
+        return R;
+    };
+    const FResult Short = Cast(0.4f, 60), Middle = Cast(1.0f, 60), Long = Cast(2.1f, 60), Held = Cast(4.0f, 60), Slow = Cast(1.0f, 30);
+    for (const FResult* R : { &Short, &Middle, &Long, &Held, &Slow })
+    {
+        TestTrue(TEXT("Every cast comes down on the water"), R->bLanded);
+        TestTrue(TEXT("The rig is not thrown: it starts its swing from the hand's rest"), R->StartSpeed < 200);
+        TestTrue(TEXT("LMB again lifts the rig out and the free hand takes it within its reach"), R->bCaught && R->CatchGap <= ALakeCharacter::ArmReach + 1);
+        TestTrue(TEXT("Lifted out, the rig comes in to the middle of the body or left of it, not off to the right"), R->CatchAside < 20);
+    }
+    TestTrue(TEXT("The longer LMB is held, the farther the rig comes down"), Short.Out + 100 < Middle.Out && Middle.Out + 50 < Long.Out);
+    TestTrue(TEXT("A short hold lays the rig close, under the rod tip"), Short.Out < 450);
+    TestTrue(TEXT("A full swing carries the rig out past 6.5 m"), Long.Out > 650);
+    TestTrue(TEXT("Held to the end, the rod lays the rig down by itself, well out"), Held.bByItself && Held.Out > Middle.Out);
+    TestTrue(TEXT("The frame rate does not change where the cast comes down"), FMath::Abs(Slow.Out - Middle.Out) < 60);
+    World->DestroyWorld(false);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeWindDriftTest, "QuietLake.Fishing.WindDrift", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeWindDriftTest::RunTest(const FString& Parameters)
 {
@@ -951,7 +1035,6 @@ bool FLakeWindDriftTest::RunTest(const FString& Parameters)
     World->DestroyWorld(false);
     return true;
 }
-// Exercise the actual input and rod simulation, rather than DoCast's no-rod rules fixture.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeRodControlTest, "QuietLake.Fishing.RodControl", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeRodControlTest::RunTest(const FString& Parameters)
 {

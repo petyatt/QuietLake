@@ -137,8 +137,8 @@ TSharedRef<SWidget> ULakeMenuWidget::RebuildWidget()
         Help->AddChildToVerticalBox(Label(TEXT("ПОДСКАЗКИ"), 40, Ink))->SetPadding(FMargin(0, 0, 0, 28));
         for (const TPair<const TCHAR*, const TCHAR*>& Line : {
                  TPair<const TCHAR*, const TCHAR*>(TEXT("Мышь"), TEXT("взгляд и удилище")),
-                 TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ — держать"), TEXT("прицел: круг на воде там, куда смотрите; отпустить — снасть летит в круг (до 8–9 м)")),
-                 TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ после заброса"), TEXT("держать — поднимать удилище, снасть придёт в левую руку; отпустить — удилище остановится")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ — держать"), TEXT("заброс: удилище идёт вперёд и выносит снасть; чем дольше держите, тем дальше (до 9 м); отпустить — снасть опустится в воду там, куда долетела")),
+                 TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ после заброса"), TEXT("держать — поднимать удилище, снасть придёт в левую руку; отпустить — удилище опускается")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ПКМ"), TEXT("подсечка, когда поплавок ушёл под воду, лёг или поехал")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("ЛКМ с рыбой"), TEXT("держать — удилище поднимается и тянет рыбу; сильная рыба утягивает его вниз, устанет — поднимется к поверхности, и её вынимают")),
                  TPair<const TCHAR*, const TCHAR*>(TEXT("Шкала внизу"), TEXT("с какой силой тянет рыба, в килограммах; за отметкой крючок может вырвать, у края рвётся леска — не давайте рыбе вытянуть удилище в линию с леской, шагните к ней")),

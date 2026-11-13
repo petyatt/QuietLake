@@ -79,7 +79,7 @@ public:
     UPROPERTY(Replicated) float BiteDuration = 1;
     UPROPERTY(Replicated) float BiteAmount = 0;
     // Cast and rod state, replicated so every machine can animate the rod and line itself.
-    UPROPERTY(Replicated) bool bCharging = false;          // LMB held for a cast: the rig held in the hand, the rod tip loading
+    UPROPERTY(Replicated) bool bCharging = false;          // LMB held for a cast: the rod sweeps forward, carrying the rig out
     UPROPERTY(Replicated) float ChargeServerStart = 0;     // when LMB was pressed
     UPROPERTY(Replicated) float CastDropElevation = 45;
     UPROPERTY(Replicated) FVector CastDropGrip = FVector(28, 18, 14);
@@ -119,16 +119,21 @@ public:
     UPROPERTY(Replicated) ECastResult CastResult = ECastResult::Good;
     UPROPERTY(Replicated) float CastSeverity = 0;            // 0..1: how much too soon the rig was let go
     /**
-     * The cast is aimed: the rig is laid on the water where the angler looks, as far as the line
-     * reaches from where he stands (CastReach). The owner shows the spot (a ring on the water) and
-     * sends it with the release; the server keeps it within reach and on the water.
+     * The pendulum cast by holding LMB: the fingers let the shot go (CastFingersOpen) and the rig swings
+     * forward under the rod tip and up beyond it, the rod raised smoothly under it (ALakeRod::CastTuning;
+     * slower with a heavier rod). The longer LMB is held, the farther along its swing the rig is when the
+     * rod is lowered; held to the top of the swing, the angler lays it down there. Let go, the rod is
+     * lowered and the rig comes down where its swing has taken it.
      */
-    UPROPERTY(Replicated) FVector_NetQuantize CastTarget;
-    FVector CastAimPoint() const;
-    float CastReach() const;
-    FVector ValidCastTarget(FVector Wanted) const;
-    static constexpr float CastNearest = 220.0f;
-    FVector PendingCastAim = FVector::ZeroVector;   // the owner's aim sent with the release (zero: none)
+    static constexpr float CastFingersOpen = 0.1f;
+    /**
+     * Seconds the cast has been held (CastClock) and since it was let go (DropClock), counted on each
+     * machine by the time its rod simulation has actually run (at most a tenth of a second a frame):
+     * the hands keep time with the swinging rig, so a hitch in the frame cannot cut a cast short.
+     */
+    float CastClock = 0, DropClock = 0;
+    /** 0..1: how far along its swing the rig is (the HUD shows it while LMB is held). */
+    float CastSweep(float Now) const;
     FVector HandFishFrom = FVector::ZeroVector;     // where the fish hung when the free hand took it
     bool bHandFishSeen = false;
     UPROPERTY(Replicated) FVector_NetQuantize10 CastHookLanding;   // where the hook came down (beyond the float when laid out straight)
@@ -169,8 +174,9 @@ public:
     {
         // (Also while the cast flies: the rod goes down with it, so the line reaches the place picked.)
         const bool bInWater = !bRetrieving && (FishingState == EFishingState::Waiting || FishingState == EFishingState::Bite || FishingState == EFishingState::Fight);
-        return bInWater ? RodWaitAngle : SwingBase;
+        return bInWater ? CastRestElevation() : SwingBase;
     }
+    float CastRestElevation() const;
     /** The free hand holds the rig by the shot (it catches it as the rig swings by, and lets go to cast). */
     UPROPERTY(Replicated) bool bRigInHand = true;
     /** Let go and not yet down: the server takes where it lands from its own run of the rod simulation. */
@@ -326,6 +332,7 @@ private:
     friend class FLakeContactPhysicsTest;
     friend class FLakeFishBehaviourTest;
     friend class FLakeCastingTest;
+    friend class FLakeCastHoldTest;
     friend class FLakeWindDriftTest;
     friend class FLakeRodControlTest;
     friend class FLakeGroundbaitTest;
@@ -473,7 +480,7 @@ private:
     void MoveRodAxis(float Delta, bool bPitch);
     UFUNCTION(Server, Unreliable) void ServerSwing(float Pitch, float Yaw);
     UFUNCTION(Server, Unreliable) void ServerSteer(float Pitch);
-    UFUNCTION(Server, Reliable) void ServerReleaseWithAim(float Pitch, float Yaw, FVector_NetQuantize Aim);
+    UFUNCTION(Server, Reliable) void ServerReleaseWithAim(float Pitch, float Yaw);
     float NextAimSend = 0;
     void Right(float Value);
     void Fish();
