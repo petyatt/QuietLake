@@ -392,9 +392,22 @@ FBiteStep LakeFish::NextBiteStep(EFishSpecies Species, FBiteState& B, float Size
     if (B.Phase == 1) B.Variant = bOnBottom && !Style.TakeFromBottom.IsEmpty() && R.FRand() < Style.FromBottomChance ? 1 : 0;
     const TArray<FFishBiteMove>& Moves = B.Variant == 1 ? Style.TakeFromBottom : Style.Take;
     const int32 Index = B.Phase++ - 1;
+    // Past its take it may keep the bait: it stands with it or drifts slowly off, swallowing it ever
+    // deeper (a crucian may hold it a long while). Each step it may let go instead.
+    if (Index >= Moves.Num() && Moves.Num() > 0 && Style.KeepHolding > 0)
+    {
+        if (R.FRand() >= Style.KeepHolding * FMath::Max(0.0f, 1 - B.Felt)) return LetGo(Still(0.1f));
+        FBiteStep Keep;
+        Keep.Motion = R.FRand() < 0.6f ? EBiteMotion::Hold : EBiteMotion::Drift;
+        Keep.Duration = R.FRandRange(2.0f, 6.0f);
+        Keep.Amount = R.FRandRange(1.0f, 3.0f);
+        Keep.bTake = true;
+        Keep.Hook = 1.0f;
+        return Keep;
+    }
     if (!Moves.IsValidIndex(Index)) return LetGo(Still(0.1f));
     const FBiteStep Step = Make(Moves[Index]);
-    return Index == Moves.Num() - 1 ? LetGo(Step) : Step;
+    return Index == Moves.Num() - 1 && Style.KeepHolding <= 0 ? LetGo(Step) : Step;
 }
 TArray<FBiteStep> LakeFish::MakeBite(EFishSpecies Species, float Size01, float A, bool bOnBottom, bool bWary, FRandomStream& R)
 {
@@ -1845,7 +1858,7 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
     {
         // It takes: the angler may strike while it has the bait in its mouth. It lets go by itself
         // (the angler's timer is only a safety net).
-        Angler->OnFishTake(this, 60);
+        Angler->OnFishTake(this, 600);
         State = EState::Holding;
         StateTime = 0;
     }
@@ -1924,7 +1937,7 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     bWasSlack = false;
     NextEscape = 0;
     SurfaceRoll = 0;
-    HookGrip = 1; HookTurnSpeed = 0; HookAngularVelocity = FVector::ZeroVector;
+    HookGrip = 1; HookedWater = 1; HookTurnSpeed = 0; HookAngularVelocity = FVector::ZeroVector;
     bFightAwake = false;   // it feels the strike as the line pulls, not before
     NextFightJump = SimTime;
     PendingLineForce = FVector::ZeroVector;
@@ -2451,6 +2464,7 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     float Water = 0;
     for (int32 I = 0; I < 5; ++I)
         Water += FMath::Clamp((LakeFish::SurfaceZ - (float)(MouthNow.Z - Heading.Z * BodyLength * (0.1f + 0.2f * I))) / Thick + 0.5f, 0.0f, 1.0f) / 5;
+    HookedWater = Water;
     // The head at the top or out (0 under, 1 clear): the line holds it up there.
     const float HeadOut = bFightJump ? 0.0f : FMath::SmoothStep(-0.12f * BodyLength, 0.06f * BodyLength, (float)(MouthNow.Z - LakeFish::SurfaceZ));
     // On the line the fish throws itself about: the body turns straight at the wanted heading,
@@ -2495,14 +2509,19 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     // Between its bouts a fish with strength left does not go limp: it stands and leans against the
     // line. Only a tired one lets itself be drawn while it rests.
     Accel *= Water * S.Strength * FMath::Lerp(0.08f, 1.0f, StaminaFraction()) * FightIndividual
-        * (bRest && bFightAwake ? FMath::Lerp(0.08f, 0.7f, StaminaFraction()) : 1.0f)
+        * (bRest && bFightAwake ? FMath::Lerp(0.1f, 0.85f, StaminaFraction()) : 1.0f)
         * (1 - 0.6f * HeadOut);
     const FVector PullDir = Desired.GetSafeNormal();
     const float ForwardSpeed = FVector::DotProduct(Vel, PullDir);
     const float Aligned = FMath::Lerp(0.6f, 1.0f, FMath::Max(0.0f, float(FVector::DotProduct(Heading, PullDir))));
     // (Held back by the line it does not ease off as a free fish nearing its speed does: it pulls
-    // with all it has until it is moving as fast as it means to.)
-    const float Thrust = bFightJump || PullDir.IsNearlyZero() ? 0.0f : FMath::Clamp((float(Desired.Size()) - ForwardSpeed) * 10.0f, 0.0f, Accel * Aligned);
+    // with all it has until it is moving as fast as it means to. And it answers the pull: even
+    // resting it works against what draws it away, as far as its strength allows, so a fish with
+    // strength left is not simply towed up between its rushes.)
+    const float Answer = bFightAwake && !bFightJump && !PullDir.IsNearlyZero()
+        ? FMath::Max(0.0f, float(-FVector::DotProduct(PendingLineForce, PullDir))) / FMath::Max(0.03f, WeightKg) : 0.0f;
+    const float Swim = bFightJump || PullDir.IsNearlyZero() ? 0.0f : FMath::Clamp((float(Desired.Size()) - ForwardSpeed) * 10.0f, 0.0f, Accel * Aligned);
+    const float Thrust = bFightJump || PullDir.IsNearlyZero() ? 0.0f : FMath::Clamp(Swim + Answer, 0.0f, Accel * Aligned);
     // Passive towing is not exercise. Count propulsion and opposition to the line while active.
     const float Opposition = FMath::Max(0.0f, float(-FVector::DotProduct(PendingLineForce, PullDir)))
         / FMath::Max(1.0f, WeightKg * S.Acceleration * S.Strength);
@@ -2510,8 +2529,12 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     if (HookGrip <= 0) { Release(6); return; }
     Effort = FMath::Clamp(FMath::Abs(Thrust) / FMath::Max(1.0f, S.Acceleration * S.Strength)
         + (bRest || bFightJump ? 0 : FMath::Max(0.0f, ForwardSpeed) / S.BurstSpeed * 0.4f + Opposition * 0.35f), 0.0f, 1.0f);
-    const float Recover = bRest && !bFightJump ? S.Fight.Recovery * FMath::Max(0.0f, 1 - Effort / 0.2f) : 0;
-    Stamina = FMath::Clamp(Stamina + DeltaSeconds * (Recover - S.Fight.EffortCost * Effort), 0.0f, MaxStamina);
+    // What tires it: its rushes and swimming hard. Standing against a steady pull is slower, steady
+    // work (it does it with its body set against the line, not in bursts).
+    const float Work = FMath::Clamp((Swim + 0.35f * (Thrust - Swim)) / FMath::Max(1.0f, S.Acceleration * S.Strength)
+        + (bRest || bFightJump ? 0 : FMath::Max(0.0f, ForwardSpeed) / S.BurstSpeed * 0.4f + Opposition * 0.15f), 0.0f, 1.0f);
+    const float Recover = bRest && !bFightJump ? S.Fight.Recovery * FMath::Max(0.0f, 1 - Work / 0.2f) : 0;
+    Stamina = FMath::Clamp(Stamina + DeltaSeconds * (Recover - S.Fight.EffortCost * Work), 0.0f, MaxStamina);
     // Its head held out of the water it gulps air and is soon spent: this is how a fish is subdued.
     if (!bFightJump && MouthLocation().Z > LakeFish::SurfaceZ + 2) Stamina = FMath::Max(0.0f, Stamina - MaxStamina * 0.12f * DeltaSeconds);
 
@@ -2547,7 +2570,10 @@ void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
     }
 
     if (P.Z < Bottom + 4) { P.Z = Bottom + 4; Vel.Z = FMath::Max(0.0, Vel.Z); }
-    if (!LakeMap::IsWater(P.X, P.Y) || LakeFish::SurfaceZ - Bottom < 10)
+    // It cannot swim out of the water onto the bank or into water too shallow to cover it; the line
+    // can draw it there, sliding on its side.
+    const bool bDrawn = FVector::DotProduct(PendingLineForce, P - GetActorLocation()) > 0;
+    if ((!LakeMap::IsWater(P.X, P.Y) || LakeFish::SurfaceZ - Bottom < 10) && !bDrawn)
     {
         const FVector In(LakeMap::DeeperDirection(P.X, P.Y), 0);
         P = GetActorLocation();

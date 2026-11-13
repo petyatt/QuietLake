@@ -46,7 +46,7 @@
     "fromBottomChance": 0.8,
     "sensitive": 0.6,
     "comeback": 0.9, "maxVisits": 4, "returnMin": 5, "returnMax": 15,
-    "directHold": 5.5
+    "directHold": 5.5, "keepHolding": 0.85
   },
   "feeding": {
     "lightShy": 0.3,

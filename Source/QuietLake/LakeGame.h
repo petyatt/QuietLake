@@ -194,7 +194,7 @@ public:
     UPROPERTY(Replicated) float HandFishStart = -100;
     static constexpr float HandFishTime = 2.5f;
     static constexpr float LandTime = 4.0f;
-    /** Seconds of raising the rod with a fish on the line, LMB held. */
+    /** A fish out of the water still swings on the line this long before a still one is drawn in by hand. */
     static constexpr float LandLiftTime = 2.8f;
     UPROPERTY(Replicated) float HookDepth = 100;            // rig in the water: bobber to hook
     /** Bobber-to-hook distance the angler has set (cm); the bait sinks this deep, or lies on the bottom. */
@@ -203,9 +203,10 @@ public:
     static constexpr float MaxDepth = 500.0f;   // about 17% short of the 6 m rod
     UPROPERTY(Replicated) bool bReeling = false;            // fighting: LMB held = lifting the rod, pulling
     /**
-     * A bite or a fight: how far the hands have raised the rod above where the mouse aims it, in parts
-     * of RodLiftDegrees. 1 = raised high; below zero a fish has dragged it down past the aim, at the
-     * lowest the rod lies along the line and gives no more.
+     * A bite, a fight or a fish on the line out of the water: how far the hands have raised the rod
+     * from where the mouse aims it towards upright (0 = the aim, 1 = RodTopElevation). Below zero a
+     * fish has dragged it down past the aim (in parts of RodLiftDegrees); at the lowest the rod lies
+     * along the line and gives no more.
      */
     UPROPERTY(Replicated) float RodLift = 0;
     float RodLiftShown = 0;   // the lift the pose shows: follows RodLift, then eases out when the fish leaves
@@ -214,11 +215,15 @@ public:
     // loaded rod. Forces in gf at the rod tip.
     static FLakeTackle TackleOf(ERodKind Kind);
     FLakeTackle Tackle() const { return TackleOf(RodKind); }
-    static constexpr float HandPullForce = 380.0f;     // the most the hands lift with (LMB held): a 6 m lever
-    static constexpr float HandHoldForce = 220.0f;     // what they hold against once LMB is let go
-    static constexpr float HandLandWeight = 1.2f;      // kg: a heavier fish is not lifted on the line, it is led to the bank
-    static constexpr float RodLiftDegrees = 55.0f;
-    static constexpr float RodLiftSpeed = 1.0f;        // parts per second on a slack line
+    // The hands hold the rod by its butt: what weighs on them is how hard the line's pull at the bent
+    // tip turns the rod about them, as a pull square to the rod on its whole lever (HandLoad). A fish
+    // hanging under a rod raised upright pulls almost along it and weighs little, as far as the blank
+    // does not bow out over the water; one pulling out across a low rod weighs it all.
+    static constexpr float HandPullForce = 260.0f;     // the most the hands lift against (LMB held): a steady pull, not a heave
+    static constexpr float HandHoldForce = 160.0f;     // what they hold against once LMB is let go
+    static constexpr float RodLiftDegrees = 55.0f;     // a fish dragging the rod down below the aim: degrees per part
+    static constexpr float RodTopElevation = 86.0f;    // the rod raised all the way, almost upright
+    static constexpr float RodLiftSpeed = 55.0f;       // degrees per second on a slack line
     /**
      * The arms give under load like a second spring behind the rod's bend: ArmGiveForce gf at the tip
      * draws the rod down a degree at once (a degree moves the tip 10.5 cm). In series with the blank
@@ -227,8 +232,27 @@ public:
      */
     static constexpr float ArmGiveForce = 90.0f;
     static float HandSeries(const FLakeTackle& T) { return 1.0f / (1.0f + T.RodSpring * 10.47f / ArmGiveForce); }
+    /**
+     * The blank bends and the arms give only to a pull across the rod. Along it (a fish hanging under
+     * a rod raised upright, or one that has drawn the rod into line with the line) the blank barely
+     * shortens and the arms give little: RodAlongStiffness times the bare blank. The spring the line
+     * pulls with blends the two by the angle between the rod and the line (gf per cm).
+     */
+    static constexpr float RodAlongStiffness = 4.0f;
+    static float LineSpring(const FLakeTackle& T, FVector RodAxis, FVector LineDir)
+    {
+        const float Across = T.RodSpring * HandSeries(T), Along = T.RodSpring * RodAlongStiffness;
+        const float Sin2 = (float)FVector::CrossProduct(RodAxis.GetSafeNormal(), LineDir.GetSafeNormal()).SizeSquared();
+        return 1.0f / (Sin2 / Across + (1 - Sin2) / Along);
+    }
     /** The hands on a loaded rod: LMB lifts against the load, a harder pull drags the rod down (LakeGame.cpp). */
     void UpdateRodHands(float DeltaSeconds, float Force);
+    void UpdateLiftedFish(float DeltaSeconds);
+    /** The fish is taken in the free hand: the catch counts (from the line, or from the shallows at the bank). */
+    void TakeInHand(class ALakeFish* Fish);
+    /** gf: the line's pull Force towards Toward as it turns the rod in the hands, on the rod's lever. */
+    float HandLoad(FVector Toward, float Force) const;
+    float HandLoadGf = 0;
     // --- the three rods and the case ---
     static constexpr int32 NumRods = (int32)ERodKind::Count;
     /** Every rod: in the case, in the hands, on its stand (fishing) or lying on the ground. */

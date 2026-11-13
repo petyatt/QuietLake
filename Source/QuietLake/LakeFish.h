@@ -218,7 +218,8 @@ struct FFishBiteMove
  * lets go. Sensitive: how much it may feel before it spits the bait. Comeback/MaxVisits/Return:
  * coming back after letting go. RunMin..RunMax: cm it swims off with the bait as it pulls the
  * float under. DirectHold: seconds held when set on the bait directly (tests). EarlyStrikeText:
- * shown when a strike misses.
+ * shown when a strike misses. KeepHolding: past its take, the chance at each step that it keeps the
+ * bait on (standing with it or drifting slowly off), swallowing it ever deeper; 0 lets go at once.
  */
 USTRUCT()
 struct FFishBiteStyle
@@ -244,6 +245,7 @@ struct FFishBiteStyle
     UPROPERTY() float ReturnMin = 3;
     UPROPERTY() float ReturnMax = 10;
     UPROPERTY() float DirectHold = 3;
+    UPROPERTY() float KeepHolding = 0;
     UPROPERTY() FString EarlyStrikeText;
 };
 
@@ -644,10 +646,14 @@ public:
     float FearNow() const { return Fear; }
     /** Holding the bait: the chance a strike now sets the hook (see FBiteStep::Hook). */
     float StrikeHookChance() const { return State == EState::Holding ? BiteNow.Hook : 1.0f; }
+    /** Seconds it has held the bait in its mouth (0 if it does not). */
+    float HeldFor() const { return State == EState::Holding ? StateTime : 0.0f; }
     /** Drawn out of the water on the line (server): from now on the angler's rod carries it. */
     void LiftOut();
     void LowerIntoWater(FVector LineVelocity);
     bool IsLifted() const { return bLifted; }
+    /** On the hook: how much of its body the water holds (1 under, 0 clear of it). */
+    float BodyInWater() const { return bLifted ? 0.0f : HookedWater; }
     /**
      * Out of the water on the line: placed on every machine from the rod's simulated hook. It hangs
      * from its mouth along the line, swings with it and thrashes; still in the water it is drawn
@@ -778,7 +784,7 @@ private:
     // Hanging on the line (cosmetic, every machine).
     float HangTime = 0, HangEffort = 0;
     FVector HangAngularVelocity = FVector::ZeroVector;
-    float NextFightDisturb = 0, HookTurnSpeed = 0, HookGrip = 1;
+    float NextFightDisturb = 0, HookTurnSpeed = 0, HookGrip = 1, HookedWater = 1;
     FVector HookAngularVelocity = FVector::ZeroVector;
     /** The mouth lags behind the hook and overshoots it: the fish's weight on the line. */
     FVector HangAnchor = FVector::ZeroVector, HangAnchorVel = FVector::ZeroVector;

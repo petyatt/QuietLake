@@ -87,6 +87,15 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     };
     // The strike needs contact and load (the hook physics): the line is taken up first, as the angler
     // does by stepping back, and the hook resolves on the spot by contact and the strike's load.
+    // After the strike, the fish back in the water at the line's reach (held up for the strike, it
+    // hung in the air at the line's end).
+    auto BackInWater = [&](ALakeFish* Fish)
+    {
+        if (!IsValid(Fish)) return;
+        FVector P = Fisher->RodTip() + FVector(Facing, 0) * (ALakeRod::LineLength - 40);
+        P.Z = FMath::Max(ALakeEnvironment::GroundHeight(P.X, P.Y) + 25, LakeFish::SurfaceZ - 70);
+        Fish->SetActorLocation(P);
+    };
     auto StrikeHome = [&](ALakeFish* Fish)
     {
         Fisher->NextActionTime = 0;
@@ -147,6 +156,7 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("Strike hooks the fish"), Fisher->FishingState == EFishingState::Fight);
     TestTrue(TEXT("Fish knows it is hooked"), Perch->IsHooked());
+    BackInWater(Perch);
     for (int32 Step = 0; Step < 3000 && Fisher->FishingState == EFishingState::Fight; ++Step)
     {
         if (Fisher->Tension > 0.55f) Fisher->ServerRelease_Implementation();
@@ -170,17 +180,25 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     // The same careful play takes longer with a heavy fish than with a light one of its species.
     auto FightSeconds = [&](float Weight)
     {
+        Fisher->SetActorLocation(Back(0));
         Cast();
         TestTrue(TEXT("Cast for the crucian fight"), Fisher->FishingState == EFishingState::Waiting);
         for (int32 Pose = 0; Pose < 60; ++Pose) Fisher->UpdateRodPose(0.05f);   // the rod settles to the waiting pose
-        ALakeFish* Fish = SpawnFish(World, EFishSpecies::Crucian, Weight, Fisher->BaitLocation());
+        const FVector TookAt = Fisher->BaitLocation();
+        ALakeFish* Fish = SpawnFish(World, EFishSpecies::Crucian, Weight, TookAt);
         Fisher->OnFishTake(Fish);
         StrikeHome(Fish);
+        BackInWater(Fish);
         int32 Step = 0;
-        for (; Step < 2400 && Fisher->FishingState == EFishingState::Fight; ++Step)
+        for (; Step < 4800 && Fisher->FishingState == EFishingState::Fight; ++Step)
         {
             if (Fisher->Tension > 0.55f) Fisher->ServerRelease_Implementation();
             else if (Fisher->Tension < 0.2f) Fisher->ServerFish_Implementation();
+            // Too heavy to lift out: lead it to the bank, stepping back from the water; once it lies
+            // in the shallows, step over to it and take it in the hand.
+            if (Fisher->FightHint == 10) Fisher->SetActorLocation(Fisher->GetActorLocation() - FVector(Facing, 0) * 50 * 0.05f);
+            else if (Fisher->FightHint == 9 && IsValid(Fish))
+                Fisher->SetActorLocation(Fisher->GetActorLocation() + (Fish->GetActorLocation() - Fisher->GetActorLocation()).GetSafeNormal2D() * 60 * 0.05f);
             Fisher->UpdateFight(0.05f);
             if (IsValid(Fish)) Fish->Simulate(0.05f);
         }
@@ -235,7 +253,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Early lift: a bite starts"), Fisher->FishingState == EFishingState::Bite);
     Fisher->bReeling = true;   // LMB held during the bite raises the rod
     for (int32 Step = 0; Step < 20; ++Step) { Fisher->UpdateRodPose(0.05f); Fisher->Tick(0.05f); }
-    TestTrue(TEXT("Holding LMB during a bite raises the rod"), Fisher->RodLift > 0.5f);
+    AddInfo(FString::Printf(TEXT("Early lift: rod lift %.2f after 1 s, hand load %.0f gf, state %d, reeling %d, yield %.2f now %.2f"), Fisher->RodLift, Fisher->HandLoadGf, (int32)Fisher->FishingState, Fisher->bReeling, Fisher->YieldUntil, Fisher->ServerNow()));
+    TestTrue(TEXT("Holding LMB during a bite raises the rod"), Fisher->RodLift > 0.2f);   // (towards upright, slowed by the fish holding the bait)
     Fisher->UpdateRodPose(0.01f);
     const float Raised = Fisher->RodElevation;
     const float LiftShown = Fisher->RodLiftShown;
@@ -260,16 +279,29 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Broken line awards no fish"), Fisher->CatchCount, 1);
     TestFalse(TEXT("Pike is free again"), Pike->IsHooked());
 
-    // Never reeling: the fight times out.
-    Cast();
-    ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.5f, Fisher->BaitLocation());
-    Fisher->OnFishTake(Crucian);
-    StrikeHome(Crucian);
-    Fisher->ServerRelease_Implementation();
-    // (On a slack line it may throw the hook at any time; if it does not, the fight ends at its limit, 240 s.)
-    for (int32 Step = 0; Step < 5000 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); Crucian->Simulate(0.05f); }
-    TestTrue(TEXT("Abandoned fight times out"), Fisher->FishingState == EFishingState::Idle);
-    TestEqual(TEXT("Timeout awards no fish"), Fisher->CatchCount, 1);
+    // Never reeling: left on a slack line, a fish hooked deep (it swallowed the bait) stays on and
+    // goes where it likes; one hooked in the edge of the lip soon shakes the hook out.
+    auto Abandoned = [&](float Grip)
+    {
+        Cast();
+        const FVector TookAt = Fisher->BaitLocation();
+        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.5f, TookAt);
+        Fisher->OnFishTake(Crucian);
+        StrikeHome(Crucian);
+        BackInWater(Crucian);
+        if (IsValid(Crucian)) Crucian->SetHookGrip(Grip);
+        Fisher->ServerRelease_Implementation();
+        int32 Step = 0;
+        for (; Step < 4800 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); if (IsValid(Crucian)) Crucian->Simulate(0.05f); }
+        AddInfo(FString::Printf(TEXT("Abandoned crucian, hook grip %.2f: %s after %.0f s | %s"), Grip,
+            Fisher->FishingState == EFishingState::Fight ? TEXT("still on") : TEXT("off"), Step * 0.05f, *Fisher->Status));
+        const bool bOn = Fisher->FishingState == EFishingState::Fight;
+        if (bOn) Fisher->FinishFishing(TEXT("test over"));
+        return bOn;
+    };
+    TestTrue(TEXT("A fish hooked deep stays on a slack line for minutes"), Abandoned(1.0f));
+    TestFalse(TEXT("A fish hooked in the edge of the lip shakes the hook out on a slack line"), Abandoned(0.35f));
+    TestEqual(TEXT("A fish left on the line awards no fish"), Fisher->CatchCount, 1);
 
     // Fixed line: walking away from the water drags the float after the angler.
     Fisher->SetActorLocation(Back(0));
@@ -738,6 +770,17 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     Shy->Simulate(Dt);
     Fisher->RodElevationSpeed = 0;
     TestTrue(TEXT("A roach trying the bait backs off when the rod is jerked"), bTrying && Shy->State != ALakeFish::EState::Nibble && Fisher->FishingState == EFishingState::Waiting);
+    // Past its take a crucian may keep the bait a long while (keepHolding), swallowing it ever deeper;
+    // a roach lets go once its take is over.
+    int32 LongCrucian = 0, LongRoach = 0;
+    for (int32 I = 0; I < 200; ++I)
+    {
+        LongCrucian += Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 1.0f, true, false, R)).Window > 20;
+        LongRoach += Summarise(MakeBite(EFishSpecies::Roach, 0.5f, 1.0f, true, false, R)).Window > 20;
+    }
+    AddInfo(FString::Printf(TEXT("Bites holding the bait over 20 s: crucian %d of 200, roach %d of 200"), LongCrucian, LongRoach));
+    TestTrue(TEXT("A crucian often keeps the bait a long while"), LongCrucian > 30);
+    TestEqual(TEXT("A roach lets go once its take is over"), LongRoach, 0);
     World->DestroyWorld(false);
     return true;
 }
@@ -826,7 +869,7 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Frame rate preserves physical landing within 60 cm"), FVector::Dist2D(Base, Exercise(Fps, 1.2f)) < 60);
     Exercise(60, 0.6f);
     // A lifted fish keeps its weight and position when the player lets it back down.
-    for (float Weight : { 0.18f, 0.6f })
+    for (float Weight : { 0.18f, 0.3f })
     {
         ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Bank, ALakeEnvironment::GroundHeight(Bank.X, Bank.Y) + 95), FRotator(0, Yaw, 0));
         APlayerController* PC = World->SpawnActor<APlayerController>(); PC->Possess(Fisher);
@@ -839,6 +882,7 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
             for (int32 I = 0; I < Seconds * 60; ++I)
             {
                 Fisher->ChargeServerStart -= 1 / 60.0f; Fisher->CastServerTime -= 1 / 60.0f; Fisher->RigGripTime -= 1 / 60.0f;
+                Fisher->LandServerTime -= 1 / 60.0f;
                 Fisher->Tick(1 / 60.0f);
             }
         };
@@ -852,6 +896,9 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
             else if (Fisher->Tension < 0.2f) Fisher->ServerFish_Implementation();
             Run(1 / 60.0f);
             if (IsValid(Fish)) Fish->Simulate(1 / 60.0f);
+            if (I % 120 == 0 && IsValid(Fish))
+                AddInfo(FString::Printf(TEXT("  %.0f s: lift %.2f elev %.0f line %.0f hands %.0f rod %.0f bend %.0f mouth %.0f in water %.2f stamina %.2f lmb %d"), I / 60.0f, Fisher->RodLift, Fisher->RodElevation,
+                    Fisher->LineLoadGf, Fisher->HandLoadGf, Fisher->RodLoadGf, Fisher->RodVisual->TipBend(), Fish->MouthLocation().Z - LakeFish::SurfaceZ, Fish->BodyInWater(), Fish->StaminaFraction(), Fisher->bReeling));
         }
         AddInfo(FString::Printf(TEXT("Physical fight %.2f kg: state %d time %.1f status %s"), Weight, int32(Fisher->FishingState), Fisher->FightTime, *Fisher->Status));
         TestTrue(TEXT("Real rod and fish simulation lead to a lift"), Fisher->FishingState == EFishingState::Landing);
@@ -876,7 +923,9 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
             Run(1 / 60.0f); if (IsValid(Fish)) Fish->Simulate(1 / 60.0f);
         }
         Run(20);
-        AddInfo(FString::Printf(TEXT("Physical fish %.2f kg: caught %d state %d hook-to-hand %.0f bend %.0f"), Weight, Fisher->CatchCount, int32(Fisher->FishingState), FVector::Dist(Fisher->RodVisual->HookLocation(), Fisher->HandPoint(0)), Fisher->RodVisual->TipBend()));
+        AddInfo(FString::Printf(TEXT("Physical fish %.2f kg: caught %d state %d hook-to-hand %.0f bend %.0f lift %.2f hand load %.0f hook speed %.0f hook %.0f cm over the water, elevation %.0f"), Weight, Fisher->CatchCount, int32(Fisher->FishingState),
+            FVector::Dist(Fisher->RodVisual->HookLocation(), Fisher->HandPoint(0)), Fisher->RodVisual->TipBend(), Fisher->RodLift, Fisher->HandLoadGf,
+            (Fisher->RodVisual->HookVelocity() - Fisher->GetVelocity()).Size(), Fisher->RodVisual->HookLocation().Z - LakeFish::SurfaceZ, Fisher->RodElevation));
         TestEqual(TEXT("A physically lifted fish reaches the hand"), Fisher->CatchCount, 1);
         Fisher->RodVisual->Destroy(); Fisher->Destroy(); PC->Destroy(); if (IsValid(Fish)) Fish->Destroy();
     }

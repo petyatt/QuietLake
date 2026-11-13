@@ -37,6 +37,11 @@ struct FRodInput
     bool bFishLowered = false;
     /** The fish is in the angler's free hand, the hook still in its mouth. */
     bool bFishHeld = false;
+    /**
+     * gf per cm: the spring the server holds a fish with (LoadOnFish): the rod's bend and the arms
+     * to a pull across the rod, and the far stiffer rod and arms to one along it.
+     */
+    float LineSpring = 0, LineSpringAlong = 0;
     FVector HandPoint = FVector::ZeroVector;
 };
 

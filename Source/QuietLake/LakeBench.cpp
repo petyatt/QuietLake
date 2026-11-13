@@ -340,11 +340,11 @@ void ALakeCharacter::RunFishingBench()
                 if (Now >= B.NextLog)
                 {
                     B.NextLog = Now + 0.25f;
-                    UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f rodload %4.0f"),
+                    UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f rodload %4.0f inwater %.2f"),
                         T, (int32)FishingState, B.bHeld ? 1 : 0, Tension, LoadOnFish(Fish).Size(), RodLift, RodElevation, Out, Down,
                         Fish->SpeedNow(), Fish->StaminaFraction(), (int32)Fish->FightPhase, Fish->IsFightAwake() ? 1 : 0, SlackTime,
                         RodVisual ? (float)FVector::Dist(RodVisual->Tip(), Mouth) : -1.0f, RodVisual ? RodVisual->TipBend() : -1.0f,
-                        LandProgress, RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, Fish->HookGrip, RodLoadGf);
+                        LandProgress, RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, Fish->HookGrip, RodLoadGf, Fish->BodyInWater());
                 }
                 if (bShots && B.Shots < 2 && ((B.Shots == 0 && T > 2.5f) || (B.Shots == 1 && T > 8)))
                     FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_%d_%d.png"), B.Index, B.Shots++), true, false);
@@ -372,10 +372,12 @@ void ALakeCharacter::RunFishingBench()
                         const FVector Out2D = (P - GetActorLocation()).GetSafeNormal2D();
                         const FVector Side(-Out2D.Y, Out2D.X, 0);
                         const bool bAir = FishingState == EFishingState::Landing;
+                        // (At the top, from just above the water: how much of it is out.)
+                        const bool bTop = !bAir && Fish->MouthLocation().Z > LakeFish::SurfaceZ - 25;
                         const FVector Eye = bAir ? FMath::Lerp(GetActorLocation(), P, 0.5f) + Side * 420 + FVector(0, 0, 60)
-                            : P + Side * 230 - Out2D * 40 + FVector(0, 0, 10);
+                            : P + Side * 230 - Out2D * 40 + FVector(0, 0, bTop ? 40 : 10);
                         const FVector Look = bAir ? FMath::Lerp(GetActorLocation(), P, 0.55f) + FVector(0, 0, 60) : P;
-                        Cam->SetActorLocationAndRotation(FVector(Eye.X, Eye.Y, bAir ? Eye.Z : FMath::Min(Eye.Z, LakeFish::SurfaceZ - 15)), (Look - Eye).Rotation());
+                        Cam->SetActorLocationAndRotation(FVector(Eye.X, Eye.Y, bAir || bTop ? Eye.Z : FMath::Min(Eye.Z, LakeFish::SurfaceZ - 15)), (Look - Eye).Rotation());
                     }
                     static const float Times[] = { 0.3f, 0.6f, 0.9f, 1.2f, 1.5f, 1.8f, 2.2f, 2.6f, 3.0f, 4.0f, 5.0f, 6.5f, 8.0f, 10.0f, 12.0f, 15.0f, 18.0f, 22.0f };
                     const bool bFightShot = FishingState == EFishingState::Fight && B.SideShots < UE_ARRAY_COUNT(Times) && T > Times[B.SideShots];
@@ -387,8 +389,8 @@ void ALakeCharacter::RunFishingBench()
                         const int32 N = bLandShot ? 50 + B.LandShots++ : B.SideShots++;
                         if (bLandShot && B.LandShots > 5) B.NextLandShot = 1e9f;
                         const FVector ShotMouth = Fish->MouthLocation();
-                        UE_LOG(LogTemp, Display, TEXT("BENCH   side shot %d at t=%.1f: state %d, mouth %.0f cm under, body pitch %.0f, hook %.0f cm up, mouth-hook %.0f cm"),
-                            N, T, (int32)FishingState, LakeFish::SurfaceZ - ShotMouth.Z, Fish->GetActorRotation().Pitch,
+                        UE_LOG(LogTemp, Display, TEXT("BENCH   side shot %d at t=%.1f: state %d, mouth %.0f cm under, body pitch %.0f roll %.0f, in water %.2f, hook %.0f cm up, mouth-hook %.0f cm"),
+                            N, T, (int32)FishingState, LakeFish::SurfaceZ - ShotMouth.Z, Fish->GetActorRotation().Pitch, Fish->GetActorRotation().Roll, Fish->BodyInWater(),
                             RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, RodVisual ? (float)FVector::Dist(RodVisual->HookLocation(), ShotMouth) : -1.0f);
                         FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("BenchSide_%d_%02d.png"), B.Index, N), false, false);
                     }

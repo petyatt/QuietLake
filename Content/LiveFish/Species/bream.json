@@ -25,7 +25,7 @@
       { "motion": "Lift", "seconds": 1.5, "secondsMax": 3.0, "amount": 2.0, "amountMax": 4.0, "hook": 0.8 },
       { "motion": "Drift", "seconds": 2.5, "secondsMax": 4.0, "amount": 3, "amountMax": 7, "bPaced": true }
     ],
-    "sensitive": 0.7, "comeback": 0.7, "maxVisits": 3, "returnMin": 6, "returnMax": 20, "directHold": 6.0
+    "sensitive": 0.7, "comeback": 0.7, "maxVisits": 3, "returnMin": 6, "returnMax": 20, "directHold": 6.0, "keepHolding": 0.55
   },
   "feeding": {
     "wariness": 0.7, "dominance": 1.1, "lightShy": 0.4,
