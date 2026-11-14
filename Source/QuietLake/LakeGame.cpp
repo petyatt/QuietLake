@@ -821,7 +821,7 @@ void ALakeCharacter::Tick(float DeltaSeconds)
         if (!bFishInHand)
             LineFish = FishingState >= EFishingState::Fight ? HookedFish.Get() : FishingState == EFishingState::Bite ? BaitFish.Get() : nullptr;
     }
-    if (HasAuthority() && FishingState == EFishingState::Bite) UpdateRodHands(DeltaSeconds, HandLoadGf);
+    if (HasAuthority() && FishingState == EFishingState::Bite) { HandStrain = 0; UpdateRodHands(DeltaSeconds, HandLoadGf); }
     if (HasAuthority()) UpdateParkedRods(DeltaSeconds);
     if (IsLocallyControlled()) UpdateLocalInterface(DeltaSeconds);
     if (HasRodInHands() && (FishingState != EFishingState::Fight || !HasAuthority())) UpdateRodPose(DeltaSeconds);
@@ -984,7 +984,7 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         {
             const float Aim = FMath::Clamp(RodBase() + Pitch + SwingPitch, RodLowestAngle, RodHighestAngle);
             const float L = RodLiftShown;
-            Elevation = FMath::Clamp(Aim + (L >= 0 ? L * FMath::Max(0.0f, RodTopElevation - Aim) : L * RodLiftDegrees), RodLowestAngle, RodHighestAngle);
+            Elevation = FMath::Clamp(Aim + (L >= 0 ? FMath::Min(L, 1.0f) * FMath::Max(0.0f, RodTopElevation - Aim) : L * RodLiftDegrees), RodLowestAngle, RodHighestAngle);
             Grip = FMath::Lerp(Waiting, LandGrip, FMath::SmoothStep(0.3f, 1.0f, L));
             Stiffness = 6;
         }
@@ -1010,13 +1010,15 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         // water is not lifted by anything else: the rod simply goes on up, and near the top the hands
         // come up and in and lean the tip over to the free hand, so the fish swings in to it.
         const float L = bOnFish ? RodLiftShown : 0.0f;
-        const float Lift = L >= 0 ? L * FMath::Max(0.0f, RodTopElevation - Aim) : L * RodLiftDegrees;
+        const float Lift = L >= 0 ? FMath::Min(L, 1.0f) * FMath::Max(0.0f, RodTopElevation - Aim) : L * RodLiftDegrees;
         Elevation = FMath::Lerp(FMath::Clamp(Aim + Lift + StrikeLift, RodLowestAngle, RodHighestAngle),
             FMath::Clamp(Elevation + SwingPitch * 0.2f, RodLowestAngle, 100.0f), Assist);
         const float Arm = FMath::DegreesToRadians(-45.0f + 0.75f * (FMath::Min(Elevation, 60.0f) - SwingBase));
         const FVector AimGrip(4 + 50 * FMath::Cos(Arm), 18, 52 + 50 * FMath::Sin(Arm));
         Grip = FMath::Lerp(FRotator(0, SwingYaw * 0.4f, 0).RotateVector(AimGrip), Grip, Assist);
         if (bOnFish) Grip = FMath::Lerp(Grip, LandGrip, FMath::SmoothStep(0.3f, 1.0f, L));
+        // (Drawing a lifted fish in, the hands come up and back to the chest.)
+        if (bOnFish) Grip = FMath::Lerp(Grip, FVector(10, 8, 44), FMath::SmoothStep(1.0f, RodDrawMax, L));
         // Keep mouse steering available even while the automatic hand-catching assist is active.
         if (!(FishingState == EFishingState::Idle && !bRigInHand)) Yaw = 7 + SwingYaw;
         if (bOnFish && L > 0.5f)
@@ -1056,7 +1058,10 @@ void ALakeCharacter::RodPoseTarget(float Pitch, float Now, float& OutElevation, 
         FVector Brake = -GetActorTransform().InverseTransformVectorNoScale(Speed - GetVelocity()) * 0.8f;
         Brake.Z = 0;
         Brake = Brake.GetClampedToMaxSize(200);
-        const FVector WantedTip = FVector(46, -20, 0) + Brake;
+        // The tip goes from ahead of the free hand to over the left shoulder as the hands draw the rod
+        // back (RodLift past 1): the fish under it comes in to the body.
+        const float Draw = FishingState == EFishingState::Landing ? FMath::SmoothStep(1.0f, RodDrawMax, RodLiftShown) : 0.0f;
+        const FVector WantedTip = FMath::Lerp(FVector(46, -20, 0), FVector(-12, -30, 0), Draw) + Brake;
         const FVector Offset = WantedTip - FVector(Grip.X, Grip.Y, 0);
         const float BrakeElevation = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp(float(Offset.Size()) / (ALakeRod::RodLength - ALakeRod::GripPoint), 0.0f, 1.0f)));
         const float BrakeYaw = FMath::RadiansToDegrees(FMath::Atan2(Offset.Y, Offset.X));
@@ -1238,6 +1243,8 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     In.bFishHeld = bFishInHand && LineFish;
     In.LineSpring = Tackle().RodSpring * HandSeries(Tackle());
     In.LineSpringAlong = Tackle().RodSpring * RodAlongStiffness;
+    In.SpringTip = RodTip();
+    In.SpringAxis = RodHold().GetUnitAxis(EAxis::X);
     // The left hand and the rig: it holds the rig by the shot until the cast lets it go, and catches
     // it again as it swings by (the server decides when).
     const float HookHold = bRigInHand ? 1.0f : 0.0f;
@@ -1453,12 +1460,12 @@ void ALakeCharacter::UpdateRodHands(float DeltaSeconds, float Force)
     const float Aim = FMath::Clamp(RodBase() + FRotator::NormalizeAxis(View.Pitch) + SwingPitch, RodLowestAngle, RodHighestAngle);
     const float Lowest = FMath::Min(0.0f, (RodLowestAngle - Aim) / RodLiftDegrees);
     const bool bLift = bReeling && ServerNow() >= YieldUntil;
-    const float Over = Force / (bLift ? HandPullForce : HandHoldForce) - 1;
+    const float Over = Force / (bLift ? HandLiftLimit() : HandHoldForce) - 1;
     if (Over > 0) RodLift -= (bLift ? 0.45f : 3.0f) * Over * DeltaSeconds;
     else if (bLift) RodLift += RodLiftSpeed / FMath::Max(20.0f, RodTopElevation - Aim) / RodHeft() * FMath::Min(1.0f, -Over) * DeltaSeconds;
     else if (RodLift > 0) RodLift = FMath::Max(0.0f, RodLift - 0.5f * DeltaSeconds);
     else RodLift = FMath::Min(0.0f, RodLift + 0.6f * FMath::Min(1.0f, -Over * 2.0f) * DeltaSeconds);
-    RodLift = FMath::Clamp(RodLift, Lowest, 1.0f);
+    RodLift = FMath::Clamp(RodLift, Lowest, FishingState == EFishingState::Landing && !bFishInHand ? RodDrawMax : 1.0f);
     bRodLaidFlat = RodLift <= Lowest + 0.03f && Lowest < -0.05f && Over > 0;
 }
 void ALakeCharacter::UpdateFight(float DeltaSeconds)
@@ -1477,6 +1484,8 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     // (LMB) or stepping back. The rod's bend and the give of the arms are the shock absorber; lowering
     // the rod (release LMB) moves the tip towards the fish and eases the pull.
     const FLakeTackle Gear = Tackle();
+    // (The angler heaves as the fish's body comes out of the water.)
+    HandStrain = 1 - FMath::SmoothStep(0.3f, 0.85f, Fish->BodyInWater());
     UpdateRodHands(DeltaSeconds, HandLoadGf);
     UpdateRodPose(DeltaSeconds);
     const FVector Tip = RodVisual ? RodVisual->Tip() : RodTip();
@@ -1515,7 +1524,7 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     const bool bBeached = !LakeMap::IsWater(Mouth.X, Mouth.Y) || LakeFish::SurfaceZ - ALakeFish::BottomZ(Mouth.X, Mouth.Y) < 0.25f * Length;
     const bool bAtFeet = bBeached && FVector::Dist2D(Mouth, GetActorLocation()) < 70;
     // Too heavy for the hands: it hangs at the top under a rod they cannot raise any further.
-    const bool bTooHeavy = bTired && bReeling && !bClear && Fish->BodyInWater() < 0.8f && HandLoadGf > HandPullForce * 0.9f;
+    const bool bTooHeavy = bTired && bReeling && !bClear && Fish->BodyInWater() < 0.8f && HandLoadGf > HandLiftLimit() * 0.9f;
     // A wakeful fish throws a hook that hangs on a slack line: the fresher it is, the sooner. Resting
     // the rod (releasing LMB) is safe only when the fish is already tired.
     // (Slack is a line with no load at all: a small fish hanging quietly on a taut line is not slack.)
@@ -1603,6 +1612,7 @@ void ALakeCharacter::UpdateLiftedFish(float DeltaSeconds)
     LineLoadGf = RodVisual ? LineLoad(Fish) : Fish->WeightKg * 1000;
     RodLoadGf = LineLoadGf * (float)FVector::CrossProduct(RodHold().GetUnitAxis(EAxis::X), (Hook - RodTip()).GetSafeNormal()).Size();
     HandLoadGf = HandLoad(Hook, LineLoadGf);
+    HandStrain = 1;
     Tension = FMath::Clamp(FMath::Max(LineLoadGf / Gear.LineBreak, RodLoadGf / Gear.RodBreak), 0.0f, 1.0f);
     bRodStrained = RodLoadGf / Gear.RodBreak > LineLoadGf / Gear.LineBreak;
     UpdateRodHands(DeltaSeconds, HandLoadGf);
@@ -1636,12 +1646,16 @@ void ALakeCharacter::UpdateLanding()
     // Let down (or dragged down) into the water again, it swims on the hook.
     const ALakeFish* Hanging = LineFish.Get();
     const float HangLength = Hanging ? LakeFish::LengthCm(Hanging->Species, Hanging->WeightKg) : 20.0f;
-    if (RodVisual && RodVisual->HookLocation().Z < LakeFish::SurfaceZ - 0.15f * HangLength
+    // (Back in the water is its body in the water, not only its mouth: a fish too heavy for the hands
+    // settles back on the surface with its mouth still just out.)
+    const float BackIn = Hanging && RodVisual ? Hanging->ImmersionAt(RodVisual->HookLocation(), Hanging->GetActorQuat()).Fraction : 0.0f;
+    if (RodVisual && (RodVisual->HookLocation().Z < LakeFish::SurfaceZ - 0.15f * HangLength || BackIn > 0.35f)
         && ALakeEnvironment::IsWater(RodVisual->HookLocation()))
     {
         if (ALakeFish* Fish = HookedFish.Get()) Fish->LowerIntoWater(RodVisual->HookVelocity());
         FishingState = EFishingState::Fight;
-        RodLift = 0;
+        // (The rod stays where the hands have it: a fish dipping back with its tail must not drop it.)
+        RodLift = FMath::Min(RodLift, 1.0f);
         ForceNetUpdate();
         return;
     }
@@ -1654,10 +1668,17 @@ void ALakeCharacter::UpdateLanding()
         const float Speed = (RodVisual->HookVelocity() - GetVelocity()).Size();
         const bool bSwungIn = Away <= CatchReach && Speed <= 150
             && FVector::Dist(RodVisual->HookLocation(), LeftShoulder()) <= ArmReach;
-        if (!bSwungIn) return;
+        // Hanging on the raised rod, the fish is drawn in by the line: where the line from the tip down
+        // to it passes within arm's reach of the shoulder, the free hand takes it.
+        const bool bLineInReach = RodLift >= 0.9f && Speed <= 120
+            && FMath::PointDistToSegment(LeftShoulder(), RodVisual->Tip(), RodVisual->HookLocation()) <= ArmReach;
+        if (!bSwungIn && !bLineInReach) return;
+        if (!bSwungIn) bTookLine = true;
     }
     if (!RodVisual && LandProgress < 1) return;
     TakeInHand(HookedFish.Get());
+    if (bTookLine && bFishInHand) Status = CatchMessage + TEXT(" Взяли леску рукой и подтянули рыбу.");
+    bTookLine = false;
 }
 void ALakeCharacter::TakeInHand(ALakeFish* Fish)
 {

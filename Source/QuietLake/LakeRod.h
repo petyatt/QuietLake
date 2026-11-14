@@ -42,6 +42,12 @@ struct FRodInput
      * to a pull across the rod, and the far stiffer rod and arms to one along it.
      */
     float LineSpring = 0, LineSpringAlong = 0;
+    /**
+     * The tip of the rod as the hands hold it, unbent and before the arms give (the server's RodTip),
+     * and its axis: the spring is measured from there, exactly as the server measures it (the give of
+     * the arms is already in LineSpring).
+     */
+    FVector SpringTip = FVector::ZeroVector, SpringAxis = FVector::ZeroVector;
     FVector HandPoint = FVector::ZeroVector;
 };
 

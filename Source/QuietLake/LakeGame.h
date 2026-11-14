@@ -221,8 +221,19 @@ public:
     // does not bow out over the water; one pulling out across a low rod weighs it all.
     static constexpr float HandPullForce = 360.0f;     // tip-equivalent effort: lift a small dry fish, yield to heavier loads
     static constexpr float HandHoldForce = 160.0f;     // what they hold against once LMB is let go
+    // Getting a fish out of the water the angler braces the butt and heaves with both hands, briefly
+    // much harder than the steady pull of the fight: from as the fish's body leaves the water.
+    static constexpr float HandHeaveForce = 450.0f;
+    float HandStrain = 0;   // 0 the steady pull, 1 the heave (how far the fish's body is out of the water)
+    float HandLiftLimit() const { return FMath::Lerp(HandPullForce, HandHeaveForce, HandStrain); }
     static constexpr float RodLiftDegrees = 55.0f;     // a fish dragging the rod down below the aim: degrees per part
     static constexpr float RodTopElevation = 86.0f;    // the rod raised all the way, almost upright
+    /**
+     * A fish out of the water, the rod upright and LMB still held: the hands go on drawing the rod back
+     * towards the body, the tip over the left shoulder (RodLift from 1 up to RodDrawMax), so the fish
+     * hanging under the bowed tip comes in to the angler.
+     */
+    static constexpr float RodDrawMax = 1.5f;
     static constexpr float RodLiftSpeed = 55.0f;       // degrees per second on a slack line
     /**
      * The arms give under load like a second spring behind the rod's bend: ArmGiveForce gf at the tip
@@ -250,6 +261,7 @@ public:
     void UpdateLiftedFish(float DeltaSeconds);
     /** The fish is taken in the free hand: the catch counts (from the line, or from the shallows at the bank). */
     void TakeInHand(class ALakeFish* Fish);
+    bool bTookLine = false;   // this catch: the free hand took the line, not the fish
     /** gf: the line's pull Force towards Toward as it turns the rod in the hands, on the rod's lever. */
     float HandLoad(FVector Toward, float Force) const;
     float HandLoadGf = 0;

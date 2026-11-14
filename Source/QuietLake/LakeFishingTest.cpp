@@ -918,11 +918,16 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
         AddInfo(FString::Printf(TEXT("Lowered fish %.2f: state=%d lift=%.2f progress=%.2f hook=%s water=%d elevation=%.0f"), Weight, int32(Fisher->FishingState), Fisher->RodLift, Fisher->LandProgress, *Fisher->RodVisual->HookLocation().ToCompactString(), ALakeEnvironment::IsWater(Fisher->RodVisual->HookLocation()), Fisher->RodElevation));
         TestTrue(TEXT("A fully lowered fish resumes swimming on the hook"), Fisher->FishingState == EFishingState::Fight && !Fish->IsLifted());
         Fisher->ServerFish_Implementation();
-        for (int32 I = 0; I < 600 && Fisher->FishingState == EFishingState::Fight; ++I)
+        // (Lifting again: the fish swims while it is in the water, hangs while it is out.)
+        for (int32 I = 0; I < 1800 && Fisher->CatchCount == 0 && Fisher->FishingState != EFishingState::Idle; ++I)
         {
-            Run(1 / 60.0f); if (IsValid(Fish)) Fish->Simulate(1 / 60.0f);
+            Run(1 / 60.0f);
+            if (IsValid(Fish) && Fisher->FishingState == EFishingState::Fight) Fish->Simulate(1 / 60.0f);
+            if (I % 30 == 0 && IsValid(Fish))
+                AddInfo(FString::Printf(TEXT("  relift %.1f s: state %d lift %.2f elev %.0f line %.0f hands %.0f mouth %.0f water %.2f out %.0f"), I / 60.0f, int32(Fisher->FishingState),
+                    Fisher->RodLift, Fisher->RodElevation, Fisher->LineLoadGf, Fisher->HandLoadGf, Fish->MouthLocation().Z - LakeFish::SurfaceZ, Fish->BodyInWater(),
+                    FVector::Dist2D(Fish->MouthLocation(), Fisher->GetActorLocation())));
         }
-        Run(20);
         AddInfo(FString::Printf(TEXT("Physical fish %.2f kg: caught %d state %d hook-to-hand %.0f bend %.0f lift %.2f hand load %.0f hook speed %.0f hook %.0f cm over the water, elevation %.0f"), Weight, Fisher->CatchCount, int32(Fisher->FishingState),
             FVector::Dist(Fisher->RodVisual->HookLocation(), Fisher->HandPoint(0)), Fisher->RodVisual->TipBend(), Fisher->RodLift, Fisher->HandLoadGf,
             (Fisher->RodVisual->HookVelocity() - Fisher->GetVelocity()).Size(), Fisher->RodVisual->HookLocation().Z - LakeFish::SurfaceZ, Fisher->RodElevation));

@@ -42,7 +42,7 @@ namespace
         TWeakObjectPtr<ACameraActor> SideCam;
         int32 SideShots = 0, LandShots = 0;
         float NextLandShot = 0;
-        float MaxTension = 0, SumTension = 0, HardTime = 0, SlackTime = 0, MaxSpeed = 0, MaxDepth = 0, MaxOut = 0, HeldTime = 0;
+        float MaxTension = 0, SumTension = 0, HardTime = 0, SlackTime = 0, MaxSpeed = 0, MaxDepth = 0, MaxOut = 0, HeldTime = 0, TailFirstTime = 0, MovingTime = 0;
         FTimerHandle Timer;
         int32 Frames = 0;
         float ReleaseOut = 0, ReleaseHeight = 0, ReleasedAt = 0, NextPath = 0, NextCastShot = 0;
@@ -273,7 +273,7 @@ void ALakeCharacter::RunFishingBench()
             if (FishingState == EFishingState::Fight)
             {
                 B.FightStart = Now; B.NextLog = 0; B.Samples = 0;
-                B.MaxTension = B.SumTension = B.HardTime = B.SlackTime = B.MaxSpeed = B.MaxDepth = B.MaxOut = B.HeldTime = 0;
+                B.MaxTension = B.SumTension = B.HardTime = B.SlackTime = B.MaxSpeed = B.MaxDepth = B.MaxOut = B.HeldTime = B.TailFirstTime = B.MovingTime = 0;
                 B.bWantHeld = true; B.ActAt = -1; B.bNamed = false;
                 UE_LOG(LogTemp, Display, TEXT("BENCH   hooked after %.1f s, %d strikes | %s"), In, B.Attempts, *Status);
                 Hold(true);
@@ -324,6 +324,10 @@ void ALakeCharacter::RunFishingBench()
                 (void)Notch;
                 if (bWant != B.bWantHeld) { B.bWantHeld = bWant; B.ActAt = Now + 0.25f; }
                 if (B.ActAt >= 0 && Now >= B.ActAt) { Hold(B.bWantHeld); B.ActAt = -1; }
+                // As the hints say: a fish too heavy to lift is led to the bank by stepping back; one in
+                // the shallows is stepped over to.
+                if (FishingState == EFishingState::Fight && FightHint == 10) AddMovementInput(-GetActorForwardVector(), 0.5f);
+                else if (FishingState == EFishingState::Fight && FightHint == 9) AddMovementInput((Fish->GetActorLocation() - GetActorLocation()).GetSafeNormal2D(), 0.5f);
                 const FVector Mouth = Fish->MouthLocation();
                 const float Out = FVector::Dist2D(Mouth, GetActorLocation());
                 const float Down = LakeFish::SurfaceZ - Mouth.Z;
@@ -337,14 +341,25 @@ void ALakeCharacter::RunFishingBench()
                 B.MaxSpeed = FMath::Max(B.MaxSpeed, Fish->SpeedNow());
                 B.MaxDepth = FMath::Max(B.MaxDepth, Down);
                 B.MaxOut = FMath::Max(B.MaxOut, Out);
+                // (Moving tail first: drawn through the water backwards, which a hooked fish never is.)
+                if (FishingState == EFishingState::Fight && Fish->Velocity().Size() > 15)
+                {
+                    B.MovingTime += Step;
+                    if (FVector::DotProduct(Fish->Velocity().GetSafeNormal(), Fish->GetActorForwardVector()) < -0.3f) B.TailFirstTime += Step;
+                }
                 if (Now >= B.NextLog)
                 {
                     B.NextLog = Now + 0.25f;
-                    UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f rodload %4.0f inwater %.2f"),
+                    UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f rodload %4.0f inwater %.2f hands %4.0f hook-hand %3.0f line-shoulder %3.0f face %.2f hint %d go %.2f"),
                         T, (int32)FishingState, B.bHeld ? 1 : 0, Tension, LoadOnFish(Fish).Size(), RodLift, RodElevation, Out, Down,
                         Fish->SpeedNow(), Fish->StaminaFraction(), (int32)Fish->FightPhase, Fish->IsFightAwake() ? 1 : 0, SlackTime,
                         RodVisual ? (float)FVector::Dist(RodVisual->Tip(), Mouth) : -1.0f, RodVisual ? RodVisual->TipBend() : -1.0f,
-                        LandProgress, RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, Fish->HookGrip, RodLoadGf, Fish->BodyInWater());
+                        LandProgress, RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, Fish->HookGrip, RodLoadGf, Fish->BodyInWater(), HandLoadGf,
+                        RodVisual ? (float)FVector::Dist(RodVisual->HookLocation(), HandPoint(0)) : -1.0f,
+                        RodVisual ? FMath::PointDistToSegment(LeftShoulder(), RodVisual->Tip(), RodVisual->HookLocation()) : -1.0f,
+                        // (Facing the pull: 1 head towards the rod tip, -1 tail towards it.)
+                        (float)FVector::DotProduct(Fish->GetActorForwardVector(), ((RodVisual ? RodVisual->Tip() : RodTip()) - Mouth).GetSafeNormal()), FightHint,
+                        (float)FVector::DotProduct(Fish->GetActorForwardVector(), Fish->Velocity().GetSafeNormal()));
                 }
                 if (bShots && B.Shots < 2 && ((B.Shots == 0 && T > 2.5f) || (B.Shots == 1 && T > 8)))
                     FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_%d_%d.png"), B.Index, B.Shots++), true, false);
@@ -400,9 +415,9 @@ void ALakeCharacter::RunFishingBench()
             if (bCaught || !bOn || T > 150)
             {
                 const float Mean = B.Samples ? B.SumTension / B.Samples : 0;
-                UE_LOG(LogTemp, Display, TEXT("BENCH result %s: %s in %.1f s | tension mean %.2f max %.2f, hard %.1f s, slack %.1f s, LMB held %.0f%% | fish top speed %.0f cm/s, deepest %.0f cm, farthest %.0f cm | %s"),
+                UE_LOG(LogTemp, Display, TEXT("BENCH result %s: %s in %.1f s | tension mean %.2f max %.2f, hard %.1f s, slack %.1f s, LMB held %.0f%% | fish top speed %.0f cm/s, deepest %.0f cm, farthest %.0f cm, tail first %.1f of %.1f s moving | %s"),
                     *Label, bCaught ? TEXT("CAUGHT") : T > 150 ? TEXT("TIMEOUT") : TEXT("LOST"), T, Mean, B.MaxTension, B.HardTime, B.SlackTime,
-                    B.Samples ? 100 * B.HeldTime / (B.Samples * 0.05f) : 0, B.MaxSpeed, B.MaxDepth, B.MaxOut, *Status);
+                    B.Samples ? 100 * B.HeldTime / (B.Samples * 0.05f) : 0, B.MaxSpeed, B.MaxDepth, B.MaxOut, B.TailFirstTime, B.MovingTime, *Status);
                 B.Caught = CatchCount;
                 if (T > 150) FinishFishing(TEXT("bench timeout"));
                 Go(8);

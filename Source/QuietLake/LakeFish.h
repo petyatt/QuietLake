@@ -1,6 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "LakeFishSpine.h"
 #include "LakeFish.generated.h"
 
 class ALakeCharacter;
@@ -659,6 +660,8 @@ public:
     void LiftOut();
     void LowerIntoWater(FVector LineVelocity);
     bool IsLifted() const { return bLifted; }
+    /** The hooked fish's flexible body (mouth to tail tip), on every machine that shows it. */
+    const FFishSpine& GetSpine() const { return Spine; }
     /** On the hook: how much of its body the water holds (1 under, 0 clear of it). */
     float BodyInWater() const { return bLifted ? ImmersionAt(MouthLocation(), GetActorQuat()).Fraction : HookedWater; }
     FFishImmersion ImmersionAt(FVector Mouth, FQuat Rotation) const;
@@ -789,6 +792,13 @@ private:
     UPROPERTY(Replicated) EFishGoal Goal = EFishGoal::Cruise;
     UPROPERTY(Replicated) uint8 NetFeedOn = 0;   // EFishFood, for the F3 panel on clients
     UPROPERTY(Replicated) bool bLifted = false;  // out of the water on an angler's line
+    UPROPERTY(Replicated) bool bNetHooked = false;  // on a hook: clients bend its body too (FFishSpine)
+    FFishSpine Spine;
+    bool bSpineShown = false;   // the material is bent by the spine (Custom Primitive Data 5..12)
+    /** The spine's input for this fish: its size and build, how it works its tail, where it turns. */
+    FFishSpineInput SpineInput(FVector Mouth, float TailEffort, FVector Want, float Steer) const;
+    /** Puts the fish on its spine: the head along the spine's head, the mouth where the spine has it. */
+    void PoseFromSpine(float RollDegrees);
     // Hanging on the line (cosmetic, every machine).
     float HangTime = 0, HangEffort = 0;
     FVector HangAngularVelocity = FVector::ZeroVector;

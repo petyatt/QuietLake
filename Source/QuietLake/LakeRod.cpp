@@ -475,8 +475,10 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
                 : ALakeEnvironment::IsWater(HookPos) ? FishSupport(HookPos.Z, In.FishLength) : 0;
             const float Grams = FMath::Max(30.0f, In.FishGrams);
             const float Across = In.LineSpring > 0 ? In.LineSpring : 2600.0f / 140.0f, Along = In.LineSpringAlong > 0 ? In.LineSpringAlong : Across;
-            const float Sin2 = (float)FVector::CrossProduct(In.Hold.GetUnitAxis(EAxis::X), (HookPos - StraightTip).GetSafeNormal()).SizeSquared();
-            const FVector Pull = TetherForce(StraightTip, HookPos, (HookPos - HookPrev) / H - StraightTipVel, LineLength, Grams / 1000,
+            const bool bServerTip = !In.SpringAxis.IsNearlyZero();
+            const FVector From = bServerTip ? In.SpringTip : StraightTip;
+            const float Sin2 = (float)FVector::CrossProduct(bServerTip ? In.SpringAxis : In.Hold.GetUnitAxis(EAxis::X), (HookPos - From).GetSafeNormal()).SizeSquared();
+            const FVector Pull = TetherForce(From, HookPos, (HookPos - HookPrev) / H - StraightTipVel, LineLength, Grams / 1000,
                 1.0f / (Sin2 / Across + (1 - Sin2) / Along));
             Integrate(HookPos, HookPrev, FMath::Pow(FMath::Lerp(0.45f, 0.02f, Support), H),
                 FVector(0, 0, -Gravity * (1 - 0.98f * Support)) + Pull * (Gravity / Grams));
