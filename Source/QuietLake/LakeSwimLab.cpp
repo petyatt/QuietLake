@@ -107,6 +107,10 @@ void ALakeSwimLab::Tick(float DeltaSeconds)
     Body->SetCustomPrimitiveDataFloat(13,FMath::Clamp(0.8f-0.5f*Pace+0.4f*FMath::Abs(Swimmer.Bend),0.1f,1.0f));
     Body->SetCustomPrimitiveDataFloat(14,FMath::Lerp(0.6f,-0.8f,FMath::SmoothStep(1.5f,4.0f,Pace)));
     Body->SetCustomPrimitiveDataFloat(15,6);
+    // -FinDebug blows the marked fins out, -NoFins keeps them still: for checking the fin marks.
+    static const bool bFinCheck=FParse::Param(FCommandLine::Get(),TEXT("FinDebug")), bNoFins=FParse::Param(FCommandLine::Get(),TEXT("NoFins"));
+    Body->SetCustomPrimitiveDataFloat(16,bFinCheck ? 1.0f : 0.0f);
+    if(bNoFins) { Body->SetCustomPrimitiveDataFloat(13,0); Body->SetCustomPrimitiveDataFloat(14,0); }
     const FVector Centre=Swimmer.Centre();
     const FVector View=Centre+FVector(10,-70,60);
     Camera->SetActorLocationAndRotation(View,(Centre-View).Rotation());

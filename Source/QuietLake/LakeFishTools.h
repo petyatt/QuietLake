@@ -19,8 +19,8 @@ public:
      * (1 body, 0.75 dorsal, 0.5 pectoral, 0.25 pelvic or anal, 0 the tail fin). Red (the wave
      * coordinate along the body) is kept. The model lies snout at X = 0, tail along +X. A fin is what
      * stands out of the body's cross-section as a thin sheet: per slice along the body the body's
-     * width is measured near its middle height and its depth on its flanks, and whatever lies well
-     * outside that ellipse is fin. Returns a line of what it found.
+     * width is measured near its middle height and its depth up to where the cross-section thins
+     * into a sheet, and whatever lies well outside that ellipse is fin. Returns a line of what it found.
      */
     UFUNCTION(BlueprintCallable, Category = "Lake|Fish")
     static FString MarkFishFins(UStaticMesh* Mesh);

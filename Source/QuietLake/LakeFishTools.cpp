@@ -73,18 +73,47 @@ FString ULakeFishTools::MarkFishFins(UStaticMesh* Mesh)
         TArray<float> Width; Width.SetNum(Slices);
         for (int32 S = 0; S < Slices; ++S) Width[S] = Mid[S].Num() >= 6 ? Percentile(Mid[S], 0.85f) : -1;
         FillAndSmooth(Width, 0.1f * Length);
+        // Where the body ends and a fin on the back or the belly begins: going up (down) from the
+        // middle, the cross-section stays wide while it is body and becomes a thin sheet in a fin.
+        // (Measuring the flanks alone put a high-backed fish's whole upper back into its dorsal fin.)
+        constexpr int32 Bins = 16;
+        TArray<float> UpWide, DownWide;
+        TArray<int32> UpCount, DownCount;
+        UpWide.Init(0, Slices * Bins); DownWide.Init(0, Slices * Bins);
+        UpCount.Init(0, Slices * Bins); DownCount.Init(0, Slices * Bins);
         for (const FVertexID V : Description->Vertices().GetElementIDs())
         {
             const FVector3f P = Positions[V];
             const int32 S = SliceOf(P.X);
+            const int32 Cell = S * Bins + FMath::Clamp(int32(FMath::Abs(P.Z) / FMath::Max(0.001f, MaxZ) * Bins), 0, Bins - 1);
+            float& Wide = (P.Z >= 0 ? UpWide : DownWide)[Cell];
+            Wide = FMath::Max(Wide, FMath::Abs(P.Y));
+            ++(P.Z >= 0 ? UpCount : DownCount)[Cell];
             if (FMath::Abs(P.Y) < 0.45f * Width[S]) continue;
             (P.Z >= 0 ? Up[S] : Down[S]).Add(FMath::Abs(P.Z));
         }
+        auto BodyEdge = [&](const TArray<float>& Wide, const TArray<int32>& Count, int32 S)
+        {
+            const float Thick = 0.3f * Width[S];
+            int32 Last = -1, Gap = 0;
+            for (int32 B = 0; B < Bins; ++B)
+            {
+                if (Count[S * Bins + B] < 2) { if (++Gap > 2) break; continue; }
+                if (Wide[S * Bins + B] < Thick) break;
+                Last = B;
+                Gap = 0;
+            }
+            // (A rounded back is already narrower than the threshold a little below its ridge.)
+            return Last >= 0 ? 1.05f * (Last + 1) * MaxZ / Bins : -1.0f;
+        };
         TArray<float> Top, Bottom; Top.SetNum(Slices); Bottom.SetNum(Slices);
         for (int32 S = 0; S < Slices; ++S)
         {
-            Top[S] = Up[S].Num() >= 4 ? Percentile(Up[S], 0.9f) : -1;
-            Bottom[S] = Down[S].Num() >= 4 ? Percentile(Down[S], 0.9f) : -1;
+            const float FlankTop = Up[S].Num() >= 4 ? Percentile(Up[S], 0.9f) : -1;
+            const float FlankBottom = Down[S].Num() >= 4 ? Percentile(Down[S], 0.9f) : -1;
+            Top[S] = FMath::Max(BodyEdge(UpWide, UpCount, S), FlankTop);
+            // (Below, the paired pelvic fins spread as wide as a body: trust the flanks there, give or take.)
+            Bottom[S] = FlankBottom > 0 ? FMath::Clamp(BodyEdge(DownWide, DownCount, S), FlankBottom, 1.15f * FlankBottom) : BodyEdge(DownWide, DownCount, S);
         }
         FillAndSmooth(Top, 0.5f * MaxZ);
         FillAndSmooth(Bottom, 0.5f * MaxZ);
