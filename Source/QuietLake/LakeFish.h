@@ -5,6 +5,13 @@
 
 class ALakeCharacter;
 
+// Volume-weighted body samples, expressed relative to the hooked mouth.
+struct FFishImmersion
+{
+    float Fraction = 0;
+    FVector BuoyantMoment = FVector::ZeroVector;
+};
+
 /**
  * A species of fish: its number in the species files (Content/LiveFish/Species/*.json, "order").
  * The four first ones are named here for the code and the tests; any further species is added with
@@ -653,7 +660,8 @@ public:
     void LowerIntoWater(FVector LineVelocity);
     bool IsLifted() const { return bLifted; }
     /** On the hook: how much of its body the water holds (1 under, 0 clear of it). */
-    float BodyInWater() const { return bLifted ? 0.0f : HookedWater; }
+    float BodyInWater() const { return bLifted ? ImmersionAt(MouthLocation(), GetActorQuat()).Fraction : HookedWater; }
+    FFishImmersion ImmersionAt(FVector Mouth, FQuat Rotation) const;
     /**
      * Out of the water on the line: placed on every machine from the rod's simulated hook. It hangs
      * from its mouth along the line, swings with it and thrashes; still in the water it is drawn

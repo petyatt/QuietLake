@@ -219,7 +219,7 @@ public:
     // tip turns the rod about them, as a pull square to the rod on its whole lever (HandLoad). A fish
     // hanging under a rod raised upright pulls almost along it and weighs little, as far as the blank
     // does not bow out over the water; one pulling out across a low rod weighs it all.
-    static constexpr float HandPullForce = 260.0f;     // the most the hands lift against (LMB held): a steady pull, not a heave
+    static constexpr float HandPullForce = 360.0f;     // tip-equivalent effort: lift a small dry fish, yield to heavier loads
     static constexpr float HandHoldForce = 160.0f;     // what they hold against once LMB is let go
     static constexpr float RodLiftDegrees = 55.0f;     // a fish dragging the rod down below the aim: degrees per part
     static constexpr float RodTopElevation = 86.0f;    // the rod raised all the way, almost upright

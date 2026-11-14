@@ -471,7 +471,8 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             // slowing the swing. The rod holds it with the same spring as in the water (its bend and the
             // arms, from the tip of the rod as the hands hold it, unbent): leaving the water changes
             // nothing in the pull, so nothing jumps. Dipped back, the water holds it up again.
-            const float Support = ALakeEnvironment::IsWater(HookPos) ? FishSupport(HookPos.Z, In.FishLength) : 0;
+            const float Support = In.LineFish ? In.LineFish->ImmersionAt(HookPos, In.LineFish->GetActorQuat()).Fraction
+                : ALakeEnvironment::IsWater(HookPos) ? FishSupport(HookPos.Z, In.FishLength) : 0;
             const float Grams = FMath::Max(30.0f, In.FishGrams);
             const float Across = In.LineSpring > 0 ? In.LineSpring : 2600.0f / 140.0f, Along = In.LineSpringAlong > 0 ? In.LineSpringAlong : Across;
             const float Sin2 = (float)FVector::CrossProduct(In.Hold.GetUnitAxis(EAxis::X), (HookPos - StraightTip).GetSafeNormal()).SizeSquared();

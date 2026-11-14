@@ -2014,6 +2014,26 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
                 TestTrue(TEXT("Hanging mouth stays on hook while body swings"), FVector::Dist(F->MouthLocation(), Hook) < 0.01f);
                 TestFalse(TEXT("Hanging body remains finite"), F->GetActorLocation().ContainsNaN());
             }
+            const float Length = LakeFish::LengthCm(Sp, Weight);
+            FVector Mouth(Open.X, Open.Y, LakeFish::SurfaceZ + Length * 0.3f);
+            const float Horizontal = F->ImmersionAt(Mouth, FQuat::Identity).Fraction;
+            const float Vertical = F->ImmersionAt(Mouth, FRotator(90,0,0).Quaternion()).Fraction;
+            TestTrue(TEXT("A submerged tail still supports a raised mouth"), Vertical>Horizontal+0.25f);
+            float Previous = 1;
+            for (int32 Step=0; Step<=100; ++Step)
+            {
+                Mouth.Z=LakeFish::SurfaceZ+Length*(-0.3f+Step*0.015f);
+                const float Supported=F->ImmersionAt(Mouth, FRotator(60,0,0).Quaternion()).Fraction;
+                TestTrue(TEXT("Emergence transfers weight continuously"), Supported<=Previous+0.0001f && Previous-Supported<0.12f);
+                Previous=Supported;
+            }
+            TestTrue(TEXT("A fully emerged body has no buoyancy"), Previous<0.001f);
+            F->SetActorRotation(FRotator::ZeroRotator);
+            F->SetActorLocation(Mouth-F->MouthOffset());
+            F->LiftOut();
+            for (int32 Step=0; Step<360; ++Step) F->HangOnLine(Mouth, FVector::ForwardVector, 1/60.0f);
+            TestTrue(TEXT("An airborne body hangs under its mouth, independently of line angle"), F->GetActorForwardVector().Z>0.94f);
+            TestTrue(TEXT("Turning the body never detaches the mouth"), FVector::Dist(F->MouthLocation(),Mouth)<0.01f);
         }
     }
     TestTrue(TEXT("Fully submerged body is supported"), ALakeRod::FishSupport(LakeFish::SurfaceZ - 1, 30) == 1);

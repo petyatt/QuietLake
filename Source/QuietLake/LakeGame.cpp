@@ -1513,7 +1513,7 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     // Drawn into the shallows by the bank (or out onto it) the fish lies there on its side: the angler
     // takes it in the hand if it is at his feet, or has to step over to it.
     const bool bBeached = !LakeMap::IsWater(Mouth.X, Mouth.Y) || LakeFish::SurfaceZ - ALakeFish::BottomZ(Mouth.X, Mouth.Y) < 0.25f * Length;
-    const bool bAtFeet = bBeached && FVector::Dist2D(Mouth, GetActorLocation()) < 230;
+    const bool bAtFeet = bBeached && FVector::Dist2D(Mouth, GetActorLocation()) < 70;
     // Too heavy for the hands: it hangs at the top under a rod they cannot raise any further.
     const bool bTooHeavy = bTired && bReeling && !bClear && Fish->BodyInWater() < 0.8f && HandLoadGf > HandPullForce * 0.9f;
     // A wakeful fish throws a hook that hangs on a slack line: the fresher it is, the sooner. Resting
@@ -1645,18 +1645,16 @@ void ALakeCharacter::UpdateLanding()
         ForceNetUpdate();
         return;
     }
-    // In the hand: the catch counts at the touch, and the fish stays in the hand for a moment. It is
-    // taken as it swings in to the hand; one that hangs still on the raised rod a little out of reach
-    // is drawn in by the line (the free hand takes the line above it).
+    // A catch requires actual reach. Waiting with a raised rod cannot pull a distant
+    // fish into the hand: move the pole or step closer until it swings within reach.
     if (!bReeling) return;
     if (RodVisual)
     {
         const float Away = FVector::Dist(RodVisual->HookLocation(), HandPoint(0));
         const float Speed = (RodVisual->HookVelocity() - GetVelocity()).Size();
-        const bool bSwungIn = Away <= CatchReach && Speed <= 150;
-        const bool bHangs = LandProgress >= 1 && ServerNow() - LandServerTime > LandLiftTime + 1.2f && Away < 230 && Speed < 120
-            && RodVisual->HookLocation().Z > LakeFish::SurfaceZ + 20;
-        if (!bSwungIn && !bHangs) return;
+        const bool bSwungIn = Away <= CatchReach && Speed <= 150
+            && FVector::Dist(RodVisual->HookLocation(), LeftShoulder()) <= ArmReach;
+        if (!bSwungIn) return;
     }
     if (!RodVisual && LandProgress < 1) return;
     TakeInHand(HookedFish.Get());
