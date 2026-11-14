@@ -28,11 +28,11 @@ void ALakeSwimLab::BeginPlay()
     Super::BeginPlay();
     bAuto=FParse::Param(FCommandLine::Get(),TEXT("SwimLabAuto"));
     Fish=GetWorld()->SpawnActor<ALakeFish>();
-    Fish->Setup(EFishSpecies::Perch,0.35f,FVector::ZeroVector,-1,42);
+    Fish->Setup(EFishSpecies::Perch,BodyGrams/1000,FVector::ZeroVector,-1,42);
     Fish->SetActorTickEnabled(false);
     Body=Fish->FindComponentByClass<UStaticMeshComponent>();
-    BodyLength=LakeFish::LengthCm(EFishSpecies::Perch,0.35f);
-    Swimmer.Reset(FVector::ZeroVector,BodyLength);
+    BodyLength=LakeFish::LengthCm(EFishSpecies::Perch,BodyGrams/1000);
+    Swimmer.Reset(FVector::ZeroVector,BodyLength,BodyGrams);
     Camera=GetWorld()->SpawnActor<ACameraActor>();
     auto* Lens=Camera->GetCameraComponent();
     Lens->SetFieldOfView(50);
@@ -40,7 +40,8 @@ void ALakeSwimLab::BeginPlay()
     Lens->PostProcessSettings.bOverride_AutoExposureMaxBrightness=true;
     Lens->PostProcessSettings.AutoExposureMinBrightness=1;
     Lens->PostProcessSettings.AutoExposureMaxBrightness=1;
-    auto* Floor=GetWorld()->SpawnActor<AStaticMeshActor>(FVector(0,0,-24),FRotator::ZeroRotator);
+    Floor=GetWorld()->SpawnActor<AStaticMeshActor>(FVector(0,0,-24),FRotator::ZeroRotator);
+    Floor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
     Floor->GetStaticMeshComponent()->SetStaticMesh(LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Plane.Plane")));
     Floor->SetActorScale3D(FVector(40,40,1));
     Floor->SetActorEnableCollision(false);
@@ -53,6 +54,10 @@ void ALakeSwimLab::BeginPlay()
     for(FVector Position : {FVector(0,-100,180),FVector(200,150,100),FVector(-200,0,100)})
     {
         auto* Lamp=GetWorld()->SpawnActor<APointLight>(Position,FRotator::ZeroRotator);
+        // The lamps travel with the fish (Tick), or a burst would take it out of the light.
+        Lamp->GetRootComponent()->SetMobility(EComponentMobility::Movable);
+        Lamps.Add(Lamp);
+        LampOffsets.Add(Position);
         auto* Light=Cast<UPointLightComponent>(Lamp->GetLightComponent());
         Light->SetIntensity(5000);
         Light->SetAttenuationRadius(2500);
@@ -74,14 +79,16 @@ void ALakeSwimLab::Tick(float DeltaSeconds)
     float Effort=0,Steering=0;
     if(bAuto)
     {
-        Effort=Elapsed<8 || Elapsed>12 ? 0.8f : 0;
-        Steering=Elapsed>5 && Elapsed<8 ? 0.6f : Elapsed>12 && Elapsed<16 ? -0.6f : 0;
+        // An easy swim with a turn, a glide, a burst with a turn the other way, an easy swim again.
+        Effort=Elapsed<8 ? Easy : Elapsed<12 ? 0 : Elapsed<14 ? 1 : Easy;
+        Steering=Elapsed>5 && Elapsed<7 ? 0.6f : Elapsed>12.6f && Elapsed<13.4f ? -0.6f : 0;
     }
     else if(PC)
     {
-        Effort=PC->IsInputKeyDown(EKeys::W) ? 0.8f : 0;
+        const bool bBurst=PC->IsInputKeyDown(EKeys::LeftShift);
+        Effort=PC->IsInputKeyDown(EKeys::W) ? (bBurst ? 1.0f : Easy) : 0;
         Steering=(PC->IsInputKeyDown(EKeys::A) ? 1.0f : 0)-(PC->IsInputKeyDown(EKeys::D) ? 1.0f : 0);
-        if(PC->WasInputKeyJustPressed(EKeys::R)) Swimmer.Reset(FVector::ZeroVector,BodyLength);
+        if(PC->WasInputKeyJustPressed(EKeys::R)) Swimmer.Reset(FVector::ZeroVector,BodyLength,BodyGrams);
     }
     Swimmer.Advance(DeltaSeconds,Effort,Steering);
     const FQuat Pose=FRotationMatrix::MakeFromXZ(Swimmer.Forward(),FVector::UpVector).ToQuat();
@@ -95,23 +102,34 @@ void ALakeSwimLab::Tick(float DeltaSeconds)
         Body->SetCustomPrimitiveDataFloat(3+2*I,FMath::Atan2(float(-Direction.Y),float(-Direction.X)));
         Body->SetCustomPrimitiveDataFloat(4+2*I,0);
     }
+    // Fins: the pectorals paddle at rest and in a turn, the dorsal lies flat at speed.
+    const float Pace=Swimmer.Velocity().Size()/BodyLength;
+    Body->SetCustomPrimitiveDataFloat(13,FMath::Clamp(0.8f-0.5f*Pace+0.4f*FMath::Abs(Swimmer.Bend),0.1f,1.0f));
+    Body->SetCustomPrimitiveDataFloat(14,FMath::Lerp(0.6f,-0.8f,FMath::SmoothStep(1.5f,4.0f,Pace)));
+    Body->SetCustomPrimitiveDataFloat(15,6);
     const FVector Centre=Swimmer.Centre();
     const FVector View=Centre+FVector(10,-70,60);
     Camera->SetActorLocationAndRotation(View,(Centre-View).Rotation());
+    if(Floor) Floor->SetActorLocation(FVector(Centre.X,Centre.Y,-24));
+    for(int I=0;I<Lamps.Num();++I) if(Lamps[I]) Lamps[I]->SetActorLocation(Centre+LampOffsets[I]);
+    // The floor's grid, drawn around the fish wherever it has swum to.
+    const FVector Cell(FMath::GridSnap(Centre.X,50.0),FMath::GridSnap(Centre.Y,50.0),0);
     for(int I=-20;I<=20;++I)
     {
-        DrawDebugLine(GetWorld(),FVector(-1000,I*50,-23.9),FVector(1000,I*50,-23.9),FColor(70,110,125),false,0,0,0.3f);
-        DrawDebugLine(GetWorld(),FVector(I*50,-1000,-23.9),FVector(I*50,1000,-23.9),FColor(70,110,125),false,0,0,0.3f);
+        DrawDebugLine(GetWorld(),Cell+FVector(-1000,I*50,-23.9),Cell+FVector(1000,I*50,-23.9),FColor(70,110,125),false,0,0,0.3f);
+        DrawDebugLine(GetWorld(),Cell+FVector(I*50,-1000,-23.9),Cell+FVector(I*50,1000,-23.9),FColor(70,110,125),false,0,0,0.3f);
     }
+    const float Speed=Swimmer.Velocity().Size();
     if(GEngine) GEngine->AddOnScreenDebugMessage(901,0,FColor::White,FString::Printf(
-        TEXT("Окунь: физическое плавание | W — плыть, отпустить — скользить | A/D — поворот | R — сначала\nСкорость %.1f см/с"),Swimmer.Velocity().Size()));
+        TEXT("Окунь %.0f см, %.0f г: физическое плавание | W — плыть, Shift+W — бросок, отпустить — скользить | A/D — поворот | R — сначала\nСкорость %.0f см/с (%.1f длины тела в секунду) | хвост %.1f взмаха/с | мышцы на пределе %.0f%%"),
+        BodyLength,BodyGrams,Speed,Speed/BodyLength,Swimmer.Drive>0.02f ? Swimmer.Beat : 0.0f,Swimmer.MuscleUse*100));
     if(bAuto)
     {
-        const float Shots[]={4,7,11,15,18};
+        const float Shots[]={4,6.5f,11,13.2f,18};
         if(NextShot<5 && Elapsed>=Shots[NextShot])
         {
             FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/FString::Printf(TEXT("SwimLab_%d.png"),NextShot),false,false);
-            UE_LOG(LogTemp,Display,TEXT("SWIM_LAB t %.1f centre %s speed %.2f forward %s"),Elapsed,*Centre.ToCompactString(),Swimmer.Velocity().Size(),*Swimmer.Forward().ToCompactString());
+            UE_LOG(LogTemp,Display,TEXT("SWIM_LAB t %.1f centre %s speed %.1f cm/s = %.2f lengths/s beat %.1f/s muscles at limit %.0f%% forward %s"),Elapsed,*Centre.ToCompactString(),Speed,Speed/BodyLength,Swimmer.Beat,Swimmer.MuscleUse*100,*Swimmer.Forward().ToCompactString());
             ++NextShot;
         }
         if(Elapsed>20) FPlatformMisc::RequestExit(false);

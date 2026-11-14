@@ -19,7 +19,12 @@ private:
     UPROPERTY() TObjectPtr<class ALakeFish> Fish;
     UPROPERTY() TObjectPtr<class UStaticMeshComponent> Body;
     UPROPERTY() TObjectPtr<class ACameraActor> Camera;
-    float Elapsed=0, BodyLength=30;
+    UPROPERTY() TArray<TObjectPtr<class APointLight>> Lamps;
+    TArray<FVector> LampOffsets;
+    UPROPERTY() TObjectPtr<class AStaticMeshActor> Floor;
+    // Effort of an unhurried swim, about one body length a second.
+    static constexpr float Easy=0.15f;
+    float Elapsed=0, BodyLength=30, BodyGrams=350;
     int32 NextShot=0;
     bool bAuto=false;
 };
