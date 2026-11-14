@@ -2891,6 +2891,27 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
         }
         bSpineShown = bSpine;
     }
+    // The fins (marked in the model, Tools/MarkFishFins.py), Custom Primitive Data 13..16. A free fish
+    // standing or turning slowly works its pectorals; swimming fast it lays its dorsal and anal fins
+    // flat. On the hook the fins stand out and work; out of the water they flutter.
+    {
+        static const bool bFinCheck = FParse::Param(FCommandLine::Get(), TEXT("FinDebug"));
+        const bool bOnHook = bNetHooked || State == EState::Hooked;
+        float Paddle, Spread, Rate;
+        if (bHanging) { Paddle = 0.4f + 0.6f * FMath::Clamp(HangEffort * 1.5f, 0.0f, 1.0f); Spread = 1; Rate = 16; }
+        else if (bOnHook) { Paddle = 0.4f + 0.6f * FMath::Clamp(E, 0.0f, 1.0f); Spread = 0.9f; Rate = 10; }
+        else
+        {
+            const float Slow = 1 - FMath::SmoothStep(0.0f, S.CruiseSpeed * 1.2f, ShownSpeed);
+            const float Fast = FMath::SmoothStep(S.CruiseSpeed, S.BurstSpeed * 0.7f, ShownSpeed);
+            Paddle = FMath::Clamp(0.2f + 0.6f * Slow + 0.3f * FMath::Abs(ShownTurn) / 90.0f, 0.0f, 1.0f);
+            Spread = FMath::Lerp(0.6f, -0.8f, Fast);
+            Rate = 6;
+        }
+        const float Fin[4] = { FMath::RoundToFloat(Paddle * 20) / 20, FMath::RoundToFloat(Spread * 20) / 20, Rate, bFinCheck ? 1.0f : 0.0f };
+        for (int32 K = 0; K < 4; ++K)
+            if (Fin[K] != LastFin[K]) { LastFin[K] = Fin[K]; Body->SetCustomPrimitiveDataFloat(13 + K, Fin[K]); }
+    }
     // The body curves into a turn (a C, head and tail towards the inside): curvature is the turn
     // rate over the speed, and a fish turning on the spot curls hardest.
     const float Curl = FMath::DegreesToRadians(ShownTurn) * 0.5f * Len / FMath::Max(ShownSpeed, 0.6f * Len);

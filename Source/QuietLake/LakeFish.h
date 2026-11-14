@@ -795,6 +795,7 @@ private:
     UPROPERTY(Replicated) bool bNetHooked = false;  // on a hook: clients bend its body too (FFishSpine)
     FFishSpine Spine;
     bool bSpineShown = false;   // the material is bent by the spine (Custom Primitive Data 5..12)
+    float LastFin[4] = { -1, -1, -1, -1 };   // the fins' paddle, spread, rate and check as last given to the material
     /** The spine's input for this fish: its size and build, how it works its tail, where it turns. */
     FFishSpineInput SpineInput(FVector Mouth, float TailEffort, FVector Want, float Steer) const;
     /** Puts the fish on its spine: the head along the spine's head, the mouth where the spine has it. */

@@ -15,8 +15,31 @@ lib = unreal.MaterialEditingLibrary
 SPECIES = ['Bleak', 'Bream', 'Crucian', 'Perch', 'Pike', 'Roach', 'Rudd']
 
 # Added after each material's own swim wave (which ends by returning the sideways offset `side`).
+# First the fins (marked in the vertex colours by Tools/MarkFishFins.py: green = 1 - fin share, blue =
+# which fin), moved in the model's own frame: the pectorals paddle, the dorsal and the anal fins are
+# raised or laid flat and flutter, the tail fin flutters (Custom Primitive Data 13 paddle 0..1, 14
+# spread -1 laid flat .. 1 raised, 15 rate, 16 = 1 shows the fins blown out for checking the marks).
+# Then the spine bends the whole model.
 SPINE = """
-float3 off = float3(0, side, 0);
+float fw = 1 - V.g;
+float3 fin = 0;
+if (fw > 0.001)
+{
+    float kind = V.b;
+    float t = T * FR;
+    float sideSign = LP.y >= 0 ? 1.0 : -1.0;
+    float up = LP.z >= 0 ? 1.0 : -1.0;
+    float k = fw * Len;
+    if (kind > 0.37 && kind <= 0.62)
+        fin += k * float3(0.045 * sin(t), sideSign * 0.03 * FS, 0.04 * cos(t)) * (0.3 + FP);
+    else if (kind > 0.12 && kind <= 0.9)
+        fin += k * float3(-0.05 * FS, 0.03 * FP * sin(t * 1.7 + LP.x / Len * 9.0), 0.045 * up * FS);
+    else if (kind <= 0.12)
+        fin += k * float3(0, 0.035 * FP * sin(t * 1.3 + 1.2), 0);
+    if (FD > 0.5) fin += fw * float3(0, LP.y, LP.z) * 1.5;
+}
+float3 LQ = LP + fin;
+float3 off = float3(0, side, 0) + fin;
 float ya[5] = { 0, Y1, Y2, Y3, Y4 };
 float pa[5] = { 0, P1, P2, P3, P4 };
 float bent = abs(Y1) + abs(Y2) + abs(Y3) + abs(Y4) + abs(P1) + abs(P2) + abs(P3) + abs(P4);
@@ -41,11 +64,11 @@ if (bent > 0.0001)
     float yaw = lerp(ya[i0], ya[i0 + 1], f);
     float pit = lerp(pa[i0], pa[i0 + 1], f);
     // The cross-section turns with the spine: pitch about Y, then yaw about Z.
-    float cy = LP.y + side, cz = LP.z;
+    float cy = LQ.y + side, cz = LQ.z;
     float rx = -cz * sin(pit);
     float rz = cz * cos(pit);
     float3 r = float3(rx * cos(yaw) - cy * sin(yaw), rx * sin(yaw) + cy * cos(yaw), rz);
-    off = S + r - float3(x, LP.y, LP.z);
+    off = S + r + float3(fin.x, 0, 0) - float3(x, LP.y, LP.z);
 }
 return off;
 """
@@ -108,7 +131,11 @@ for species in SPECIES:
             have[name] = prim_data(mat, 'Spine' + name, 5 + k)
     if 'LP' not in have or have['LP'] is None:
         have['LP'] = local_position(mat)[0]
-    order = ['V', 'T', 'R', 'A', 'Ph', 'Len', 'C', 'LP'] + spine_names
+    fin_names = [('FP', 13), ('FS', 14), ('FR', 15), ('FD', 16)]
+    for name, index in fin_names:
+        if name not in have or have[name] is None:
+            have[name] = prim_data(mat, 'Fin' + name, index)
+    order = ['V', 'T', 'R', 'A', 'Ph', 'Len', 'C', 'LP'] + spine_names + [n for n, _ in fin_names]
     missing = [n for n in order if n not in have or have[n] is None]
     assert not missing, (species, missing)
     spine = node(mat, unreal.MaterialExpressionCustom, code=code, output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT3,

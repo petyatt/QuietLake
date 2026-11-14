@@ -1048,7 +1048,17 @@ void ALakeCharacter::RunPreviews()
                 const FString Name = FString::Printf(TEXT("Mouth_%s.png"), *LakeFish::Info(Sp).Id);
                 Shot(Name);
             });
-            At(6.75f + I, [Current] { if (ALakeFish* Fish = Current->Get()) Fish->Destroy(); });
+            // The whole fish from the side, for its fins (-FinDebug blows the marked fins out).
+            At(6.68f + I, [this, I, Current, LookFrom, Shot]
+            {
+                ALakeFish* Fish = Current->Get();
+                if (!Fish) return;
+                const float Len = LakeFish::LengthCm(Fish->Species, Fish->WeightKg);
+                const FVector Middle = Fish->MouthLocation() - Fish->GetActorForwardVector() * (Len * 0.5f);
+                LookFrom(Middle + Fish->GetActorRightVector() * (Len * 1.9f) + FVector(0, 0, Len * 0.15f), Middle, 40);
+                Shot(FString::Printf(TEXT("Fin_%s.png"), *LakeFish::Info((EFishSpecies)I).Id));
+            });
+            At(6.85f + I, [Current] { if (ALakeFish* Fish = Current->Get()) Fish->Destroy(); });
         }
         At(7.0f + LakeFish::NumSpecies(), [] { FPlatformMisc::RequestExit(false); });
     }

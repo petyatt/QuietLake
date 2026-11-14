@@ -60,7 +60,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-BitePreview` | каждое движение поплавка при поклёвке крупным планом | `LakePreviews.cpp` |
 | `-LandPreview` | рыба на леске выходит из воды и попадает в руку | `LakePreviews.cpp` |
 | `-FightPreview` | вываживание сбоку под водой: глубина, ход, повороты, натяжение; лог `QUIET_LAKE_FIGHT` | `LakePreviews.cpp` |
-| `-MouthPreview` | рот каждого вида рыб крупным планом, кадр `Saved/Mouth_<вид>.png` | `LakePreviews.cpp` |
+| `-MouthPreview` | рот каждого вида рыб крупным планом, кадр `Saved/Mouth_<вид>.png`, и рыба целиком сбоку `Saved/Fin_<вид>.png` (`-FinDebug` раздувает размеченные плавники, `-ClearWater` — видно под водой) | `LakePreviews.cpp` |
 | `-CastPreview` | заброс с руки сбоку и вблизи, ранний и ближний заброс, тяжёлое и лёгкое удилища, вынимание с ловлей рукой, ходьба с оснасткой, глубокий спуск и спуск глубже воды | `LakePreviews.cpp` |
 | `-RodPreview` | удилище: изгиб кончика при забросе лёгким, средним и тяжёлым, при вываживании | `LakePreviews.cpp` |
 | `-LeaderPreview` | поводок крупным планом: оснастка в руке, замах, полёт, приводнение, лежащая снасть, подъём с остановкой (ЛКМ отпущена и снова зажата), вынимание; лог `QUIET_LAKE_LEADER` (`-Depth=`) | `LakePreviews.cpp` |
@@ -106,6 +106,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 - `LakeRod.h/.cpp` — удочка только для вида (`ALakeRod`): физическое удилище (цепочка с упругостью),
   физическая основная леска (ветер, вода), физический поплавок, дробь, крючок, рыба на леске. Считается на каждой машине из реплицируемого состояния рыбака
   (`FRodInput`), по сети не передаётся.
+- `LakeFishTools.h/.cpp` — инструмент редактора `ULakeFishTools::MarkFishFins`: находит плавники модели и пишет их в цвет вершин (`Tools/MarkFishFins.py` для всех `SM_Fish_Meshy_*`; после переимпорта модели запускать снова, затем `Tools/AddFishSpine.py`).
 - `LakeFishSpine.h/.cpp` — гибкое тело рыбы на крючке (`FFishSpine`: шесть точек от рта до хвоста, вес, плавучесть, сопротивление воды, мышцы); модель гнётся по нему материалом (Custom Primitive Data 5..12, `Tools/AddFishSpine.py` для `M_Meshy_<Вид>`).
 - `LakeFish.h/.cpp` — рыба: паспорта видов (`FFishSpeciesInfo`, читаются из `Content/LiveFish/Species/*.json`, описание полей — README.md там же; новый вид — новый файл, код видов по именам не различает), походка (`FFishGait`), наживки, поклёвки (`NextBiteStep`: рыба решает каждый шаг, возвращается после промаха), плавание (`Move`: повороты дугой, сглаженное желание), стая, распорядок, вываживание, сглаживание на клиентах (`FFishNetSmoothing`).
   Здесь же общие перечисления, включая `EFishingState`.
