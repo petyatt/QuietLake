@@ -1503,7 +1503,8 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     const float LineShare = Force / Gear.LineBreak, RodShare = RodLoadGf / Gear.RodBreak;
     Tension = FMath::Clamp(FMath::Max(LineShare, RodShare), 0.0f, 1.0f);
     bRodStrained = RodShare > LineShare;
-    Fish->ApplyLineForce(Pull);
+    // (With the rod's stiffness, so the pull eases within the fish's own steps as its mouth gives way.)
+    Fish->ApplyLineForce(Pull, Pull.IsNearlyZero() ? 0.0f : LineSpring(Gear, RodAxis, Fish->MouthLocation() - RodTip()));
     FishDistance = FVector::Dist2D(Fish->GetActorLocation(), GetActorLocation());
     FloatPosition = FVector(Fish->GetActorLocation().X, Fish->GetActorLocation().Y, -18);
     // Hauled hard, the hook cuts itself loose: the hold wears above what the hook holds safely, the
@@ -1517,7 +1518,10 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     const float Length = LakeFish::LengthCm(Fish->Species, Fish->WeightKg);
     const bool bTired = Fish->StaminaFraction() < 0.35f;
     const bool bUp = Mouth.Z > LakeFish::SurfaceZ - Length * 0.1f;
-    const bool bClear = Fish->BodyInWater() < 0.1f && Mouth.Z > LakeFish::SurfaceZ + Length * 0.3f;
+    // (Hanging on the line, that is: a fish that has thrown itself out of the water on a slack line
+    // falls back.)
+    const bool bClear = Fish->BodyInWater() < 0.1f && Mouth.Z > LakeFish::SurfaceZ + Length * 0.3f && Force > 500 * Fish->WeightKg
+        && FMath::Abs(Fish->Velocity().Z) < 80;
     const bool bReady = bUp && bTired;
     // Drawn into the shallows by the bank (or out onto it) the fish lies there on its side: the angler
     // takes it in the hand if it is at his feet, or has to step over to it.

@@ -32,7 +32,7 @@ void ALakeSwimLab::BeginPlay()
     Fish->SetActorTickEnabled(false);
     Body=Fish->FindComponentByClass<UStaticMeshComponent>();
     BodyLength=LakeFish::LengthCm(EFishSpecies::Perch,BodyGrams/1000);
-    Swimmer.Reset(FVector::ZeroVector,BodyLength,BodyGrams);
+    StartFish();
     Camera=GetWorld()->SpawnActor<ACameraActor>();
     auto* Lens=Camera->GetCameraComponent();
     Lens->SetFieldOfView(50);
@@ -40,7 +40,7 @@ void ALakeSwimLab::BeginPlay()
     Lens->PostProcessSettings.bOverride_AutoExposureMaxBrightness=true;
     Lens->PostProcessSettings.AutoExposureMinBrightness=1;
     Lens->PostProcessSettings.AutoExposureMaxBrightness=1;
-    Floor=GetWorld()->SpawnActor<AStaticMeshActor>(FVector(0,0,-24),FRotator::ZeroRotator);
+    Floor=GetWorld()->SpawnActor<AStaticMeshActor>(FVector(0,0,FloorZ-0.3f),FRotator::ZeroRotator);
     Floor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
     Floor->GetStaticMeshComponent()->SetStaticMesh(LoadObject<UStaticMesh>(nullptr,TEXT("/Engine/BasicShapes/Plane.Plane")));
     Floor->SetActorScale3D(FVector(40,40,1));
@@ -76,22 +76,52 @@ void ALakeSwimLab::Tick(float DeltaSeconds)
     if(!Fish || !Body || !Camera) return;
     Elapsed+=DeltaSeconds;
     auto* PC=GetWorld()->GetFirstPlayerController();
-    float Effort=0,Steering=0;
+    float Effort=0,Steering=0,TargetPitch=0,Reel=0;
+    bool bThrash=false,bWantHook=bHooked;
     if(bAuto)
     {
-        // An easy swim with a turn, a glide, a burst with a turn the other way, an easy swim again.
-        Effort=Elapsed<8 ? Easy : Elapsed<12 ? 0 : Elapsed<14 ? 1 : Easy;
+        // From above: an easy swim with a turn, a glide, a burst with a turn the other way. From the
+        // side: a dive, a climb, then a line takes the fish by the mouth, draws it out of the water
+        // against its pull, and it hangs and thrashes.
+        Effort=Elapsed<8 ? Easy : Elapsed<12 ? 0 : Elapsed<14 ? 1 : Elapsed<22 ? Easy : Elapsed<25 ? 0.4f : Elapsed>=29 ? 1 : 0;
         Steering=Elapsed>5 && Elapsed<7 ? 0.6f : Elapsed>12.6f && Elapsed<13.4f ? -0.6f : 0;
+        TargetPitch=Elapsed>14 && Elapsed<17 ? -40 : Elapsed>17 && Elapsed<20 ? 40 : Elapsed>22 && Elapsed<25 ? -40 : 0;
+        bSideView=Elapsed>=14;
+        bWantHook=Elapsed>=22;
+        Reel=Elapsed>=22 && Swimmer.LineLength>70 ? 1 : 0;
+        bThrash=Elapsed>=29;
     }
     else if(PC)
     {
         const bool bBurst=PC->IsInputKeyDown(EKeys::LeftShift);
         Effort=PC->IsInputKeyDown(EKeys::W) ? (bBurst ? 1.0f : Easy) : 0;
         Steering=(PC->IsInputKeyDown(EKeys::A) ? 1.0f : 0)-(PC->IsInputKeyDown(EKeys::D) ? 1.0f : 0);
-        if(PC->WasInputKeyJustPressed(EKeys::R)) Swimmer.Reset(FVector::ZeroVector,BodyLength,BodyGrams);
+        TargetPitch=50*((PC->IsInputKeyDown(EKeys::Q) ? 1.0f : 0)-(PC->IsInputKeyDown(EKeys::E) ? 1.0f : 0));
+        Reel=(PC->IsInputKeyDown(EKeys::T) ? 1.0f : 0)-(PC->IsInputKeyDown(EKeys::G) ? 1.0f : 0);
+        bThrash=PC->IsInputKeyDown(EKeys::SpaceBar);
+        if(PC->WasInputKeyJustPressed(EKeys::C)) bSideView=!bSideView;
+        if(PC->WasInputKeyJustPressed(EKeys::F)) bWantHook=!bHooked;
+        if(PC->WasInputKeyJustPressed(EKeys::R)) { StartFish(); bWantHook=false; }
     }
-    Swimmer.Advance(DeltaSeconds,Effort,Steering);
-    const FQuat Pose=FRotationMatrix::MakeFromXZ(Swimmer.Forward(),FVector::UpVector).ToQuat();
+    // The hook: a line from a tip 120 cm above the water over the fish, as long as it is from the mouth.
+    if(bWantHook && !bHooked)
+    {
+        Swimmer.LineTip=FVector(Swimmer.P[0].X,Swimmer.P[0].Y,SurfaceZ+120);
+        Swimmer.LineLength=FVector::Distance(Swimmer.LineTip,Swimmer.P[0]);
+    }
+    else if(!bWantHook) Swimmer.LineLength=0;
+    bHooked=bWantHook;
+    if(bHooked) Swimmer.LineLength=FMath::Clamp(Swimmer.LineLength-30*Reel*DeltaSeconds,20.0f,600.0f);
+    // Thrashing: the whole body bends one way and the other, four times a second.
+    if(bThrash) { Effort=1; Steering=FMath::Fmod(Elapsed*4,1.0f)<0.5f ? 1.0f : -1.0f; }
+    // The fish holds the pitch it is asked for, damped (in the water: in the air it has nothing to
+    // steer with). The pitch is the front of the body's, not the head's alone.
+    const float Pitch=FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(float((Swimmer.P[0]-Swimmer.P[3]).GetSafeNormal().Z),-1.0f,1.0f)));
+    const float PitchRate=DeltaSeconds>0 ? (Pitch-LastPitch)/DeltaSeconds : 0;
+    LastPitch=Pitch;
+    const float Climb=Swimmer.WaterShare()>0.5f ? FMath::Clamp((TargetPitch-Pitch-0.4f*PitchRate)/30,-1.0f,1.0f) : 0;
+    Swimmer.Advance(DeltaSeconds,Effort,Steering,Climb);
+    const FQuat Pose=FRotationMatrix::MakeFromXZ(Swimmer.Forward(),Swimmer.Back).ToQuat();
     Fish->SetActorLocationAndRotation(Swimmer.P[0]-Pose.RotateVector(Fish->MouthOffset()),Pose);
     // Deform the existing perch material from simulated joints; no cosmetic swimming wave.
     Body->SetCustomPrimitiveDataFloat(0,0);
@@ -100,42 +130,67 @@ void ALakeSwimLab::Tick(float DeltaSeconds)
     {
         const FVector Direction=Pose.UnrotateVector((Swimmer.P[I+1]-Swimmer.P[I]).GetSafeNormal());
         Body->SetCustomPrimitiveDataFloat(3+2*I,FMath::Atan2(float(-Direction.Y),float(-Direction.X)));
-        Body->SetCustomPrimitiveDataFloat(4+2*I,0);
+        Body->SetCustomPrimitiveDataFloat(4+2*I,FMath::Asin(FMath::Clamp(float(Direction.Z),-1.0f,1.0f)));
     }
-    // Fins: the pectorals paddle at rest and in a turn, the dorsal lies flat at speed.
+    // Fins: the pectorals paddle at rest, in a turn and when steering up or down, the dorsal lies
+    // flat at speed; out of the water everything stands out.
     const float Pace=Swimmer.Velocity().Size()/BodyLength;
-    Body->SetCustomPrimitiveDataFloat(13,FMath::Clamp(0.8f-0.5f*Pace+0.4f*FMath::Abs(Swimmer.Bend),0.1f,1.0f));
-    Body->SetCustomPrimitiveDataFloat(14,FMath::Lerp(0.6f,-0.8f,FMath::SmoothStep(1.5f,4.0f,Pace)));
-    Body->SetCustomPrimitiveDataFloat(15,6);
+    const float Dry=1-Swimmer.WaterShare();
+    Body->SetCustomPrimitiveDataFloat(13,FMath::Clamp(0.8f-0.5f*Pace+0.4f*FMath::Abs(Swimmer.Bend)+0.4f*FMath::Abs(Swimmer.Lift)+Dry,0.1f,1.0f));
+    Body->SetCustomPrimitiveDataFloat(14,FMath::Lerp(FMath::Lerp(0.6f,-0.8f,FMath::SmoothStep(1.5f,4.0f,Pace)),1.0f,Dry));
+    Body->SetCustomPrimitiveDataFloat(15,FMath::Lerp(6.0f,16.0f,Dry));
     // -FinDebug blows the marked fins out, -NoFins keeps them still: for checking the fin marks.
     static const bool bFinCheck=FParse::Param(FCommandLine::Get(),TEXT("FinDebug")), bNoFins=FParse::Param(FCommandLine::Get(),TEXT("NoFins"));
     Body->SetCustomPrimitiveDataFloat(16,bFinCheck ? 1.0f : 0.0f);
     if(bNoFins) { Body->SetCustomPrimitiveDataFloat(13,0); Body->SetCustomPrimitiveDataFloat(14,0); }
     const FVector Centre=Swimmer.Centre();
-    const FVector View=Centre+FVector(10,-70,60);
+    // The side view stays abeam of the fish as it turns (hanging upright, it keeps where it was).
+    const FVector Lying=FVector(Swimmer.P[0].X-Swimmer.P[5].X,Swimmer.P[0].Y-Swimmer.P[5].Y,0);
+    if(Lying.Size()>0.5f*BodyLength)
+        ViewSide=FMath::VInterpTo(ViewSide,FVector(Lying.Y,-Lying.X,0).GetSafeNormal(),DeltaSeconds,2).GetSafeNormal(UE_SMALL_NUMBER,FVector(0,-1,0));
+    const FVector View=Centre+(bSideView ? ViewSide*130+FVector(0,0,12) : FVector(10,-70,60));
     Camera->SetActorLocationAndRotation(View,(Centre-View).Rotation());
-    if(Floor) Floor->SetActorLocation(FVector(Centre.X,Centre.Y,-24));
+    if(Floor) Floor->SetActorLocation(FVector(Centre.X,Centre.Y,FloorZ-0.3f));
     for(int I=0;I<Lamps.Num();++I) if(Lamps[I]) Lamps[I]->SetActorLocation(Centre+LampOffsets[I]);
-    // The floor's grid, drawn around the fish wherever it has swum to.
+    // The bottom's grid and the water's surface, drawn around the fish wherever it has swum to.
     const FVector Cell(FMath::GridSnap(Centre.X,50.0),FMath::GridSnap(Centre.Y,50.0),0);
     for(int I=-20;I<=20;++I)
     {
-        DrawDebugLine(GetWorld(),Cell+FVector(-1000,I*50,-23.9),Cell+FVector(1000,I*50,-23.9),FColor(70,110,125),false,0,0,0.3f);
-        DrawDebugLine(GetWorld(),Cell+FVector(I*50,-1000,-23.9),Cell+FVector(I*50,1000,-23.9),FColor(70,110,125),false,0,0,0.3f);
+        DrawDebugLine(GetWorld(),Cell+FVector(-1000,I*50,FloorZ),Cell+FVector(1000,I*50,FloorZ),FColor(70,110,125),false,0,0,0.3f);
+        DrawDebugLine(GetWorld(),Cell+FVector(I*50,-1000,FloorZ),Cell+FVector(I*50,1000,FloorZ),FColor(70,110,125),false,0,0,0.3f);
+    }
+    for(int I=-12;I<=12;++I)
+    {
+        DrawDebugLine(GetWorld(),Cell+FVector(-300,I*25,SurfaceZ),Cell+FVector(300,I*25,SurfaceZ),FColor(150,205,225),false,0,0,0.2f);
+        DrawDebugLine(GetWorld(),Cell+FVector(I*25,-300,SurfaceZ),Cell+FVector(I*25,300,SurfaceZ),FColor(150,205,225),false,0,0,0.2f);
+    }
+    if(bHooked)
+    {
+        DrawDebugLine(GetWorld(),Swimmer.LineTip,Swimmer.P[0],FColor::White,false,0,0,0.12f);
+        DrawDebugPoint(GetWorld(),Swimmer.LineTip,8,FColor::Yellow,false,0);
     }
     const float Speed=Swimmer.Velocity().Size();
+    const FString Line=bHooked ? FString::Printf(TEXT("%.0f см, тянет %.0f гс"),Swimmer.LineLength,Swimmer.LineTension) : FString(TEXT("нет"));
     if(GEngine) GEngine->AddOnScreenDebugMessage(901,0,FColor::White,FString::Printf(
-        TEXT("Окунь %.0f см, %.0f г: физическое плавание | W — плыть, Shift+W — бросок, отпустить — скользить | A/D — поворот | R — сначала\nСкорость %.0f см/с (%.1f длины тела в секунду) | хвост %.1f взмаха/с | мышцы на пределе %.0f%%"),
-        BodyLength,BodyGrams,Speed,Speed/BodyLength,Swimmer.Drive>0.02f ? Swimmer.Beat : 0.0f,Swimmer.MuscleUse*100));
+        TEXT("Окунь %.0f см, %.0f г: физическое плавание | W — плыть, Shift+W — бросок, отпустить — скользить | A/D — поворот | Q/E — вверх/вниз | C — вид сбоку | R — сначала\nF — крючок, T — выбирать леску, G — отдавать | пробел — биться\nСкорость %.0f см/с (%.1f длины тела в секунду) | хвост %.1f взмаха/с | мышцы на пределе %.0f%%\nГлубина %.0f см | в воде %.0f%% тела | леска: %s"),
+        BodyLength,BodyGrams,Speed,Speed/BodyLength,Swimmer.Drive>0.02f ? Swimmer.Beat : 0.0f,Swimmer.MuscleUse*100,
+        SurfaceZ-Centre.Z,Swimmer.WaterShare()*100,*Line));
     if(bAuto)
     {
-        const float Shots[]={4,6.5f,11,13.2f,18};
-        if(NextShot<5 && Elapsed>=Shots[NextShot])
+        const float Shots[]={4,6.5f,11,13.2f,16.5f,19.5f,23.9f,28,30.6f};
+        if(NextShot<9 && Elapsed>=Shots[NextShot])
         {
             FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir()/FString::Printf(TEXT("SwimLab_%d.png"),NextShot),false,false);
-            UE_LOG(LogTemp,Display,TEXT("SWIM_LAB t %.1f centre %s speed %.1f cm/s = %.2f lengths/s beat %.1f/s muscles at limit %.0f%% forward %s"),Elapsed,*Centre.ToCompactString(),Speed,Speed/BodyLength,Swimmer.Beat,Swimmer.MuscleUse*100,*Swimmer.Forward().ToCompactString());
+            UE_LOG(LogTemp,Display,TEXT("SWIM_LAB t %.1f centre %s speed %.1f cm/s = %.2f lengths/s beat %.1f/s muscles at limit %.0f%% forward %s depth %.0f cm in water %.0f%% line %.0f cm %.0f gf"),Elapsed,*Centre.ToCompactString(),Speed,Speed/BodyLength,Swimmer.Beat,Swimmer.MuscleUse*100,*Swimmer.Forward().ToCompactString(),SurfaceZ-Centre.Z,Swimmer.WaterShare()*100,Swimmer.LineLength,Swimmer.LineTension);
             ++NextShot;
         }
-        if(Elapsed>20) FPlatformMisc::RequestExit(false);
+        if(Elapsed>33) FPlatformMisc::RequestExit(false);
     }
+}
+void ALakeSwimLab::StartFish()
+{
+    Swimmer.Reset(FVector::ZeroVector,BodyLength,BodyGrams);
+    Swimmer.Surface=SurfaceZ;
+    Swimmer.Floor=FloorZ;
+    bHooked=false;
 }

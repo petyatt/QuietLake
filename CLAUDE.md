@@ -107,7 +107,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   физическая основная леска (ветер, вода), физический поплавок, дробь, крючок, рыба на леске. Считается на каждой машине из реплицируемого состояния рыбака
   (`FRodInput`), по сети не передаётся.
 - `LakeFishTools.h/.cpp` — инструмент редактора `ULakeFishTools::MarkFishFins`: находит плавники модели и пишет их в цвет вершин (`Tools/MarkFishFins.py` для всех `SM_Fish_Meshy_*`; после переимпорта модели запускать снова, затем `Tools/AddFishSpine.py`).
-- `LakeFishSpine.h/.cpp` — гибкое тело рыбы на крючке (`FFishSpine`: шесть точек от рта до хвоста, вес, плавучесть, сопротивление воды, мышцы); модель гнётся по нему материалом (Custom Primitive Data 5..12, `Tools/AddFishSpine.py` для `M_Meshy_<Вид>`).
+- `LakeSwimmer.h/.cpp` — физическое тело рыбы (`FLakeSwimmer`: шесть свободных точек, мышцы в суставах, вода держит бок рыбы, вес, поверхность, леска за рот, `SteerTo` — куда гнуться); это рыба на крючке (`ALakeFish::MoveHooked`, `HangOnLine`), модель гнётся по нему материалом (Custom Primitive Data 5..12, `Tools/AddFishSpine.py` для `M_Meshy_<Вид>`); `-SwimDebug` — строки `SWIM` в логе. Стенд — `LakeSwimLab.h/.cpp` (`SwimLab.cmd`, автопрогон `-SwimLabAuto`), тест — `LakeSwimmerTest.cpp` (`QuietLake.Prototype.Swimmer`). Описание — WORLD.md, «Опытный стенд физического плавания».
 - `LakeFish.h/.cpp` — рыба: паспорта видов (`FFishSpeciesInfo`, читаются из `Content/LiveFish/Species/*.json`, описание полей — README.md там же; новый вид — новый файл, код видов по именам не различает), походка (`FFishGait`), наживки, поклёвки (`NextBiteStep`: рыба решает каждый шаг, возвращается после промаха), плавание (`Move`: повороты дугой, сглаженное желание), стая, распорядок, вываживание, сглаживание на клиентах (`FFishNetSmoothing`).
   Здесь же общие перечисления, включая `EFishingState`.
 - `LakeFood.h/.cpp` — естественный корм пруда: планктон, насекомые, мотыль, растения (`FLakeFoodField`: что где есть, выедание и отрастание; глубина планктона по времени суток); рыба выбирает корм по рациону паспорта (`diet`).
@@ -142,8 +142,8 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   его нагрузка с учётом изгиба (`HandLoad`) меньше `HandPullForce`; сильная рыба утягивает удилище вниз, `RodLift` может уйти ниже нуля.
   Сценария подъёма нет: `Landing` начинается, когда всё тело рыбы вышло из воды (`BodyInWater`), и рыба висит на той же пружине
   (`UpdateLiftedFish`, в симуляции удилища — `bFishOut`); с мели у ног её берут рукой (`TakeInHand`). Прочность лески, крючка и удилища —
-  `FLakeTackle` (`TackleOf`): бой проигрывается по слабому звену. Рыба на крючке — `UpdateFightMotion`, `MoveHooked` (первый рывок,
-  тяга против лески и в глубину, упор в передышках, усталость). Сход на слабине зависит от того, как сидит крючок (`HookGrip`);
+  `FLakeTackle` (`TackleOf`): бой проигрывается по слабому звену. Рыба на крючке — `UpdateFightMotion` решает (первый рывок,
+  тяга против лески и в глубину, упор в передышках, усталость), `MoveHooked` двигает её физическим телом `FLakeSwimmer`. Сход на слабине зависит от того, как сидит крючок (`HookGrip`);
   самозасечка без подсечки — в `ResolveHook`. Настраивать по стенду `-FishingBench`.
 - Рыба видна игроку в радиусе 150 м (`NetCullDistance`), вдали её симуляция грубее.
 - Новые превью: добавить ветку в `ALakeCharacter::RunPreviews` (или `RunPreview` у нужного актора)

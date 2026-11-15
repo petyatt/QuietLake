@@ -1,7 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "LakeFishSpine.h"
+#include "LakeSwimmer.h"
 #include "LakeFish.generated.h"
 
 class ALakeCharacter;
@@ -627,7 +627,8 @@ public:
     /** The angler struck while this fish held the bait. */
     void Hook(ALakeCharacter* Angler);
     /** Line tension pulls the hooked fish towards the rod tip; force in kg*cm/s^2. */
-    void ApplyLineForce(FVector Force);
+    /** The line's pull at the mouth, gram-force; Spring: the stiffness of what pulls (gram-force per cm), 0 for a plain force. */
+    void ApplyLineForce(FVector Force, float Spring = 0);
     /** The fish got off: lost bait, broken line or released. */
     void Release(float SpookSeconds);
     /**
@@ -660,8 +661,8 @@ public:
     void LiftOut();
     void LowerIntoWater(FVector LineVelocity);
     bool IsLifted() const { return bLifted; }
-    /** The hooked fish's flexible body (mouth to tail tip), on every machine that shows it. */
-    const FFishSpine& GetSpine() const { return Spine; }
+    /** The hooked fish's body (mouth to tail fin), on every machine that shows it. */
+    const FLakeSwimmer& GetSwimmer() const { return Swim; }
     /** On the hook: how much of its body the water holds (1 under, 0 clear of it). */
     float BodyInWater() const { return bLifted ? ImmersionAt(MouthLocation(), GetActorQuat()).Fraction : HookedWater; }
     FFishImmersion ImmersionAt(FVector Mouth, FQuat Rotation) const;
@@ -777,7 +778,7 @@ private:
     void StartFightBurst();
     void UpdateFightMotion(float DeltaSeconds, FVector& Desired, float& MaxSpeed);
     void FightSplash();
-    /** Body thrust, line force and drag; leaps retain line force and gravity. */
+    /** On the hook: the fish's swimmer (FLakeSwimmer) under its own muscles, the water and the line. */
     void MoveHooked(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds);
     void UpdateVisual(float DeltaSeconds);
     UFUNCTION() void OnRep_NetLocation();
@@ -792,22 +793,29 @@ private:
     UPROPERTY(Replicated) EFishGoal Goal = EFishGoal::Cruise;
     UPROPERTY(Replicated) uint8 NetFeedOn = 0;   // EFishFood, for the F3 panel on clients
     UPROPERTY(Replicated) bool bLifted = false;  // out of the water on an angler's line
-    UPROPERTY(Replicated) bool bNetHooked = false;  // on a hook: clients bend its body too (FFishSpine)
-    FFishSpine Spine;
-    bool bSpineShown = false;   // the material is bent by the spine (Custom Primitive Data 5..12)
+    UPROPERTY(Replicated) bool bNetHooked = false;  // on a hook: clients bend its body too (Swim)
+    // On the hook the fish is this body: on the server all of its motion (MoveHooked), out of the water
+    // and on clients the bending of the body behind a mouth held from outside (SwimHeldByMouth).
+    FLakeSwimmer Swim;
+    bool bSwimming = false;
+    bool bSpineShown = false;   // the material is bent by the swimmer (Custom Primitive Data 5..12)
+    // Where the swimmer left the fish, to notice it being moved or thrown from outside.
+    FVector SwimAt = FVector::ZeroVector, SwimVel = FVector::ZeroVector;
+    FQuat SwimPose = FQuat::Identity;
     float LastFin[4] = { -1, -1, -1, -1 };   // the fins' paddle, spread, rate and check as last given to the material
-    /** The spine's input for this fish: its size and build, how it works its tail, where it turns. */
-    FFishSpineInput SpineInput(FVector Mouth, float TailEffort, FVector Want, float Steer) const;
-    /** Puts the fish on its spine: the head along the spine's head, the mouth where the spine has it. */
-    void PoseFromSpine(float RollDegrees);
-    // Hanging on the line (cosmetic, every machine).
+    /** The body's greatest height as a share of its length. */
+    float BodyHeightShare() const;
+    /** How fast this species beats its tail for its length: its strength (see FLakeSwimmer::BeatScale). */
+    float SwimBeatScale() const;
+    /** Lays the swimmer out straight behind the mouth along Direction, moving as the fish does. */
+    void StartSwimmer(FVector Direction);
+    /** Puts the fish on its swimmer: the head along the swimmer's head, the mouth where it has it. */
+    void PoseFromSwimmer(float RollDegrees);
+    /** One step of the swimmer with its mouth held at Mouth from outside. */
+    void SwimHeldByMouth(FVector Mouth, float TailEffort, float Steering, float Climb, float DeltaSeconds);
+    // Hanging on the line (every machine).
     float HangTime = 0, HangEffort = 0;
-    FVector HangAngularVelocity = FVector::ZeroVector;
-    float NextFightDisturb = 0, HookTurnSpeed = 0, HookGrip = 1, HookedWater = 1;
-    FVector HookAngularVelocity = FVector::ZeroVector;
-    /** The mouth lags behind the hook and overshoots it: the fish's weight on the line. */
-    FVector HangAnchor = FVector::ZeroVector, HangAnchorVel = FVector::ZeroVector;
-    FVector HangForward = FVector::ForwardVector;
+    float NextFightDisturb = 0, HookGrip = 1, HookedWater = 1;
     uint64 LastHangFrame = 0;
 
     EState State = EState::Roam;
@@ -824,6 +832,7 @@ private:
     int32 TargetRig = -1;             // which of the angler's rods (ERodKind); -1: the one in his hands
     TMap<TWeakObjectPtr<ALakeCharacter>, float> IgnoreBaitUntil;
     FVector PendingLineForce = FVector::ZeroVector;
+    float PendingLineSpring = 0;
     float SimTime = 0;
     enum class EFightPhase : uint8 { Pull, Burst, Gap, Pause };
     EFightPhase FightPhase = EFightPhase::Pause;

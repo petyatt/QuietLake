@@ -1,4 +1,4 @@
-"""Bend the fish models along a hooked fish's spine (FFishSpine in Source/QuietLake/LakeFishSpine.*).
+"""Bend the fish models along a hooked fish's body (FLakeSwimmer in Source/QuietLake/LakeSwimmer.*).
 
     UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -run=pythonscript -script=C:/Fish/Tools/AddFishSpine.py
 

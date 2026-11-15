@@ -1897,6 +1897,7 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("The jump cooldown prevents repeated leaps"), Pike->bFightJump);
     // Applied line force is still integrated in the airborne branch.
     Pike->bFightJump = true;
+    Pike->SetActorLocation(FVector(Open.X, Open.Y, SurfaceZ + 60));   // (in the air: under water the water would hold its head)
     Pike->Vel = FVector(0, 0, 200);
     Pike->ApplyLineForce(FVector(140, 0, 0));
     Pike->MoveHooked(FVector::ZeroVector, 0, 0.01f);

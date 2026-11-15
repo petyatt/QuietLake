@@ -21,10 +21,16 @@ private:
     UPROPERTY() TObjectPtr<class ACameraActor> Camera;
     UPROPERTY() TArray<TObjectPtr<class APointLight>> Lamps;
     TArray<FVector> LampOffsets;
+    FVector ViewSide=FVector(0,-1,0);
     UPROPERTY() TObjectPtr<class AStaticMeshActor> Floor;
     // Effort of an unhurried swim, about one body length a second.
     static constexpr float Easy=0.15f;
-    float Elapsed=0, BodyLength=30, BodyGrams=350;
+    // The water's surface and the bottom: the fish starts 40 cm deep, 60 cm above the bottom.
+    static constexpr float SurfaceZ=40;
+    static constexpr float FloorZ=-60;
+    float Elapsed=0, BodyLength=30, BodyGrams=350, LastPitch=0;
+    bool bSideView=false, bHooked=false;
+    void StartFish();
     int32 NextShot=0;
     bool bAuto=false;
 };
