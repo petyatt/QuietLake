@@ -277,21 +277,21 @@ void ALakeRipples::FindWater()
         if (It->GetWorld() != GetWorld() || It->GetNumMaterials() == 0) continue;
         UMaterialInterface* Material = It->GetMaterial(0);
         // The water itself, and the water lilies (M_Plant), which ride the waves in their material.
-        const FString Base = Material && Material->GetBaseMaterial() ? Material->GetBaseMaterial()->GetName() : FString();
-        if (Base != TEXT("M_LakeSurface") && Base != TEXT("M_Plant")) continue;
+        UTexture* RippleTexture = nullptr;
+        if (!Material || !Material->GetTextureParameterValue(FMaterialParameterInfo(TEXT("Ripples")), RippleTexture)) continue;
         UMaterialInstanceDynamic* Dynamic = Cast<UMaterialInstanceDynamic>(Material);
         if (!Dynamic) Dynamic = It->CreateDynamicMaterialInstance(0, Material);
         Dynamic->SetTextureParameterValue(TEXT("Ripples"), Texture);
         Materials.AddUnique(Dynamic);
     }
-    // The engine Water lake and streams (/Game/Maps/Lake) draw M_LakeSurface through their own
-    // material instances.
+    // Water bodies own their MIDs; bind any surface exposing the live ripple input.
     for (TActorIterator<AWaterBody> It(GetWorld()); It; ++It)
     {
         UWaterBodyComponent* Body = It->GetWaterBodyComponent();
         for (UMaterialInstanceDynamic* Dynamic : { Body->GetWaterMaterialInstance(), Body->GetRiverToLakeTransitionMaterialInstance() })
         {
-            if (!Dynamic || !Dynamic->GetBaseMaterial() || Dynamic->GetBaseMaterial()->GetName() != TEXT("M_LakeSurface")) continue;
+            UTexture* RippleTexture = nullptr;
+            if (!Dynamic || !Dynamic->GetTextureParameterValue(FMaterialParameterInfo(TEXT("Ripples")), RippleTexture)) continue;
             Dynamic->SetTextureParameterValue(TEXT("Ripples"), Texture);
             Materials.AddUnique(Dynamic);
         }

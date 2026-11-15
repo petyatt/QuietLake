@@ -53,6 +53,24 @@
 Установщик компилятора взят из официальной документации Microsoft:
 https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio?view=vs-2022
 
+## Проверено 15 ноября 2026 — круги ряби на Water
+
+- `Tools/CreateVillageWater.py` собрал `Content/Water/M_VillageWater` (копия `Water_Material`, наклон сетки `ALakeRipples` прибавлен к нормали Water), `TuneVillageWater.py` перевёл на неё `MI_VillageLake`, `MI_VillageRiver` и `MI_VillageRiverToLake` со всеми настройками штатных экземпляров; `CheckVillageWater.py`: `VILLAGE_WATER_CHECK passed: 4 water bodies`.
+- `-LifePreview`: `QUIET_LAKE_RIPPLES … 11 water and lily materials` (на штатном материале было 6 — только кувшинки); при силе 1 круги еле заметны, при 15 — толстые тёмные кольца, оставлено 8: от прыжка рыбы и всплеска расходятся чёткие кольца (`Saved/Life_Jump.png`, `Saved/Life_Splash.png`).
+- `-BitePreview` смотрит мимо поплавка (кадры `Saved/Bite_*.png` — гладь и леска), поэтому круги у поплавка вблизи не проверены. Автотесты не запускались: игровой код не менялся (добавлен только редакторный `ULakeLevelLibrary::AddSetAttributeInputs`).
+
+## Проверено 15 ноября 2026 — вода деревенского пруда на Water
+
+- `Tools/TuneVillageWater.py` создал `Content/Water/MI_VillageLake`, `MI_VillageRiver`, их LOD и переход River → Lake поверх штатных материалов Water (только `Absorption`, `Scattering`, `Water Albedo`); `Tools/ApplyWaterMaterials.py` назначил их озеру и трём ручьям (`QUIET_LAKE_NATIVE_WATER saved 4 water bodies`).
+- `-WaterPreview` (`Saved/Water_*_{Sun,Grey,Evening,Night}.png`): вода тёмно-оливковая вместо бирюзовой; с мостков рыба у поверхности видна, глубже тает, дно и тени рыб на нём скрыты; с берега отражения сохранились; пасмурно и вечером цвет естественный, ночью вода тёмная, как и вся сцена. Сверху при прямом солнце толща светлее — салатовая.
+- Круги `ALakeRipples` и погодная мутность на Water здесь ещё не были подключены (круги — см. раздел выше).
+
+## Проверено 15 ноября 2026 — штатный материал Water
+
+- Карта `Lake` сохранена со штатным `Water_Material_Lake` и речным `Water_Material_River` на трёх ручьях, с LOD и переходом River → Lake. Рельеф не перестраивался.
+- Сборка `QuietLakeEditor` прошла. В игровых кадрах `Saved/Scene_Shore.png` и `Saved/Scene_Pier.png` проверены поверхность, отражения и преломление у берега и мостков.
+- Физика рыбы не менялась. Локальные круги `ALakeRipples` и погодная мутность старого материала пока не подключены к новому Water; это ограничение текущего перехода.
+
 ## Проверено 25 октября 2026
 
 - Установлены Microsoft Build Tools 2022, MSVC 14.44.35229, Windows SDK 10.0.22621.0 и .NET Framework SDK 4.8.

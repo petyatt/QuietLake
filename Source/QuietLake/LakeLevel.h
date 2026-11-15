@@ -1,6 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Materials/MaterialExpression.h"
 #include "LakeLevel.generated.h"
 
 /**
@@ -76,6 +77,13 @@ public:
     /** Connects the generated streams on the saved map without replacing their actors. */
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
     static int32 ConnectStreamMouths();
+
+    /** Gives a SetMaterialAttributes node (made by Python) an input for each of Properties. Its own
+     *  pin sync runs only in an open material editor, so a commandlet would leave the node without
+     *  the inputs. Properties are EMaterialProperty values (unreal.MaterialProperty.MP_NORMAL.value).
+     *  Returns false for any other node. */
+    UFUNCTION(BlueprintCallable, Category = "Lake|Level")
+    static bool AddSetAttributeInputs(UMaterialExpression* Node, const TArray<int32>& Properties);
 
 private:
     /** Spawns a fresh landscape over LakeMap::TerrainBounds from heights on its 1 m grid, with the

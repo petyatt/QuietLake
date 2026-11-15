@@ -5,6 +5,8 @@
 #include "Algo/Reverse.h"
 #include "Engine/World.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialExpressionSetMaterialAttributes.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #if WITH_EDITOR
 #include "Editor.h"
 #include "ActorFactories/ActorFactory.h"
@@ -51,17 +53,26 @@ namespace
         return Cast<T>(Actor);
     }
 
-    /** Our lake water (M_LakeSurface: the peaty colour and murk, the foam, the wind's ripple and the
-     *  simulated rings of ALakeRipples) instead of the engine's; and no engine underwater effect,
-     *  the game has its own murk (ALakeLife). */
+    /** Native Water surfaces; underwater murk remains managed by ALakeLife. */
     void UseLakeWater(UWaterBodyComponent* Body)
     {
-        if (UMaterialInterface* Surface = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_LakeSurface.M_LakeSurface")))
+        UWaterBodyRiverComponent* River = Cast<UWaterBodyRiverComponent>(Body);
+        const TCHAR* SurfacePath = River
+            ? TEXT("/Game/Water/MI_VillageRiver.MI_VillageRiver")
+            : TEXT("/Game/Water/MI_VillageLake.MI_VillageLake");
+        const TCHAR* LodPath = River
+            ? TEXT("/Game/Water/MI_VillageRiverLOD.MI_VillageRiverLOD")
+            : TEXT("/Game/Water/MI_VillageLakeLOD.MI_VillageLakeLOD");
+        if (UMaterialInterface* Surface = LoadObject<UMaterialInterface>(nullptr, SurfacePath))
         {
             Body->SetWaterMaterial(Surface);
-            Body->SetWaterStaticMeshMaterial(Surface);
-            if (UWaterBodyRiverComponent* River = Cast<UWaterBodyRiverComponent>(Body)) River->SetLakeTransitionMaterial(Surface);
         }
+        if (UMaterialInterface* Lod = LoadObject<UMaterialInterface>(nullptr, LodPath))
+            Body->SetWaterStaticMeshMaterial(Lod);
+        if (River)
+            if (UMaterialInterface* Transition = LoadObject<UMaterialInterface>(nullptr,
+                TEXT("/Game/Water/MI_VillageRiverToLake.MI_VillageRiverToLake")))
+                River->SetLakeTransitionMaterial(Transition);
         Body->SetUnderwaterPostProcessMaterial(nullptr);
     }
 
@@ -781,5 +792,25 @@ int32 ULakeLevelLibrary::ConnectStreamMouths()
     return Count;
 #else
     return 0;
+#endif
+}
+
+bool ULakeLevelLibrary::AddSetAttributeInputs(UMaterialExpression* Node, const TArray<int32>& Properties)
+{
+#if WITH_EDITOR
+    UMaterialExpressionSetMaterialAttributes* Set = Cast<UMaterialExpressionSetMaterialAttributes>(Node);
+    if (!Set) return false;
+    Set->Modify();
+    for (const int32 Property : Properties)
+    {
+        const FGuid Id = FMaterialAttributeDefinitionMap::GetID(EMaterialProperty(Property));
+        if (Set->AttributeSetTypes.Contains(Id)) continue;
+        Set->AttributeSetTypes.Add(Id);
+        FExpressionInput& Input = Set->Inputs.AddDefaulted_GetRef();
+        Input.InputName = FName(*FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(Id, Set->Material).ToString());
+    }
+    return true;
+#else
+    return false;
 #endif
 }
