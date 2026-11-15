@@ -219,7 +219,7 @@ public:
     // tip turns the rod about them, as a pull square to the rod on its whole lever (HandLoad). A fish
     // hanging under a rod raised upright pulls almost along it and weighs little, as far as the blank
     // does not bow out over the water; one pulling out across a low rod weighs it all.
-    static constexpr float HandPullForce = 360.0f;     // tip-equivalent effort: lift a small dry fish, yield to heavier loads
+    static constexpr float HandPullForce = 360.0f;     // tip-equivalent effort: heavier loads slow a held lift, without stopping it
     static constexpr float HandHoldForce = 160.0f;     // what they hold against once LMB is let go
     // Getting a fish out of the water the angler braces the butt and heaves with both hands, briefly
     // much harder than the steady pull of the fight: from as the fish's body leaves the water.
@@ -256,7 +256,7 @@ public:
         const float Sin2 = (float)FVector::CrossProduct(RodAxis.GetSafeNormal(), LineDir.GetSafeNormal()).SizeSquared();
         return 1.0f / (Sin2 / Across + (1 - Sin2) / Along);
     }
-    /** The hands on a loaded rod: LMB lifts against the load, a harder pull drags the rod down (LakeGame.cpp). */
+    /** Held LMB keeps lifting under load; release yields. The line/rod strength limits the haul. */
     void UpdateRodHands(float DeltaSeconds, float Force);
     void UpdateLiftedFish(float DeltaSeconds);
     /** The fish is taken in the free hand: the catch counts (from the line, or from the shallows at the bank). */
@@ -368,6 +368,7 @@ private:
     friend class FLakeContactPhysicsTest;
     friend class FLakeFishBehaviourTest;
     friend class FLakeCastingTest;
+    friend class FLakeHeavyLandingTest;
     friend class FLakeCastHoldTest;
     friend class FLakeWindDriftTest;
     friend class FLakeRodControlTest;

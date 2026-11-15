@@ -5,6 +5,7 @@
 #include "LakeLife.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
+#include "LakeWaves.h"
 #include "Components/StaticMeshComponent.h"
 #include "EngineUtils.h"
 #include "Engine/StaticMesh.h"
@@ -677,6 +678,7 @@ void ALakeFish::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
     DOREPLIFETIME(ALakeFish, NetVelocity);
     DOREPLIFETIME(ALakeFish, NetRotation);
     DOREPLIFETIME(ALakeFish, NetEffort);
+    DOREPLIFETIME(ALakeFish, NetStaminaFraction);
     DOREPLIFETIME(ALakeFish, bNetBurst);
     DOREPLIFETIME(ALakeFish, Goal);
     DOREPLIFETIME(ALakeFish, NetFeedOn);
@@ -2367,8 +2369,8 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
         static const bool bFinCheck = FParse::Param(FCommandLine::Get(), TEXT("FinDebug"));
         const bool bOnHook = bNetHooked || State == EState::Hooked;
         float Paddle, Spread, Rate;
-        if (bHanging) { Paddle = 0.4f + 0.6f * FMath::Clamp(Fight.HangEffort * 1.5f, 0.0f, 1.0f); Spread = 1; Rate = 16; }
-        else if (bOnHook) { Paddle = 0.4f + 0.6f * FMath::Clamp(E, 0.0f, 1.0f); Spread = 0.9f; Rate = 10; }
+        if (bHanging) { Paddle = 0.05f + 0.95f * FMath::Clamp(Fight.HangEffort * 1.5f, 0.0f, 1.0f); Spread = 1; Rate = FMath::Lerp(2.0f, 16.0f, FMath::Clamp(Fight.HangEffort * 1.5f, 0.0f, 1.0f)); }
+        else if (bOnHook) { Paddle = 0.05f + 0.95f * FMath::Clamp(E, 0.0f, 1.0f); Spread = 0.9f; Rate = FMath::Lerp(2.0f, 10.0f, FMath::Clamp(E, 0.0f, 1.0f)); }
         else
         {
             const float Slow = 1 - FMath::SmoothStep(0.0f, S.CruiseSpeed * 1.2f, ShownSpeed);
@@ -2394,6 +2396,7 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
 void ALakeFish::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+    if (HasAuthority()) NetStaminaFraction = StaminaFraction();
     // Out of the water on a line the angler's rod places the fish (HangOnLine).
     const bool bHanging = bLifted || GFrameCounter - Fight.LastHangFrame < 3;
     if (HasAuthority() && !bHanging)
@@ -2427,12 +2430,18 @@ void ALakeFish::Tick(float DeltaSeconds)
         if (bNetHooked)
         {
             const FVector Mouth = MouthLocation(), Forward = GetActorForwardVector();
-            Fight.Swim.Surface = LakeFish::SurfaceZ;
+            if (!Fight.bSwimming) Fight.StartSwimmer(Forward);
+            Fight.Swim.Surface = ULakeWaves::SurfaceAt(GetWorld(), FVector2D(Mouth));
+            Fight.Swim.bWater = LakeMap::IsWater(Mouth.X, Mouth.Y);
             Fight.Swim.Floor = BottomZ(Mouth.X, Mouth.Y);
-            const FVector Lies = Fight.bSwimming ? Fight.Swim.Heading() : Forward;
-            const float YawErr = FMath::FindDeltaAngleDegrees(Lies.Rotation().Yaw, Forward.Rotation().Yaw);
-            const float PitchErr = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(float(Forward.Z), -1.0f, 1.0f)) - FMath::Asin(FMath::Clamp(float(Lies.Z), -1.0f, 1.0f)));
-            Fight.SwimHeldByMouth(Mouth, NetEffort, FMath::Clamp(-YawErr / 40, -1.0f, 1.0f), FMath::Clamp(PitchErr / 30, -1.0f, 1.0f), DeltaSeconds);
+            Fight.UpdateSurfaceRest(Mouth, Fight.Swim.Surface);
+            Fight.RestOnSide(); // keep the same buoyancy on entry and on return below the surface
+            // The replicated roll is part of the body's water frame, not just the actor pose.
+            Fight.Swim.Back = GetActorUpVector();
+            float Steering = 0, Climb = 0;
+            Fight.Swim.SteerTo(Forward, DeltaSeconds, Steering, Climb);
+            Fight.Swim.WantBack = GetActorUpVector(); // SteerTo must not override the server's roll
+            Fight.SwimHeldByMouth(Mouth, NetEffort, Steering, Climb, DeltaSeconds);
         }
         else Fight.bSwimming = false;
     }

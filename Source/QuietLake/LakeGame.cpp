@@ -1454,23 +1454,20 @@ void ALakeCharacter::ConstrainFloat()
 }
 void ALakeCharacter::UpdateRodHands(float DeltaSeconds, float Force)
 {
-    // LMB lifts the rod: fast on a slack line, slower the heavier the load, and not at all against
-    // HandPullForce; a harder pull drags the rod down however it is held (stiffly while hauling, so a
-    // run against held LMB loads the line hard). LMB let go, the rod is eased down to the aim and
-    // yields readily to anything above HandHoldForce. Dragged all the way down the rod lies along the
-    // line: nothing gives any more but the blank. (Force is what turns the rod in the hands, HandLoad:
-    // raised upright over a fish hanging below, the rod is light.)
+    // Held LMB keeps hauling, slowly under a heavy load: the tackle's strength, not a hand-force
+    // ceiling, decides whether the fish comes out or something breaks. Let go to lower the rod and
+    // give to the load. Force is the line's moment on the hands, expressed at the rod tip.
     const FRotator View = IsLocallyControlled() && GetController() ? GetControlRotation() : GetBaseAimRotation();
     const float Aim = FMath::Clamp(RodBase() + FRotator::NormalizeAxis(View.Pitch) + SwingPitch, RodLowestAngle, RodHighestAngle);
     const float Lowest = FMath::Min(0.0f, (RodLowestAngle - Aim) / RodLiftDegrees);
     const bool bLift = bReeling && ServerNow() >= YieldUntil;
     const float Over = Force / (bLift ? HandLiftLimit() : HandHoldForce) - 1;
-    if (Over > 0) RodLift -= (bLift ? 0.45f : 3.0f) * Over * DeltaSeconds;
-    else if (bLift) RodLift += RodLiftSpeed / FMath::Max(20.0f, RodTopElevation - Aim) / RodHeft() * FMath::Min(1.0f, -Over) * DeltaSeconds;
+    if (bLift) RodLift += RodLiftSpeed / FMath::Max(20.0f, RodTopElevation - Aim) / RodHeft() * FMath::Clamp(-Over, 0.15f, 1.0f) * DeltaSeconds;
+    else if (Over > 0) RodLift -= 3.0f * Over * DeltaSeconds;
     else if (RodLift > 0) RodLift = FMath::Max(0.0f, RodLift - 0.5f * DeltaSeconds);
     else RodLift = FMath::Min(0.0f, RodLift + 0.6f * FMath::Min(1.0f, -Over * 2.0f) * DeltaSeconds);
     RodLift = FMath::Clamp(RodLift, Lowest, FishingState == EFishingState::Landing && !bFishInHand ? RodDrawMax : 1.0f);
-    bRodLaidFlat = RodLift <= Lowest + 0.03f && Lowest < -0.05f && Over > 0;
+    bRodLaidFlat = !bLift && RodLift <= Lowest + 0.03f && Lowest < -0.05f && Over > 0;
 }
 void ALakeCharacter::UpdateFight(float DeltaSeconds)
 {
@@ -1515,9 +1512,9 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     // faster the harder the pull, and a hook set badly (struck too early) has less of it to lose.
     if (Force > Gear.HookSafe) Fish->LoosenHook(DeltaSeconds * 1.2f * (Force - Gear.HookSafe) / Gear.LineBreak);
     // Out of the water: nothing lifts the fish but the line. Once its whole body is clear of the water
-    // it hangs on the line under the rod tip (Landing). Whether the hands can get it there is their
-    // strength against its weight and its fight: under a rod raised upright it hangs almost along the
-    // rod and weighs little on them; a fresh fish holds against the pull and keeps down.
+    // it hangs on the line under the rod tip (Landing). Held input keeps raising it, subject to
+    // tackle strength: under an upright rod it hangs almost along the blank; a fresh fish still
+    // resists and keeps down until the line overcomes it.
     const FVector Mouth = Fish->MouthLocation();
     const float Length = LakeFish::LengthCm(Fish->Species, Fish->WeightKg);
     const bool bTired = Fish->StaminaFraction() < 0.35f;
@@ -1531,7 +1528,7 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     // takes it in the hand if it is at his feet, or has to step over to it.
     const bool bBeached = !LakeMap::IsWater(Mouth.X, Mouth.Y) || LakeFish::SurfaceZ - ALakeFish::BottomZ(Mouth.X, Mouth.Y) < 0.25f * Length;
     const bool bAtFeet = bBeached && FVector::Dist2D(Mouth, GetActorLocation()) < 70;
-    // Too heavy for the hands: it hangs at the top under a rod they cannot raise any further.
+    // A heavy haul is slow, but is never blocked by a missing landing net.
     const bool bTooHeavy = bTired && bReeling && !bClear && Fish->BodyInWater() < 0.8f && HandLoadGf > HandLiftLimit() * 0.9f;
     // A wakeful fish throws a hook that hangs on a slack line: the fresher it is, the sooner. Resting
     // the rod (releasing LMB) is safe only when the fish is already tired.
@@ -1559,10 +1556,10 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
                : Hint == 5 ? (bRodStrained ? TEXT("Удилище на пределе! Опустите его к рыбе, иначе сломается.") : TEXT("Леска на пределе! Шагните к рыбе, иначе оборвётся."))
                : Hint == 6 ? TEXT("Рыба вытянула удилище в линию с леской — пружинить нечему! Шагните к ней, а как остановится — поднимайте удилище.")
                : Hint == 1 ? TEXT("Рыба рвётся изо всех сил — крючок может вырвать. Не давайте ей вытянуть удилище в линию.")
-               : Hint == 7 ? TEXT("Рыба тянет удилище вниз. Держите ЛКМ: остановится — поднимете снова.")
+               : Hint == 7 ? TEXT("Рыба сильно тянет. Держите ЛКМ для подъёма, отпускайте при опасном натяжении.")
                : Hint == 8 ? TEXT("Леска провисла — рыба уходит и может сбросить крючок! Держите ЛКМ, выберите слабину.")
                : Hint == 9 ? TEXT("Рыба на мели у берега. Подойдите к ней — возьмёте рукой.")
-               : Hint == 10 ? TEXT("Рыба тяжела — удилищем её из воды не поднять. Опустите удилище и отходите от воды: подведите рыбу к берегу, на мели возьмёте рукой.")
+               : Hint == 10 ? TEXT("Рыба тяжёлая. Держите ЛКМ — продолжите подъём. Следите за натяжением: при перегрузе порвётся леска или сломается удилище. Отпустите ЛКМ, чтобы ослабить тягу.")
                : Hint == 2 ? TEXT("Рыба устала. Подводите её к себе, к поверхности.")
                : Hint == 3 ? (Fish->WeightKg * 1000 > Gear.HookSafe ? TEXT("Рыба у поверхности. Она тяжелее, чем держит крючок: поднимая её из воды, держите удилище вертикально и не тяните резко.")
                                                                     : TEXT("Рыба у поверхности. Держите ЛКМ — удилище встанет вертикально, и рыба выйдет из воды."))

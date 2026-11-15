@@ -697,7 +697,7 @@ public:
     FVector MouthOffset() const;
     /** Consider a final run before landing; a leap or final run must finish first. */
     bool ReadyToLand() { return Fight.ReadyToLand(); }
-    float StaminaFraction() const { return Stamina / FMath::Max(0.01f, MaxStamina); }
+    float StaminaFraction() const { return HasAuthority() ? Stamina / FMath::Max(0.01f, MaxStamina) : NetStaminaFraction; }
     FVector MouthLocation() const;
     FVector Velocity() const { return Vel; }
     /** Appetite from the time and weather, refreshed as the fish swims (1 without a weather actor). */
@@ -836,6 +836,7 @@ private:
     UPROPERTY(Replicated) FVector_NetQuantize10 NetVelocity;
     UPROPERTY(Replicated) FRotator NetRotation;
     UPROPERTY(Replicated) float NetEffort = 0;   // 0..1, drives the tail beat on clients
+    UPROPERTY(Replicated) float NetStaminaFraction = 1; // hanging/resting must use the server's fatigue too
     UPROPERTY(Replicated) bool bNetBurst = false; // in a burst (a strike, a rush at the fry): a fast start of its own
     UPROPERTY(Replicated) EFishGoal Goal = EFishGoal::Cruise;
     UPROPERTY(Replicated) uint8 NetFeedOn = 0;   // EFishFood, for the F3 panel on clients

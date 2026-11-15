@@ -160,7 +160,11 @@ void FLakeSwimmer::Step(float Effort, float Steering, float Climb)
     {
         Before[I] = P[I];
         Axis[I] = (P[FMath::Max(0, I - 1)] - P[FMath::Min(I + 1, Count - 1)]).GetSafeNormal();
-        Wet[I] = bWater ? FMath::Clamp((Surface - float(P[I].Z)) / FMath::Max(0.5f, Tall[I]) + 0.5f, 0.0f, 1.0f) : 0.0f;
+        const FVector LocalUp = Upright(Axis[I]);
+        const FVector LocalSide = FVector::CrossProduct(LocalUp, Axis[I]);
+        // A fish lying on its side presents its width to the waterline, not its full height.
+        const float VerticalSize = FMath::Sqrt(FMath::Square(Tall[I] * LocalUp.Z) + FMath::Square(Wide[I] * LocalSide.Z));
+        Wet[I] = bWater ? FMath::Clamp((Surface - float(P[I].Z)) / FMath::Max(0.5f, VerticalSize) + 0.5f, 0.0f, 1.0f) : 0.0f;
     }
     // The back stays across the head; in the water the fish turns it up.
     Back = Upright(Axis[0]);
@@ -232,7 +236,7 @@ void FLakeSwimmer::Step(float Effort, float Steering, float Climb)
     for (int32 I = 0; I < Count; ++I)
     {
         // Its weight, less what the water carries.
-        V[I] += Moved(I, FVector(0, 0, -Mass[I] * Gravity * (1 - Wet[I]))) * H;
+        V[I] += Moved(I, FVector(0, 0, Mass[I] * Gravity * (Buoyancy * Wet[I] - 1))) * H;
         float Forward = FVector::DotProduct(V[I], Axis[I]);
         float Sideways = FVector::DotProduct(V[I], Side[I]);
         float Rising = FVector::DotProduct(V[I], Up[I]);

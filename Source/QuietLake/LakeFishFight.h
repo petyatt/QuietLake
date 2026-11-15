@@ -59,6 +59,9 @@ public:
     void PoseFromSwimmer(float RollDegrees);
     /** One step of the swimmer with its mouth held at Mouth from outside. */
     void SwimHeldByMouth(FVector Mouth, float TailEffort, float Steering, float Climb, float DeltaSeconds);
+    /** Hysteresis keeps a spent fish quiet through waves; submerging it lets it recover. */
+    void UpdateSurfaceRest(FVector Mouth, float Surface);
+    void RestOnSide();
 
     ALakeFish* Fish = nullptr;        // the fish this is part of (set by its constructor)
 
@@ -70,6 +73,7 @@ public:
     bool bFightJump = false, bShoreTried = false, bShoreRun = false;
     bool bFirstRunDone = false;       // the rush a fish makes the moment it feels the hook
     float SurfaceRoll = 0;            // degrees: how far a hooked fish has turned on its side at the top
+    bool bSurfaceRest = false;
     bool bWasSlack = false;           // the line was slack last step
     float NextEscape = 0;             // when a fish on a slack line picks where to make off to again
     float NextFightDisturb = 0;
@@ -85,8 +89,7 @@ public:
     // Where the swimmer left the fish, to notice it being moved or thrown from outside.
     FVector SwimAt = FVector::ZeroVector, SwimVel = FVector::ZeroVector;
     FQuat SwimPose = FQuat::Identity;
-    // How far the line has the better of it (0..1): drawn back through the water tail first, the
-    // fish has lost the fight for its head (MoveHooked).
+    // How far the line has the better of it (0..1); retained throughout the head-first turn.
     float Drawn = 0;
     // Hanging on the line (every machine).
     float HangTime = 0, HangEffort = 0;

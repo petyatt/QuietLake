@@ -36,6 +36,8 @@ struct FLakeSwimmer
     float Wet[Count];
     // Scales the muscles' torque limit: a stronger or a tired fish.
     float Strength = 1;
+    // Displaced water / body weight. A spent surface fish has a small buoyancy reserve.
+    float Buoyancy = 1;
     // Height of the water's surface and of the bottom.
     float Surface = 1e9f, Floor = -1e9f;
     // A pull on the mouth from outside, gram-force. If it comes from a spring (a rod), MouthSpring is
