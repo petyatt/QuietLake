@@ -7,6 +7,7 @@
 #include "WaterBodyLakeActor.h"
 #include "WaterBodyComponent.h"
 #include "WaterSubsystem.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 namespace
 {
@@ -21,10 +22,11 @@ namespace
 
 float ULakeWaveGenerator::SignificantHeight(float WindSpeed)
 {
-    // Fetch-limited growth (JONSWAP): Hs = 0.0016 U sqrt(F / g). Below a light breeze the lake only
-    // ripples; those ripples are the Water normals and ALakeRipples, not geometry.
+    // Fetch-limited growth (JONSWAP): Hs = 0.0016 U sqrt(F / g), and half of that here: the banks
+    // and the forest shelter a village pond, and waves of the full height looked too big for it.
+    // Below a light breeze the lake stays smooth.
     const float U = FMath::Max(0.0f, WindSpeed);
-    return 100.0f * 0.0016f * U * FMath::Sqrt(FetchM / 9.81f) * FMath::SmoothStep(1.0f, 3.0f, U);
+    return 100.0f * 0.0008f * U * FMath::Sqrt(FetchM / 9.81f) * FMath::SmoothStep(1.0f, 3.0f, U);
 }
 
 float ULakeWaveGenerator::PeakWavelength(float WindSpeed)
@@ -33,6 +35,12 @@ float ULakeWaveGenerator::PeakWavelength(float WindSpeed)
     const float U = FMath::Max(2.0f, WindSpeed);
     const float Tp = 0.286f * FMath::Pow(9.81f * FetchM / (U * U), 1.0f / 3.0f) * U / 9.81f;
     return FMath::Clamp(100.0f * 9.81f * Tp * Tp / (2 * PI), 130.0f, 380.0f);
+}
+
+float ULakeWaveGenerator::Ripple(float WindSpeed)
+{
+    // Cat's paws show at about 1 m/s; by a fresh breeze the whole lake is rippled.
+    return FMath::SmoothStep(0.6f, 5.0f, WindSpeed);
 }
 
 void ULakeWaveGenerator::MakeWaves(float WindSpeed, float WindYaw, TArray<FGerstnerWave>& OutWaves)
@@ -128,6 +136,23 @@ void ULakeWaves::Rebuild(float Speed, float Yaw)
     BuiltYaw = Yaw;
 }
 
+void ULakeWaves::ApplyRipple(float Speed)
+{
+    // The lake's fine ripple is M_VillageWater's (the engine's pans one normal map four ways at a
+    // fixed strength: a stamped pattern on a still lake, and running against the wind as much as
+    // with it). Only a faint slow swell of it is kept, the same in any wind: a mirror in a calm,
+    // and in a wind the waves themselves with nothing laid over them (a fine ripple on top of the
+    // waves looked unnatural). It drifts downwind; the drift is summed in Tick, so a change of
+    // wind turns its course without the pattern jumping.
+    UWaterBodyComponent* Body = Lake.Get();
+    UMaterialInstanceDynamic* Material = Body ? Body->GetWaterMaterialInstance() : nullptr;
+    if (!Material) return;
+    const float Ripple = ULakeWaveGenerator::Ripple(Speed);
+    Material->SetScalarParameterValue(TEXT("WindRipple"), 0.012f);
+    Material->SetVectorParameterValue(TEXT("RippleDrift"), FLinearColor(FineDrift.X, FineDrift.Y, MidDrift.X, MidDrift.Y));
+    ShownRipple = Ripple;
+}
+
 void ULakeWaves::Tick(float DeltaTime)
 {
     UWorld* World = GetWorld();
@@ -164,11 +189,20 @@ void ULakeWaves::Tick(float DeltaTime)
         Rebuild(SmoothWind, SmoothYaw);
         NextRebuild = Now + 1.0;
     }
+    // The fine ripple runs downwind at about the pace of short wind waves, the two layers a little
+    // apart in course and pace so that they never lock into one moving picture.
+    {
+        const float Pace = FMath::Lerp(12.0f, 55.0f, ULakeWaveGenerator::Ripple(SmoothWind)) * DeltaTime;
+        const float Course = FMath::DegreesToRadians(SmoothYaw);
+        FineDrift += FVector2D(FMath::Cos(Course - 0.14f), FMath::Sin(Course - 0.14f)) * Pace;
+        MidDrift += FVector2D(FMath::Cos(Course + 0.3f), FMath::Sin(Course + 0.3f)) * Pace * 1.5f;
+        ApplyRipple(SmoothWind);
+    }
     if (Now >= NextLog)
     {
         NextLog = Now + 30.0;
-        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WAVES wind %.1f m/s towards %.0f deg: significant height %.1f cm, peak wavelength %.0f cm, max wave %.1f cm"),
-            Built, BuiltYaw, ULakeWaveGenerator::SignificantHeight(Built), ULakeWaveGenerator::PeakWavelength(Built), Waves ? Waves->GetMaxWaveHeight() : 0.0f);
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WAVES wind %.1f m/s towards %.0f deg: significant height %.1f cm, peak wavelength %.0f cm, max wave %.1f cm, fine ripple %.2f"),
+            Built, BuiltYaw, ULakeWaveGenerator::SignificantHeight(Built), ULakeWaveGenerator::PeakWavelength(Built), Waves ? Waves->GetMaxWaveHeight() : 0.0f, ShownRipple);
     }
 }
 

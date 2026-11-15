@@ -544,6 +544,11 @@ namespace
         // The valley side: a low bank rising gently (flatter on flat banks), a low earth step where
         // there is one, bluffs and cliffs, then hills, higher in the forest, rolling in between.
         float H = FMath::Lerp(0.35f * S(0, 4, L), 0.3f * S(0, 16, L), Bank.Flat * (1 - S(12, 24, L))) + 0.035f * FMath::Min(LH, 120.0f);
+        // The bank leaves the water on a defined slope (about 40 cm per metre at the waterline,
+        // easing out over the first few metres) instead of lying almost level with it: a nearly level
+        // bank made the water surface graze the terrain, so the 1 m landscape grid showed from the
+        // shore as teeth of dry ground under the water.
+        H += 0.30f * (1.0f - FMath::Exp(-L / 0.8f));
         H += Bank.Step * S(0.1f, 0.7f, L + 0.25f * Noise(P, 300)) * (1 - S(6, 18, L));
         if (Bank.Bluff > 0)
         {

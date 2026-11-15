@@ -18,7 +18,7 @@ struct QUIETLAKE_API FLakeRippleSim
     float Cell = 4.0f;              // cm per cell
     FIntPoint Corner = FIntPoint::ZeroValue;   // world cell index of cell (0, 0)
     float WaveSpeed = 32.0f;        // cm/s
-    float Damping = 0.35f;          // per second: how fast all waves die out
+    float Damping = 0.6f;           // per second: how fast all waves die out (a ring fades within a metre or so)
     float Viscosity = 1.5f;         // cm^2/s: short waves die out faster (a drop ring lasts a second or two)
     TArray<float> H, V;             // height (cm) and its rate (cm/s)
     TArray<uint8> Wet;              // 1 water, 0 land (held flat: waves reflect there)

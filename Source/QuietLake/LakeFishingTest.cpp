@@ -3411,8 +3411,8 @@ bool FLakeWavesTest::RunTest(const FString& Parameters)
     float CalmMax = 0;
     for (const FGerstnerWave& W : Calm) CalmMax = FMath::Max(CalmMax, W.Amplitude);
     TestTrue(TEXT("A calm raises no waves"), CalmMax < 0.01f);
-    TestTrue(FString::Printf(TEXT("A breeze: waves a few cm high (%.1f cm)"), Energy(Breeze)), Energy(Breeze) > 3 && Energy(Breeze) < 9);
-    TestTrue(FString::Printf(TEXT("A strong wind on a small lake: about a hand high (%.1f cm)"), Energy(Strong)), Energy(Strong) > 9 && Energy(Strong) < 20);
+    TestTrue(FString::Printf(TEXT("A breeze: waves a few cm high (%.1f cm)"), Energy(Breeze)), Energy(Breeze) > 1.5f && Energy(Breeze) < 4.5f);
+    TestTrue(FString::Printf(TEXT("A strong wind on a sheltered pond: under a hand high (%.1f cm)"), Energy(Strong)), Energy(Strong) > 4.5f && Energy(Strong) < 10);
     TestTrue(TEXT("The energy is the sea state's"), FMath::IsNearlyEqual(Energy(Strong), ULakeWaveGenerator::SignificantHeight(12), 0.1f));
     TestTrue(TEXT("Stronger wind, longer waves"), ULakeWaveGenerator::PeakWavelength(12) > ULakeWaveGenerator::PeakWavelength(5));
     // The heights only: the same wavelengths and directions whatever the wind, so it can change

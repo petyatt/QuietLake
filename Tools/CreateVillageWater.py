@@ -1,10 +1,18 @@
 """The engine Water surface with the game's live ripples: /Game/Water/M_VillageWater.
 
 A copy of /Water/Materials/WaterSurface/Water_Material (engine assets stay read only) with one
-addition at the very end of its attribute chain: the slope of the ALakeRipples height field (circles
-from the float, fish and rain) is added to the Water normal. Parameters Ripples / RippleWindow are
-set at run time by ALakeRipples; with the defaults (black texture, zero window) the water is the
-engine's. Then TuneVillageWater.py parents the MI_Village* instances to it.
+addition at the very end of its attribute chain, where two things are added to the Water normal:
+- the slope of the ALakeRipples height field (circles from the float, fish and rain); Ripples /
+  RippleWindow are set at run time by ALakeRipples;
+- the wind's fine ripple: the engine's tiling water normal map in three sizes, all drifting
+  downwind. The engine's own fine ripple pans that map four ways at once and knows no wind, so the
+  lake's instance turns it off (TuneVillageWater.py) and ULakeWaves drives this one: WindRipple
+  (0 a mirror .. 1 a fresh wind) and RippleDrift (how far the two fine layers have drifted, cm;
+  summed on the CPU so that a change of wind never makes the pattern jump).
+With the defaults (black texture, zero window, no wind ripple) the water is the engine's. Then
+TuneVillageWater.py parents the MI_Village* instances to it.
+
+To rebuild the graph after changing this script, delete Content/Water/M_VillageWater.uasset first.
 
 Run with UnrealEditor-Cmd -run=pythonscript -script=C:/Fish/Tools/CreateVillageWater.py
 """
@@ -33,6 +41,16 @@ if (RW.z > 0 && RW.w > 0)
         slope += float2(r - l, t - b) / (2 * e * RW.z) * edge * Strength;
     }
 }
+// The wind's ripple: fine and middling near the viewer, a broad one that carries to the far bank
+// (the fine ones would only shimmer and show their tiling there).
+if (Amount > 0.001)
+{
+    float nearby = 1 - smoothstep(1500, 6000, distance(P, C));
+    float2 fine = Texture2DSample(Wind, WindSampler, (P.xy - Drift.xy) / 140.0).rg * 2 - 1;
+    float2 mid = Texture2DSample(Wind, WindSampler, (P.xy - Drift.zw) / 430.0 + 0.37).rg * 2 - 1;
+    float2 broad = Texture2DSample(Wind, WindSampler, (P.xy - Drift.zw * 1.6) / 2300.0 + 0.71).rg * 2 - 1;
+    slope += (fine * 0.10 * nearby + mid * 0.14 * lerp(0.4, 1.0, nearby) + broad * 0.12) * Amount;
+}
 return normalize(float3(-slope, 1));
 """
 
@@ -56,8 +74,8 @@ else:
     mat = assets.duplicate_asset(NAME, FOLDER, unreal.load_asset(SOURCE))
 assert isinstance(mat, unreal.Material), 'Cannot create ' + path
 
-if 'Ripples' in [str(n) for n in lib.get_texture_parameter_names(mat)]:
-    unreal.log('QUIET_LAKE_WATER_RIPPLES %s already has the ripple input' % path)
+if 'WindRipple' in [str(n) for n in lib.get_scalar_parameter_names(mat)]:
+    unreal.log('QUIET_LAKE_WATER_RIPPLES %s already has the ripple inputs' % path)
 else:
     assert mat.get_editor_property('use_material_attributes'), 'Water must use material attributes'
     prop = unreal.MaterialProperty.MP_MATERIAL_ATTRIBUTES
@@ -81,9 +99,16 @@ else:
                   default_value=unreal.LinearColor(0, 0, 0, 0))
     strength = node(mat, unreal.MaterialExpressionScalarParameter, parameter_name='LakeRippleStrength', default_value=1.0)
     position = node(mat, unreal.MaterialExpressionWorldPosition)
+    camera = node(mat, unreal.MaterialExpressionCameraPositionWS)
+    wind = node(mat, unreal.MaterialExpressionTextureObject,
+                texture=unreal.load_asset('/Water/Textures/Normals/T_Water_TilingNormal_With_Height_02_Softened'))
+    drift = node(mat, unreal.MaterialExpressionVectorParameter, parameter_name='RippleDrift',
+                 default_value=unreal.LinearColor(0, 0, 0, 0))
+    amount = node(mat, unreal.MaterialExpressionScalarParameter, parameter_name='WindRipple', default_value=0.0)
     custom = node(mat, unreal.MaterialExpressionCustom, code=RIPPLES, description='LakeRipples',
                   output_type=unreal.CustomMaterialOutputType.CMOT_FLOAT3)
-    inputs = [('N', normal, normal_out), ('P', position, ''), ('Rip', ripple, ''), ('RW', window, 'RGBA'), ('Strength', strength, '')]
+    inputs = [('N', normal, normal_out), ('P', position, ''), ('Rip', ripple, ''), ('RW', window, 'RGBA'), ('Strength', strength, ''),
+              ('C', camera, ''), ('Wind', wind, ''), ('Drift', drift, 'RGBA'), ('Amount', amount, '')]
     pins = []
     for n, _, _ in inputs:
         pin = unreal.CustomInput()
@@ -107,6 +132,6 @@ else:
     link(result, '', joined, names[1])
     assert lib.connect_material_property(joined, '', prop), 'Cannot connect the attributes output'
     lib.recompile_material(mat)
-    unreal.log('QUIET_LAKE_WATER_RIPPLES %s: ripple slope added to the Water normal (tangent space %s)' % (path, tangent))
+    unreal.log('QUIET_LAKE_WATER_RIPPLES %s: live rings and wind ripple added to the Water normal (tangent space %s)' % (path, tangent))
 
 assert unreal.EditorAssetLibrary.save_loaded_asset(mat), 'Cannot save ' + path

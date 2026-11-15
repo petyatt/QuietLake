@@ -29,6 +29,8 @@ public:
     static float SignificantHeight(float WindSpeed);
     /** Wavelength (cm) of the most energetic waves for that wind. */
     static float PeakWavelength(float WindSpeed);
+    /** How much of the fine ripple the wind raises (0 a mirror in a calm .. 1 a fresh wind). */
+    static float Ripple(float WindSpeed);
 };
 
 /**
@@ -60,11 +62,14 @@ public:
 private:
     void Setup();
     void Rebuild(float Speed, float Yaw);
+    void ApplyRipple(float Speed);
 
     TWeakObjectPtr<UWaterBodyComponent> Lake;
     UPROPERTY() TObjectPtr<UGerstnerWaterWaves> Waves;
     UPROPERTY() TObjectPtr<ULakeWaveGenerator> Generator;
     float SmoothWind = -1.0f, SmoothYaw = 0.0f;
     float Built = -1.0f, BuiltYaw = 0.0f;
+    float ShownRipple = -1.0f;
+    FVector2D FineDrift = FVector2D::ZeroVector, MidDrift = FVector2D::ZeroVector;   // cm the fine ripple has drifted
     double NextSetup = 0, NextRebuild = 0, NextLog = 0;
 };

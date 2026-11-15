@@ -65,7 +65,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-RodPreview` | удилище: изгиб кончика при забросе лёгким, средним и тяжёлым, при вываживании | `LakePreviews.cpp` |
 | `-LeaderPreview` | поводок крупным планом: оснастка в руке, замах, полёт, приводнение, лежащая снасть, подъём с остановкой (ЛКМ отпущена и снова зажата), вынимание; лог `QUIET_LAKE_LEADER` (`-Depth=`) | `LakePreviews.cpp` |
 | `-RetrievePreview` | вынимание снасти: удилище вверх, снасть подлетает, левая рука берёт грузило — сбоку, из-за плеча, от первого лица с остановкой; `-LongCast` — дальний заброс; лог `QUIET_LAKE_RETRIEVE` | `LakePreviews.cpp` |
-| `-WavePreview` | волны от ветра у лагеря: заброс, затем штиль, бриз и сильный ветер по ~26 с — поплавок у самой воды `Saved/Waves_<ветер>_Float.png`, озеро `Waves_<ветер>_Lake.png`; лог `QUIET_LAKE_WAVES_FLOAT` (поверхность и поплавок 4 раза в секунду), `QUIET_LAKE_WAVES` | `LakePreviews.cpp`, `LakeWaves.cpp` |
+| `-WavePreview` | волны и рябь от ветра у лагеря: заброс, затем штиль, бриз, сильный ветер и дождь в штиль по ~26 с — поплавок у самой воды `Saved/Waves_<ветер>_Float.png`, озеро `Waves_<ветер>_Lake.png`; лог `QUIET_LAKE_WAVES_FLOAT` (поверхность и поплавок 4 раза в секунду), `QUIET_LAKE_WAVES` | `LakePreviews.cpp`, `LakeWaves.cpp` |
 | `-LinePreview` | боковой ветер у лагеря сверху: парус лески, снос поплавка, оснастка на дне стоит | `LakePreviews.cpp` |
 | `-GroundbaitPreview` | три шара прикормки у лагеря (полёт, круги), 4 минуты замера: рыба у прикормки и у такого же места без неё, панель F3; лог `QUIET_LAKE_GROUNDBAIT` | `LakePreviews.cpp` |
 | `-LifePreview` | знаки на воде, малёк, панель F3, время кадра | `LakeLife.cpp` |

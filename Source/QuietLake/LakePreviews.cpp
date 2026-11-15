@@ -1309,7 +1309,7 @@ void ALakeCharacter::RunPreviews()
         At(50.0f, [] { FPlatformMisc::RequestExit(false); });
     }
     // -WavePreview: the lake's wind waves (engine Water, ULakeWaves) at the camp: a float cast 5 m out,
-    // then a calm, a breeze and a strong wind, ~25 s each (the waves follow the wind over seconds):
+    // then a calm, a breeze, a strong wind and a rainy calm, ~25 s each (the waves follow the wind over seconds):
     // the float close at the water (Saved/Waves_<wind>_Float.png), the lake (Waves_<wind>_Lake.png),
     // and how the float rides the surface 4 times a second (QUIET_LAKE_WAVES_FLOAT).
     if (FParse::Param(FCommandLine::Get(), TEXT("WavePreview")) && GetNetMode() == NM_Standalone)
@@ -1352,8 +1352,8 @@ void ALakeCharacter::RunPreviews()
         At(4.5f, [this] { UseRod(ERodKind::Medium); });
         At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
         At(6.6f, [this] { ServerRelease_Implementation(); });
-        struct FWind { const TCHAR* Name; float Wind; };
-        static const FWind Winds[] = { { TEXT("Calm"), 0.03f }, { TEXT("Breeze"), 0.4f }, { TEXT("Strong"), 0.85f } };
+        struct FWind { const TCHAR* Name; float Wind; float Rain = 0; };
+        static const FWind Winds[] = { { TEXT("Calm"), 0.03f }, { TEXT("Breeze"), 0.4f }, { TEXT("Strong"), 0.85f }, { TEXT("Rain"), 0.05f, 0.6f } };
         for (int32 K = 0; K < UE_ARRAY_COUNT(Winds); ++K)
         {
             const float T0 = 10.0f + K * 26.0f;
@@ -1363,7 +1363,7 @@ void ALakeCharacter::RunPreviews()
                 if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
                 {
                     FLakeWeatherState State;
-                    State.Cloud = 0.25f; State.Fog = 0; State.Rain = 0; State.Wind = Wind.Wind; State.WindYaw = *WindYaw;
+                    State.Cloud = Wind.Rain > 0 ? 0.9f : 0.25f; State.Fog = 0; State.Rain = Wind.Rain; State.Wind = Wind.Wind; State.WindYaw = *WindYaw;
                     Weather->SetWeatherNow(State);
                 }
             });
@@ -1392,7 +1392,7 @@ void ALakeCharacter::RunPreviews()
                         FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp((Tip - Keel).GetSafeNormal().Z, -1.0f, 1.0f))), Waves ? Waves->BuiltWind() : -1.0f);
                 });
         }
-        At(10.0f + 3 * 26.0f + 1.0f, [] { FPlatformMisc::RequestExit(false); });
+        At(10.0f + UE_ARRAY_COUNT(Winds) * 26.0f + 1.0f, [] { FPlatformMisc::RequestExit(false); });
     }
     // -GroundbaitPreview: at the camp on a calm morning the angler throws three balls of groundbait
     // 6 m out (the ball in flight, the rings); then for four minutes the log counts the fish within

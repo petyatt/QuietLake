@@ -29,9 +29,18 @@ RIVER = {
     'Scattering': (0.5, 0.45, 0.37, 0.5),
     'Water Albedo': (0.4, 0.38, 0.3, 0.5),
 }
-# How strongly the ALakeRipples height field bends the Water normal: at 1 the rings from a fish or
-# the float are lost among the engine's own normals; at 15 they are thick dark bands.
-RIPPLE_STRENGTH = 8.0
+# How strongly the ALakeRipples height field bends the Water normal. In a calm the lake is a mirror
+# (ULakeWaves fades the engine's own normals with the wind) and every ring shows: at 3 a bite's rings
+# are bold bands metres wide, at 8 and more they are thick dark stripes. In a wind the rings are
+# mostly lost in the ripple, as on a real lake.
+RIPPLE_STRENGTH = 1.5
+# The lake's fine ripple is M_VillageWater's own, drifting downwind (ULakeWaves): the engine's, which
+# pans its normal map four ways whatever the wind, is turned off. The streams keep the engine's.
+LAKE_SCALARS = {
+    'Default Near Normal Strength': 0.02,
+    'Default Distant Normal Strength': 0.02,
+    'Default Distant Normal StrengthB': 0.02,
+}
 # Name: (engine instance, look, with the live ripples).
 VARIANTS = {
     'MI_VillageLake': ('Water_Material_Lake', LAKE, True),
@@ -65,6 +74,9 @@ for name, (relative, values, ripples) in VARIANTS.items():
         lib.set_material_instance_parent(instance, RIPPLE_BASE)
         copy_settings(source, instance)
         lib.set_material_instance_scalar_parameter_value(instance, 'LakeRippleStrength', RIPPLE_STRENGTH)
+        if name == 'MI_VillageLake':
+            for param, value in LAKE_SCALARS.items():
+                lib.set_material_instance_scalar_parameter_value(instance, param, value)
     else:
         lib.set_material_instance_parent(instance, source)
     known = [str(n) for n in lib.get_vector_parameter_names(source)]

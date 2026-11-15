@@ -25,6 +25,9 @@ MAP = '/Game/Maps/Lake'
 LAYERS = '/Game/Maps/LakeLayers'
 DEPTH = float(os.environ.get('QUIETLAKE_LAKE_DEPTH', '600'))
 RAMP = float(os.environ.get('QUIETLAKE_LAKE_RAMP', '6000'))
+# The waterline spline step: at 600 cm the chords cut inside the bends of the bank and the water
+# stops short of the land in places; 150 cm follows the 1 m waterline contour closely.
+SPACING = float(os.environ.get('QUIETLAKE_LAKE_SPACING', '150'))
 lib = unreal.LakeLevelLibrary
 state = {'step': 0, 'frames': 0, 'handle': None, 'busy': False}
 
@@ -71,7 +74,7 @@ def tick(delta):
         elif step == 2 and frames > 30:
             profile = lib.create_bed_profile('/Game/Maps', 'LakeBedProfile')
             unreal.EditorAssetLibrary.save_loaded_asset(profile)
-            lib.spawn_lake(DEPTH, RAMP, 600, profile)
+            lib.spawn_lake(DEPTH, RAMP, SPACING, profile)
             lib.spawn_streams(60)
             lib.spawn_shallows(140, 500, 400, 100, 12)
             state.update(step=3, frames=0)
