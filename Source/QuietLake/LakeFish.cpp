@@ -650,6 +650,7 @@ float ALakeFish::BottomZ(float X, float Y) { return ALakeEnvironment::GroundHeig
 
 ALakeFish::ALakeFish()
 {
+    Fight.Fish = this;
     PrimaryActorTick.bCanEverTick = true;
     bReplicates = true;
     // Each angler gets the fish within 150 m; the lake holds hundreds.
@@ -703,7 +704,7 @@ void ALakeFish::Setup(EFishSpecies InSpecies, float InWeight, FVector Home, int3
     Stamina = MaxStamina;
     WanderSeed = Random.FRandRange(0, 100);
     // Reuse an individual draw without changing the random sequence of free swimming.
-    FightIndividual = FMath::Lerp(1 - S.Fight.Variation, 1 + S.Fight.Variation, Phase / (2 * PI));
+    Fight.FightIndividual = FMath::Lerp(1 - S.Fight.Variation, 1 + S.Fight.Variation, Phase / (2 * PI));
     Yaw = GetActorRotation().Yaw;
     Pitch = 0;
     if (School >= 0)
@@ -1743,7 +1744,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
             const FVector Bait = Candidate->BaitLocation(Rig);
             const float Dist = FVector::Dist(Bait, GetActorLocation());
             // Back for another try at a bait it let go of a moment ago.
-            const bool bBack = ReturnTo.Get() == Candidate && ReturnRig == Rig && Until && SimTime < *Until + 30 && Dist < S.SenseRadius * 1.5f;
+            const bool bBack = AtBait.ReturnTo.Get() == Candidate && AtBait.ReturnRig == Rig && Until && SimTime < *Until + 30 && Dist < S.SenseRadius * 1.5f;
             if (!bBack && Dist > S.SenseRadius) continue;
             // Feeding, it finds a bait in the layer it feeds in, likes one that goes with its food and
             // is choosy amid plenty (a big hatch).
@@ -1780,7 +1781,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
                 StateTime = 0;
                 TargetAngler = Candidate;
                 TargetRig = Rig;
-                ReturnTo = nullptr;
+                AtBait.ReturnTo = nullptr;
                 return;
             }
         }
@@ -1801,9 +1802,9 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
             StateTime = 0;
             // The bite starts; the fish decides each step as it goes (LakeFish::NextBiteStep).
             const FVector BaitAt = Angler->BaitLocation(TargetRig);
-            BiteState = FBiteState();
-            BiteNow = FBiteStep();
-            BiteStepEnd = SimTime + Random.FRandRange(0.3f, 1.0f);
+            AtBait.Bite = FBiteState();
+            AtBait.Step = FBiteStep();
+            AtBait.StepEnd = SimTime + Random.FRandRange(0.3f, 1.0f);
             // A crucian rooting at the bait sends bubbles up beside the float.
             if (LakeFish::Info(Species).Feeding.bRootsInSilt)
                 if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
@@ -1811,11 +1812,11 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
         }
         return;
     }
-    if ((State == EState::Nibble || State == EState::Holding) && Angler && SimTime >= BiteStepEnd) NextBiteStep(Angler);
+    if ((State == EState::Nibble || State == EState::Holding) && Angler && SimTime >= AtBait.StepEnd) NextBiteStep(Angler);
     // Jerked under its nose while it only tries the bait, or a predator close by: it backs off at once.
     else if (State == EState::Nibble && Angler && (Angler->RigDisturbance(TargetRig) > 0.8f || Fear > 0.6f))
     {
-        BiteState.Felt += 1;
+        AtBait.Bite.Felt += 1;
         Angler->OnBiteMotion(this, FBiteStep());
         DropBait();
     }
@@ -1831,7 +1832,7 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     // The step it said it would let go after is over: the float settles, the fish backs off.
-    if (BiteNow.bLetGo)
+    if (AtBait.Step.bLetGo)
     {
         if (State == EState::Holding) Angler->OnFishLetGo(this);   // the angler's side; it calls DropBait
         else Angler->OnBiteMotion(this, FBiteStep());
@@ -1845,16 +1846,16 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
     const bool bOnBottom = BaitAt.Z <= BottomZ(BaitAt.X, BaitAt.Y) + 8;
     // A fish that has learnt the hook tests longer, takes less readily and feels more.
     const float Shy = BaitShy[FMath::Clamp((int32)Angler->BaitOf(TargetRig), 0, 2)];
-    const FBiteState Before = BiteState;
-    const FBiteStep Step = LakeFish::NextBiteStep(Species, BiteState, Size01, Activity, bOnBottom, bBright || Caution > 0.4f, BaitLike(Angler) * (1 - 0.7f * Shy),
+    const FBiteState Before = AtBait.Bite;
+    const FBiteStep Step = LakeFish::NextBiteStep(Species, AtBait.Bite, Size01, Activity, bOnBottom, bBright || Caution > 0.4f, BaitLike(Angler) * (1 - 0.7f * Shy),
         Angler->RigDisturbance(TargetRig) + 0.3f * Caution, Random);
     if (Step.bTake && State == EState::Nibble && FVector::Dist(MouthLocation(), Angler->BaitLocation(TargetRig)) > ContactRadius())
     {
-        BiteState = Before; BiteStepEnd = SimTime + 0.1f;
+        AtBait.Bite = Before; AtBait.StepEnd = SimTime + 0.1f;
         return; // Finish approaching; taking cannot pull a distant hook into the mouth.
     }
-    BiteNow = Step;
-    BiteStepEnd = SimTime + Step.Duration;
+    AtBait.Step = Step;
+    AtBait.StepEnd = SimTime + Step.Duration;
     if (Step.bTake && State == EState::Nibble)
     {
         // It takes: the angler may strike while it has the bait in its mouth. It lets go by itself
@@ -1876,21 +1877,21 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
         // Rising with the bait high enough to lift the shot off it: the float loses its load.
         const float Rise = FMath::Clamp(LakeFish::SurfaceZ - 15 - P.Z, 0.0f, 8 + 9 * Step.Amount);
         RoamTarget = P + Side * 10 + FVector(0, 0, Rise);
-        HoldSpeed = FMath::Max(0.25f, Rise / FMath::Max(Step.Duration * 0.8f, 0.3f) / S.CruiseSpeed);
+        AtBait.HoldSpeed = FMath::Max(0.25f, Rise / FMath::Max(Step.Duration * 0.8f, 0.3f) / S.CruiseSpeed);
         break;
     }
     case EBiteMotion::Drift:
         RoamTarget = P + (Side * 0.8f + Away * 0.4f).GetSafeNormal() * 250;
-        HoldSpeed = 0.6f;
+        AtBait.HoldSpeed = 0.6f;
         break;
     case EBiteMotion::Hold:
         // Still, nose a little down (a swallowing perch keeps the float under).
         RoamTarget = FVector(P.X, P.Y, FMath::Max(BottomZ(P.X, P.Y) + 10, P.Z - 15));
-        HoldSpeed = 0.15f;
+        AtBait.HoldSpeed = 0.15f;
         break;
     case EBiteMotion::None:
         RoamTarget = P;
-        HoldSpeed = 0.15f;
+        AtBait.HoldSpeed = 0.15f;
         break;
     default:
     {
@@ -1898,7 +1899,7 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
         const float Run = Random.FRandRange(S.Bite.RunMin, FMath::Max(S.Bite.RunMin, S.Bite.RunMax));
         RoamTarget = P + (Away + Side * Random.FRandRange(-0.5f, 0.5f)).GetSafeNormal() * Run;
         RoamTarget.Z = FMath::Max(BottomZ(RoamTarget.X, RoamTarget.Y) + 10, P.Z - 60);
-        HoldSpeed = FMath::Clamp(Step.Amount / S.CruiseSpeed * 0.6f, 0.6f, FMath::Max(2.5f, S.BurstSpeed * 0.3f / S.CruiseSpeed));
+        AtBait.HoldSpeed = FMath::Clamp(Step.Amount / S.CruiseSpeed * 0.6f, 0.6f, FMath::Max(2.5f, S.BurstSpeed * 0.3f / S.CruiseSpeed));
         break;
     }
     }
@@ -1911,8 +1912,8 @@ void ALakeFish::Spook(FVector From, float Seconds)
     if (State == EState::Hooked) return;
     if (ALakeCharacter* Angler = TargetAngler.Get()) Angler->ReleaseBaitClaim(this);
     TargetAngler = nullptr;
-    ReturnTo = nullptr;
-    BaitVisits = 0;
+    AtBait.ReturnTo = nullptr;
+    AtBait.Visits = 0;
     State = EState::Flee;
     FleeFrom = From;
     FleeTime = Seconds;
@@ -1930,25 +1931,9 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     StateTime = 0;
     TargetAngler = Angler;
     BurstTime = 0;
-    FightPhase = EFightPhase::Pause;
-    FightRemaining = 0;
-    FightPulses = 0;
-    bFightJump = bShoreTried = bShoreRun = false;
-    bFirstRunDone = false;
-    bWasSlack = false;
-    NextEscape = 0;
-    SurfaceRoll = 0;
-    HookGrip = 1; HookedWater = 1;
-    // From now on it is its swimmer (MoveHooked), laid out straight behind its mouth as it is now.
-    StartSwimmer(GetActorForwardVector());
-    SwimAt = GetActorLocation();
-    SwimPose = GetActorQuat();
-    SwimVel = Vel;
+    // From now on it is its swimmer (FLakeFishFight::MoveHooked), laid out behind its mouth as it is now.
+    Fight.Start();
     bNetHooked = true;
-    bFightAwake = false;   // it feels the strike as the line pulls, not before
-    NextFightJump = SimTime;
-    PendingLineForce = FVector::ZeroVector;
-    PendingLineSpring = 0;
     StrikeEnd = -1;
     if (Angler) Angler->AddTickPrerequisiteActor(this);
     RoamTarget = GetActorLocation() + GetActorForwardVector() * 80;
@@ -1967,7 +1952,7 @@ void ALakeFish::Hook(ALakeCharacter* Angler)
     }
 }
 
-void ALakeFish::ApplyLineForce(FVector Force, float Spring) { PendingLineForce = Force; PendingLineSpring = Spring; if (State == EState::Hooked && Force.Size() > 35) WakeOnLine(); }
+void ALakeFish::ApplyLineForce(FVector Force, float Spring) { Fight.PendingLineForce = Force; Fight.PendingLineSpring = Spring; if (State == EState::Hooked && Force.Size() > 35) WakeOnLine(); }
 
 void ALakeFish::DropBait()
 {
@@ -1981,23 +1966,21 @@ void ALakeFish::DropBait()
         // crucian again and again, a pike seldom); one that felt the tackle, or has tried a few
         // times already, leaves it alone for a minute.
         BaitAt = Angler->BaitLocation(TargetRig);
-        ++BaitVisits;
+        ++AtBait.Visits;
         const FFishBiteStyle& Style = LakeFish::Info(Species).Bite;
         const float Again = Hunger * (0.35f + 0.65f * BaitLike(Angler)) * FMath::Clamp(Activity, 0.2f, 1.0f) * Style.Comeback
-            * (1 - FMath::Clamp(BiteState.Felt * 0.6f, 0.0f, 0.9f)) * (1 - Caution);
-        if (BiteState.Felt > 0.5f) Frighten(0.15f * Style.Comeback * LakeFish::Info(Species).Learning.Fright, (int32)Angler->BaitOf(TargetRig));
-        bBack = BaitVisits < Style.MaxVisits && Random.FRand() < Again;
+            * (1 - FMath::Clamp(AtBait.Bite.Felt * 0.6f, 0.0f, 0.9f)) * (1 - Caution);
+        if (AtBait.Bite.Felt > 0.5f) Frighten(0.15f * Style.Comeback * LakeFish::Info(Species).Learning.Fright, (int32)Angler->BaitOf(TargetRig));
+        bBack = AtBait.Visits < Style.MaxVisits && Random.FRand() < Again;
         const float Delay = bBack ? Random.FRandRange(Style.ReturnMin, FMath::Max(Style.ReturnMin, Style.ReturnMax)) : 60.0f;
         IgnoreBaitUntil.Add(Angler, SimTime + Delay);
-        ReturnTo = bBack ? Angler : nullptr;
-        ReturnRig = TargetRig;
-        if (!bBack) BaitVisits = 0;
+        AtBait.ReturnTo = bBack ? Angler : nullptr;
+        AtBait.ReturnRig = TargetRig;
+        if (!bBack) AtBait.Visits = 0;
         Angler->ReleaseBaitClaim(this);
     }
     TargetAngler = nullptr;
-    BiteNow = FBiteStep();
-    BiteState = FBiteState();
-    BiteStepEnd = 0;
+    AtBait.NewBite();
     State = EState::Roam;
     StateTime = 0;
     ChooseRoamTarget();
@@ -2010,79 +1993,9 @@ void ALakeFish::DropBait()
     }
 }
 
-void ALakeFish::LiftOut()
-{
-    bFightJump = false;
-    bLifted = true;
-    HangTime = 0;
-    Vel = FVector::ZeroVector;
-    PendingLineForce = FVector::ZeroVector;
-    PendingLineSpring = 0;
-}
-
-void ALakeFish::LowerIntoWater(FVector LineVelocity)
-{
-    bFightJump = false;
-    bLifted = false;
-    State = EState::Hooked;
-    SurfaceRoll = Roll = GetActorRotation().Roll;
-    // (Its body goes on as it hung and swung; the line's speed is already in it.)
-    Vel = bSwimming ? Swim.Velocity().GetClampedToMaxSize(200) : LineVelocity.GetClampedToMaxSize(200);
-    if (bSwimming) Swim.SetVelocity(Vel);
-    SwimVel = Vel;
-    PendingLineForce = FVector::ZeroVector;
-    PendingLineSpring = 0;
-    ForceNetUpdate();
-}
-
-FFishImmersion ALakeFish::ImmersionAt(FVector Mouth, FQuat Rotation) const
-{
-    const float Length = LakeFish::LengthCm(Species, WeightKg);
-    const FVector Forward = Rotation.GetForwardVector();
-    const FVector Right = Rotation.GetRightVector(), Up = Rotation.GetUpVector();
-    const float Height = Length * (Species == EFishSpecies::Pike ? 0.075f : Species == EFishSpecies::Crucian ? 0.17f : 0.12f);
-    const float Width = Length * 0.065f;
-    FFishImmersion Result;
-    float Volume = 0;
-    for (int32 I = 0; I < 7; ++I)
-    {
-        const float Along = (I + 0.5f) / 7.0f;
-        const float Section = FMath::Sin(PI * Along);
-        const float Weight = Section * Section;
-        const FVector Offset = -Forward * (Length * Along * 0.9f);
-        const FVector Centre = Mouth + Offset;
-        const float RadiusZ = FMath::Max(0.5f, Section * FMath::Sqrt(FMath::Square(Up.Z * Height) + FMath::Square(Right.Z * Width)));
-        const float Level = FMath::Clamp(float(LakeFish::SurfaceZ - Centre.Z) / RadiusZ, -1.0f, 1.0f);
-        const float Wet = LakeMap::IsWater(Centre.X, Centre.Y) ? 0.5f + 0.75f * Level - 0.25f * Level * Level * Level : 0.0f;
-        Result.Fraction += Weight * Wet;
-        Result.BuoyantMoment += FVector::CrossProduct(Offset, FVector::UpVector) * (Weight * Wet);
-        Volume += Weight;
-    }
-    Result.Fraction /= Volume;
-    Result.BuoyantMoment /= Volume;
-    return Result;
-}
-
-void ALakeFish::HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds)
-{
-    LastHangFrame = GFrameCounter;
-    const float Dt = FMath::Clamp(DeltaSeconds, 0.0001f, 0.05f);
-    HangTime += Dt;
-    // Out of the water it fights in bouts: hard thrashing, then a moment hanging still.
-    const float Want = FMath::Sin(HangTime * 1.7f + Phase) > 0.82f ? StaminaFraction() * 0.7f : 0.04f;
-    HangEffort = FMath::FInterpTo(HangEffort, Want, Dt, 3.0f);
-    // The hook holds its mouth; the rest is its swimmer: its weight out of the water, the water
-    // holding up what is still in it. Thrashing, the whole body bends one way and the other.
-    const float Thrash = FMath::Clamp(HangEffort * 1.6f, 0.0f, 1.0f);
-    Swim.Surface = LakeMap::IsWater(Mouth.X, Mouth.Y) ? LakeFish::SurfaceZ : -1e9f;
-    Swim.Floor = -1e9f;
-    SwimHeldByMouth(Mouth, Thrash, Thrash > 0.25f ? (FMath::Fmod(HangTime * 4, 1.0f) < 0.5f ? 1.0f : -1.0f) : 0.0f, 0, Dt);
-    PoseFromSwimmer(0.0f);
-}
-
 void ALakeFish::Release(float SpookSeconds)
 {
-    bSwimming = false;
+    Fight.bSwimming = false;
     bNetHooked = false;
     if (bLifted)
     {
@@ -2109,7 +2022,7 @@ void ALakeFish::Release(float SpookSeconds)
         if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->AddPressure(GetActorLocation(), bHooked ? 0.6f : 0.2f);
     }
     State = EState::Roam;
-    PendingLineForce = FVector::ZeroVector;
+    Fight.PendingLineForce = FVector::ZeroVector;
     Hunger *= 0.5f;
     Spook(From, SpookSeconds);
 }
@@ -2118,7 +2031,7 @@ void ALakeFish::Release(float SpookSeconds)
 
 void ALakeFish::Move(FVector Desired, float MaxSpeed, float DeltaSeconds)
 {
-    if (State == EState::Hooked) { MoveHooked(Desired, MaxSpeed, DeltaSeconds); return; }
+    if (State == EState::Hooked) { Fight.MoveHooked(Desired, MaxSpeed, DeltaSeconds); return; }
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
     if (bPrecise && (State == EState::Investigate || State == EState::Nibble) && TargetAngler.IsValid())
     {
@@ -2206,7 +2119,7 @@ void ALakeFish::Move(FVector Desired, float MaxSpeed, float DeltaSeconds)
     if (Align < 0.5f && !bPrecise) Thrust = FMath::Max(Thrust, -Accel * 0.08f);
     Effort = FMath::Clamp(FMath::Abs(Thrust) / FMath::Max(1.0f, S.Acceleration * 2.5f) + ForwardSpeed / S.BurstSpeed * 0.5f, 0.0f, 1.0f);
     Vel += Heading * Thrust * Dt;
-    if (State == EState::Holding) Vel += PendingLineForce / FMath::Max(0.03f, WeightKg) * Dt;
+    if (State == EState::Holding) Vel += Fight.PendingLineForce / FMath::Max(0.03f, WeightKg) * Dt;
     // Water drag: low along the streamlined body, high sideways, so the motion follows the body
     // round each turn.
     const FVector Forward = Heading * FVector::DotProduct(Vel, Heading);
@@ -2239,421 +2152,6 @@ void ALakeFish::Move(FVector Desired, float MaxSpeed, float DeltaSeconds)
         Vel -= In * FMath::Min(0.0, FVector::DotProduct(Vel, In)) * 1.0;
     }
     SetActorLocationAndRotation(P, FRotator(Pitch, Yaw, Roll));
-}
-
-void ALakeFish::ChooseFightTarget(bool bFinalRun)
-{
-    ALakeCharacter* Angler = TargetAngler.Get();
-    if (!Angler) return;
-    const FFishSpeciesInfo& S = LakeFish::Info(Species);
-    const FFishFightStyle& F = S.Fight;
-    const FVector P = GetActorLocation();
-    FVector Away = (P - Angler->GetActorLocation()).GetSafeNormal2D();
-    if (Away.IsNearlyZero()) Away = FVector(LakeMap::DeeperDirection(P.X, P.Y), 0);
-    const FVector Along = FVector::CrossProduct(Away, FVector::UpVector) * (Random.FRand() < 0.5f ? 1 : -1);
-    const float Pick = Random.FRand() * (F.AlongWeight + F.AwayWeight + F.DiveWeight + F.SurfaceWeight);
-    const bool bAlong = Pick < F.AlongWeight;
-    const bool bDive = Pick >= F.AlongWeight + F.AwayWeight && Pick < F.AlongWeight + F.AwayWeight + F.DiveWeight;
-    const bool bSurface = Pick >= F.AlongWeight + F.AwayWeight + F.DiveWeight;
-    const FVector Dir = bFinalRun ? (Away + FVector(LakeMap::DeeperDirection(P.X, P.Y), 0)).GetSafeNormal()
-        : bAlong ? (Along + Away * 0.25f).GetSafeNormal() : (Away + Along * Random.FRandRange(-0.5f, 0.5f)).GetSafeNormal();
-    RoamTarget = P + Dir * Random.FRandRange(300, 700) * (0.4f + StaminaFraction());
-    // A target on dry land would make the fish push into an invisible wall throughout a bout.
-    for (int32 I = 0; I < 8 && (!LakeMap::IsWater(RoamTarget.X, RoamTarget.Y) || LakeMap::Depth(RoamTarget.X, RoamTarget.Y) < 20); ++I)
-        RoamTarget = (RoamTarget + P) * 0.5f;
-    const float Bottom = BottomZ(RoamTarget.X, RoamTarget.Y) + 8;
-    const float Fresh = StaminaFraction();
-    // A fish with strength sits deeper than its usual band and bores down; only a tired one comes up
-    // and lets itself be landed. The species' own layer stays in the choice (a rudd keeps higher
-    // than a bream even while fresh).
-    const float Band = FMath::Clamp((S.DepthMin + S.DepthMax) * 0.5f, 0.0f, 1.0f);
-    const float BandZ = FMath::Lerp(LakeFish::SurfaceZ - 12, Bottom, Band);
-    RoamTarget.Z = Fresh < 0.3f || bSurface ? LakeFish::SurfaceZ - 12
-        : bDive || bFinalRun ? Bottom + 6
-        : FMath::Lerp(BandZ, Bottom + 6, 0.55f * FMath::SmoothStep(0.3f, 0.9f, Fresh));
-    RoamTarget.Z = FMath::Clamp(RoamTarget.Z, Bottom, FMath::Max(Bottom, LakeFish::SurfaceZ - 8));
-}
-
-void ALakeFish::ChooseEscapeTarget()
-{
-    // Where it would rather be, a few metres off: weeds and snags to tangle the line in, deeper water,
-    // anywhere but nearer the bank — or now and then straight back at the angler, which gives it slack.
-    const ALakeCharacter* Angler = TargetAngler.Get();
-    const FVector P = GetActorLocation();
-    FVector Best = P;
-    float BestScore = -1e9f;
-    const bool bBack = Angler && Random.FRand() < 0.2f;
-    for (int32 I = 0; I < 10; ++I)
-    {
-        const float A = 2 * PI * (I + Random.FRand()) / 10;
-        const float R = Random.FRandRange(250.0f, 550.0f);
-        const FVector2D Q = FVector2D(P) + FVector2D(FMath::Cos(A), FMath::Sin(A)) * R;
-        if (!LakeMap::IsWater(Q.X, Q.Y) || LakeMap::Depth(Q.X, Q.Y) < 35) continue;
-        const LakeMap::FZones Z = LakeMap::ZonesAt(Q.X, Q.Y);
-        float Score = 1.2f * LakeMap::WeedAmount(Q) + 1.5f * Z.Cover + 0.5f * FMath::Min(3.0f, LakeMap::Depth(Q.X, Q.Y) / 100.0f)
-            + Random.FRandRange(0.0f, 0.9f);
-        if (Angler)
-        {
-            const float Toward = FVector2D::DotProduct((Q - FVector2D(P)).GetSafeNormal(), (FVector2D(Angler->GetActorLocation()) - FVector2D(P)).GetSafeNormal());
-            Score += bBack ? 2.5f * Toward : -0.6f * FMath::Max(0.0f, Toward);
-        }
-        if (Score > BestScore) { BestScore = Score; Best = FVector(Q, 0); }
-    }
-    if (BestScore < -1e8f) { ChooseFightTarget(); return; }
-    const float Bottom = BottomZ(Best.X, Best.Y) + 10;
-    Best.Z = FMath::Lerp(Bottom, LakeFish::SurfaceZ - 20.0f, Random.FRandRange(0.0f, 0.4f));
-    RoamTarget = Best;
-}
-
-void ALakeFish::FightSplash()
-{
-    if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
-    {
-        const FVector P = GetActorLocation();
-        Life->EmitSign(ELakeSign::Splash, FVector(P.X, P.Y, LakeFish::SurfaceZ), FMath::Min(0.35f + WeightKg * 0.4f, 1.4f), Species, WeightKg, 0, true);
-    }
-    NextSign = SimTime + Random.FRandRange(0.9f, 2.2f);
-}
-
-void ALakeFish::StartFightBurst()
-{
-    const FFishSpeciesInfo& S = LakeFish::Info(Species);
-    const FFishFightStyle& F = S.Fight;
-    FightPhase = EFightPhase::Burst;
-    const float Base = F.BurstMin > 0 ? Random.FRandRange(F.BurstMin, F.BurstMax) : S.RunBurst;
-    FightRemaining = Base * FMath::Lerp(0.8f, 1.4f, Size01) * FMath::Lerp(0.55f, 1.0f, StaminaFraction()) / FightIndividual;
-    BurstTime = FightRemaining;
-    if (!bShoreRun && !bFightJump && F.JumpChance > 0 && SimTime >= NextFightJump && StaminaFraction() > 0.4f
-        && GetActorLocation().Z > LakeFish::SurfaceZ - 35 && Random.FRand() < F.JumpChance * StaminaFraction())
-    {
-        bFightJump = true;
-        NextFightJump = SimTime + F.JumpCooldown;
-        Vel.Z = F.JumpSpeed * FMath::Lerp(0.8f, 1.0f, StaminaFraction());
-        // The launch has a real cost even when the following airborne motion is passive.
-        Stamina = FMath::Max(0.0f, Stamina - F.EffortCost * 0.4f);
-        FightSplash();
-    }
-}
-
-bool ALakeFish::ReadyToLand()
-{
-    if (State != EState::Hooked || bLifted) return false;
-    const FFishFightStyle& F = LakeFish::Info(Species).Fight;
-    const ALakeCharacter* Angler = TargetAngler.Get();
-    const FVector P = GetActorLocation();
-    const float Fresh = StaminaFraction();
-    if (!bShoreTried && !bFightJump && F.ShoreRunChance > 0 && StateTime > 3 && Fresh > 0.15f && Fresh < 0.6f
-        && Angler && FVector::Dist2D(P, Angler->GetActorLocation()) < F.ShoreDistance && LakeMap::ShoreDistance(P.X, P.Y) < 450)
-    {
-        bShoreTried = true;
-        if (Random.FRand() < F.ShoreRunChance * FightIndividual)
-        {
-            bShoreRun = true;
-            FightPulses = 1;
-            ChooseFightTarget(true);
-            StartFightBurst();
-        }
-    }
-    return !bFightJump && !bShoreRun;
-}
-
-void ALakeFish::UpdateFightMotion(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
-{
-    const FFishSpeciesInfo& S = LakeFish::Info(Species);
-    const FFishFightStyle& F = S.Fight;
-    if (!bFightAwake)
-    {
-        // A prick causes a modest swimming response; full escape bouts require a load.
-        MaxSpeed = S.CruiseSpeed * 0.65f;
-        Desired = GetActorForwardVector() * MaxSpeed;
-        BurstTime = 0;
-        return;
-    }
-    const float Fresh = StaminaFraction();
-    FightRemaining -= DeltaSeconds;
-    ReadyToLand();
-    // Given slack it is free to go where it likes to shake the hook: for the weeds or a snag, into the
-    // deep, along the bank, or even back towards the angler for more slack. It picks again now and then.
-    const bool bSlack = PendingLineForce.SizeSquared() < 15 * 15;
-    if (bSlack && Fresh > 0.12f && !bFightJump && (!bWasSlack || SimTime >= NextEscape))
-    {
-        ChooseEscapeTarget();
-        NextEscape = SimTime + Random.FRandRange(1.2f, 2.4f);
-        if (FightPhase == EFightPhase::Pause || FightPhase == EFightPhase::Gap)
-        {
-            FightPhase = EFightPhase::Pull;
-            FightRemaining = Random.FRandRange(F.PullMin, F.PullMax);
-        }
-    }
-    bWasSlack = bSlack;
-    // The moment it feels the hook it rushes off, down and away: the first run of every fish.
-    if (!bFirstRunDone)
-    {
-        bFirstRunDone = true;
-        ChooseFightTarget(true);
-        FightPulses = FMath::Max(1, F.SeriesMin);
-        StartFightBurst();
-    }
-    // Hauled up to the surface with strength left, it does not wait for its next bout: it sees the
-    // bank, bores down and away at once and thrashes — and tires itself the sooner for it.
-    if (!bFightJump && !bShoreRun && FightPhase != EFightPhase::Burst && Fresh > 0.3f && PendingLineForce.Z > 30.0f + WeightKg * 60.0f
-        && MouthLocation().Z > LakeFish::SurfaceZ - LakeFish::LengthCm(Species, WeightKg) * 0.35f)
-    {
-        ChooseFightTarget(true);
-        FightPulses = 1;
-        StartFightBurst();
-        if (SimTime >= NextSign) FightSplash();
-    }
-    if (FightRemaining <= 0 && !bFightJump)
-    {
-        if (FightPhase == EFightPhase::Burst && --FightPulses > 0)
-        {
-            FightPhase = EFightPhase::Gap;
-            FightRemaining = F.SeriesGap / FightIndividual;
-        }
-        else if (FightPhase == EFightPhase::Gap) StartFightBurst();
-        else if (FightPhase == EFightPhase::Pull || FightPhase == EFightPhase::Burst)
-        {
-            bShoreRun = false;
-            FightPhase = EFightPhase::Pause;
-            FightRemaining = Random.FRandRange(F.PauseMin, F.PauseMax) * FMath::Lerp(1.8f, 1.0f, Fresh) / FightIndividual;
-        }
-        else
-        {
-            ChooseFightTarget();
-            if (Random.FRand() < F.BurstChance * Fresh * FightIndividual)
-            {
-                FightPulses = FMath::Max(1, FMath::RoundToInt(Random.RandRange(F.SeriesMin, F.SeriesMax) * FMath::Lerp(0.4f, 1.0f, Fresh)));
-                StartFightBurst();
-            }
-            else
-            {
-                FightPhase = EFightPhase::Pull;
-                FightRemaining = Random.FRandRange(F.PullMin, F.PullMax) * FMath::Lerp(0.8f, 1.3f, Size01) / FightIndividual;
-            }
-        }
-    }
-    BurstTime = FightPhase == EFightPhase::Burst ? FMath::Max(0.0f, FightRemaining) : 0;
-    const bool bRest = FightPhase == EFightPhase::Pause || FightPhase == EFightPhase::Gap;
-    const float Pace = bRest ? F.PauseSpeed : FightPhase == EFightPhase::Burst ? 1.0f : F.PullSpeed;
-    MaxSpeed = S.BurstSpeed * Pace * FMath::Lerp(0.12f, 1.0f, Fresh) * FightIndividual;
-    Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * MaxSpeed;
-    // A hooked fish pulls against the line whatever way it meant to go: drawn up it bores down, drawn
-    // in it heads out. Its own way (along the bank, for the weeds, up to the top) only bends that.
-    if (!bFightJump && PendingLineForce.SizeSquared() > 400)
-    {
-        FVector Way = Desired.GetSafeNormal() * 0.45f - PendingLineForce.GetSafeNormal() * 0.75f;
-        // Above all it wants the depth: a fish with strength left keeps to the lower water and bores
-        // for the bottom when the line has it near the top, rather than skimming away along the
-        // surface at the line's end. Tiring, it lets itself come up.
-        const FVector Here = GetActorLocation();
-        const float Column = FMath::Max(20.0f, LakeFish::SurfaceZ - BottomZ(Here.X, Here.Y));
-        // (Spent, it no longer keeps down: it lets itself be drawn up and rolls at the top.)
-        const float Keeps = Column * FMath::Lerp(0.0f, 0.8f, FMath::SmoothStep(0.15f, 0.8f, Fresh));
-        const float Shallow = Keeps < 5.0f ? 0.0f : FMath::Clamp((Keeps - (LakeFish::SurfaceZ - (float)Here.Z)) / 50.0f, 0.0f, 1.5f);
-        Way.Z -= 1.3f * Shallow;
-        Desired = Way.GetSafeNormal() * MaxSpeed;
-    }
-    if (Effort > 0.4f && Vel.Size() > 30 && SimTime >= NextFightDisturb)
-    {
-        if (auto* Life = ALakeLife::Get(GetWorld())) Life->Disturb(GetActorLocation(), 120 + WeightKg * 100, FMath::Min(1.0f, Effort * (float)Vel.Size() / 100));
-        NextFightDisturb = SimTime + 1;
-    }
-    if (GetActorLocation().Z > LakeFish::SurfaceZ - 30 && Effort > 0.35f && SimTime >= NextSign) FightSplash();
-}
-
-void ALakeFish::MoveHooked(FVector Desired, float MaxSpeed, float DeltaSeconds)
-{
-    // On the hook the fish is its swimmer (FLakeSwimmer): six points from the mouth to the tail fin,
-    // muscles in the joints, the water, its weight and the line's pull at the mouth. Nothing here
-    // moves the fish but those: where it wants to go (Desired, from UpdateFightMotion) only decides
-    // how hard it beats its tail and which way it bends.
-    const FFishSpeciesInfo& S = LakeFish::Info(Species);
-    Desired = Desired.GetClampedToMaxSize(MaxSpeed);
-    const float BodyLength = LakeFish::LengthCm(Species, WeightKg);
-    // Moved or thrown from outside (a leap, a test, a teleport): lay the body out anew where it is.
-    if (!bSwimming || !GetActorLocation().Equals(SwimAt, 0.01f) || !Vel.Equals(SwimVel, 0.01f) || !GetActorQuat().Equals(SwimPose, 0.0001f))
-        StartSwimmer(bFightJump && Vel.SizeSquared() > 400 ? Vel.GetSafeNormal() : GetActorForwardVector());
-    const float Fresh = StaminaFraction();
-    const FVector Here = Swim.Centre();
-    Swim.Surface = LakeFish::SurfaceZ;
-    Swim.Floor = BottomZ(Here.X, Here.Y);
-    Swim.LineLength = 0;
-    // A species' strength is how fast it can beat for its length; a tired fish's muscles give way.
-    Swim.BeatScale = SwimBeatScale();
-    Swim.Strength = FMath::Square(Swim.BeatScale) * FMath::Lerp(0.3f, 1.0f, Fresh);
-    const FVector MouthNow = Swim.P[0];
-    // The head at the top or out (0 under, 1 clear): the line holds it up there.
-    const float HeadOut = bFightJump ? 0.0f : FMath::SmoothStep(-0.12f * BodyLength, 0.06f * BodyLength, (float)(MouthNow.Z - LakeFish::SurfaceZ));
-    const bool bBurst = BurstTime > 0;
-    const bool bRest = FightPhase == EFightPhase::Pause || FightPhase == EFightPhase::Gap;
-
-    const FVector Heading = Swim.Heading();
-    const float PitchNow = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(float(Heading.Z), -1.0f, 1.0f)));
-
-    float Push = 0, Steering = 0, Climb = 0;
-    Swim.WantBack = FVector::ZeroVector;
-    const FVector PullDir = Desired.GetSafeNormal();
-    if (!bFightJump && !PullDir.IsNearlyZero())
-    {
-        FVector Want = PullDir;
-        // Boring down against a line that draws it up it stands nose down, tail beating, but not
-        // straight on its head: it keeps way on, the way it was heading if it has no other. Down by
-        // the bottom it levels off; near the top it does not make for the air.
-        const float AboveBottom = (float)Here.Z - Swim.Floor;
-        const float Steepest = FMath::Lerp(-0.1f, -0.87f, FMath::SmoothStep(10.0f, 45.0f, AboveBottom));
-        const float Highest = FMath::Lerp(0.0f, 0.5f, FMath::SmoothStep(0.5f * BodyLength, 2 * BodyLength, LakeFish::SurfaceZ - (float)MouthNow.Z));
-        const float Dive = FMath::Clamp(Want.Z, Steepest, Highest);
-        FVector Level(Want.X, Want.Y, 0);
-        const float Sure = FMath::Clamp(float(Level.Size()) * 2, 0.0f, 1.0f);   // how much of a way across the water it has in mind
-        Level = Level.GetSafeNormal() * Sure + FVector(Swim.Steady.X, Swim.Steady.Y, 0).GetSafeNormal() * (1 - Sure);
-        if (!Level.Normalize()) Level = GetActorForwardVector().GetSafeNormal2D();
-        Want = Level * FMath::Sqrt(FMath::Max(0.0f, 1 - Dive * Dive)) + FVector(0, 0, Dive);
-        // It does not swim out onto the bank or into water too shallow to cover it; the line can
-        // draw it there.
-        const FVector In(LakeMap::DeeperDirection(MouthNow.X, MouthNow.Y), 0);
-        const bool bShallow = !LakeMap::IsWater(MouthNow.X, MouthNow.Y) || LakeFish::SurfaceZ - BottomZ(MouthNow.X, MouthNow.Y) < FMath::Max(10.0f, 0.3f * BodyLength);
-        if (bShallow && FVector::DotProduct(Want, In) < 0.3f) Want = (In + FVector(0, 0, -0.1f));
-        Want.Normalize();
-        // It bends to turn that way (FLakeSwimmer::SteerTo): how fast that turns it is the water's doing.
-        Swim.SteerTo(Want, DeltaSeconds, Steering, Climb);
-        // How hard it beats: as hard as it takes to go as fast as it means to, so held back by the
-        // line it does not ease off, and even resting it leans against what draws it away. In a rush
-        // it gives all it has, pulling steadily about six tenths of that force, resting less; tired, far less.
-        // (The pull grows with the square of the beat, so these are roots of the shares of force.)
-        float Most = bBurst ? 1.0f : 0.78f;
-        if (bRest && bFightAwake) Most *= FMath::Lerp(0.35f, 0.92f, Fresh);
-        Most *= FMath::Sqrt(FMath::Lerp(0.08f, 1.0f, Fresh) * FightIndividual * (1 - 0.6f * HeadOut));
-        const float Speed = (float)Desired.Size();
-        const float Along = FVector::DotProduct(Vel, PullDir);
-        const float Flat = 6.0f * BodyLength * Swim.BeatScale;   // about what a free fish reaches at full beat
-        Push = FMath::Clamp(0.9f * Speed / Flat + (Speed - Along) / (0.25f * Speed + 8), 0.0f, FMath::Min(1.0f, Most));
-    }
-    // The line's pull at the mouth, easing within this step as the mouth gives way to it.
-    Swim.MouthForce = PendingLineForce;
-    Swim.MouthSpring = PendingLineSpring;
-    Swim.MouthAt = MouthNow;
-    Swim.Advance(DeltaSeconds, Push, Steering, Climb);
-    {
-        // -SwimDebug: what the hooked fish is doing, four times a second.
-        static const bool bDebug = FParse::Param(FCommandLine::Get(), TEXT("SwimDebug"));
-        if (bDebug && FMath::Fmod(SimTime, 0.25f) < DeltaSeconds)
-            UE_LOG(LogTemp, Display, TEXT("SWIM t %.2f phase %d depth %.0f pitch %+.0f want %s head %s push %.2f steer %+.2f climb %+.2f line %s (%.0f gf, spring %.1f) vel %s beat %.1f use %.2f water %.2f stamina %.2f"),
-                StateTime, (int32)FightPhase, LakeFish::SurfaceZ - Here.Z, PitchNow, *PullDir.ToCompactString(), *Heading.ToCompactString(), Push, Steering, Climb,
-                *PendingLineForce.GetSafeNormal().ToCompactString(), PendingLineForce.Size(), PendingLineSpring, *Vel.ToCompactString(), Swim.Beat, Swim.MuscleUse, Swim.WaterShare(), Fresh);
-    }
-    if (bFightJump)
-    {
-        // A leap: the fish flies as it was thrown, its body along its flight.
-        const FVector Flight = Swim.Velocity(), Centre = Swim.Centre();
-        if (Flight.SizeSquared() > 400)
-        {
-            const FVector Dir = Flight.GetSafeNormal();
-            const float Kept = Swim.Accumulator;
-            Swim.Reset(Centre + Dir * (0.412f * BodyLength), BodyLength, WeightKg * 1000, Dir, BodyHeightShare());
-            Swim.Accumulator = Kept;
-            Swim.SetVelocity(Flight);
-        }
-        if (Centre.Z <= LakeFish::SurfaceZ - 4 && Flight.Z <= 0)
-        {
-            bFightJump = false;
-            FightSplash();
-        }
-    }
-    const float Water = Swim.WaterShare();
-    HookedWater = Water;
-    Vel = Swim.Velocity();
-    Effort = Swim.Drive;
-
-    // The hook wears loose when the line hauls against all the fish has.
-    const float Opposition = PullDir.IsNearlyZero() ? 0.0f : FMath::Max(0.0f, float(-FVector::DotProduct(PendingLineForce, PullDir)))
-        / FMath::Max(1.0f, WeightKg * S.Acceleration * S.Strength);
-    HookGrip -= DeltaSeconds * (1 - HookGrip) * 0.06f * FMath::Max(0.0f, Opposition - 0.8f);
-    if (HookGrip <= 0) { Release(6); return; }
-    // What tires it: how hard it beats (its rushes above all). Leaning against a steady pull while it
-    // rests is slower, steady work.
-    const float Work = FMath::Clamp(FMath::Pow(Push, 1.5f) * (bRest ? 0.5f : 1.0f) + (bRest || bFightJump ? 0.0f : Opposition * 0.15f), 0.0f, 1.0f);
-    const float Recover = bRest && !bFightJump ? S.Fight.Recovery * FMath::Max(0.0f, 1 - Work / 0.2f) : 0;
-    Stamina = FMath::Clamp(Stamina + DeltaSeconds * (Recover - S.Fight.EffortCost * Work), 0.0f, MaxStamina);
-    // Its head held out of the water it gulps air and is soon spent: this is how a fish is subdued.
-    if (!bFightJump && Swim.P[0].Z > LakeFish::SurfaceZ + 2) Stamina = FMath::Max(0.0f, Stamina - MaxStamina * 0.12f * DeltaSeconds);
-
-    // Keep the rendered pose aligned with the swimmer. A cosmetic roll here rotates the mesh
-    // without rotating the simulated body or its water forces.
-    SurfaceRoll = Roll = 0;
-    const float Thrash = HeadOut * FMath::Clamp(Effort * 1.6f + 0.25f * Fresh, 0.0f, 1.0f);
-    if (Thrash > 0.3f && SimTime >= NextSign)
-    {
-        FightSplash();
-        NextSign = SimTime + Random.FRandRange(0.3f, 0.75f) / FMath::Max(0.5f, Thrash);
-    }
-    Wish = Vel;
-    WishSpeedNow = Vel.Size();
-    const float YawBefore = Yaw;
-    PoseFromSwimmer(0.0f);
-    const FRotator Rotation = GetActorRotation();
-    YawRate = DeltaSeconds > 0 ? FMath::FindDeltaAngleDegrees(YawBefore, Rotation.Yaw) / DeltaSeconds : 0.0f;
-    Yaw = Rotation.Yaw;
-    Pitch = Rotation.Pitch;
-}
-
-float ALakeFish::BodyHeightShare() const
-{
-    // (The depth of the body as ImmersionAt has it: a pike is slender, a crucian deep.)
-    return Species == EFishSpecies::Pike ? 0.15f : Species == EFishSpecies::Crucian ? 0.34f : Species == EFishSpecies::Perch ? 0.27f : 0.24f;
-}
-
-float ALakeFish::SwimBeatScale() const
-{
-    // The passport's pull (acceleration times strength, about nine tenths of a body weight for a
-    // perch) is what the fish pulls steadily; in a rush, at its full beat, 1.6 times that. A swimmer
-    // of beat scale 1 pulls about 0.42 of its weight on a tight line (QuietLake.Prototype.Swimmer),
-    // and the pull grows with the square of the beat.
-    const FFishSpeciesInfo& S = LakeFish::Info(Species);
-    return FMath::Clamp(FMath::Sqrt(1.6f * S.Acceleration * S.Strength / 412.0f), 0.8f, 2.6f);
-}
-
-void ALakeFish::StartSwimmer(FVector Direction)
-{
-    const FVector Dir = Direction.GetSafeNormal(UE_SMALL_NUMBER, FVector::ForwardVector);
-    Swim.Reset(MouthLocation(), LakeFish::LengthCm(Species, WeightKg), WeightKg * 1000, Dir, BodyHeightShare());
-    const FVector Up = GetActorUpVector() - Dir * FVector::DotProduct(GetActorUpVector(), Dir);
-    if (Up.SizeSquared() > 0.01f) Swim.Back = Up.GetSafeNormal();
-    Swim.SetVelocity(Vel);
-    Swim.Surface = LakeFish::SurfaceZ;
-    bSwimming = true;
-}
-
-void ALakeFish::PoseFromSwimmer(float RollDegrees)
-{
-    // The head along the swimmer's head, its back as the swimmer has it, the mouth where it is.
-    const FVector Forward = Swim.Forward();
-    if (Forward.IsNearlyZero()) return;
-    FQuat Q = FRotationMatrix::MakeFromXZ(Forward, Swim.Back).ToQuat();
-    if (RollDegrees != 0) Q = Q * FQuat(FVector::ForwardVector, FMath::DegreesToRadians(RollDegrees));
-    SetActorLocationAndRotation(Swim.P[0] - Q.RotateVector(MouthOffset()), Q);
-    SwimAt = GetActorLocation();
-    SwimPose = GetActorQuat();
-    SwimVel = Vel;
-}
-
-void ALakeFish::SwimHeldByMouth(FVector Mouth, float TailEffort, float Steering, float Climb, float DeltaSeconds)
-{
-    // The mouth is where something else has it (the hook of the angler's rod out of the water, the
-    // server's fish on a client): a short stiff line holds the swimmer to it, and the body answers.
-    if (!bSwimming) StartSwimmer(GetActorForwardVector());
-    Swim.BeatScale = SwimBeatScale();
-    Swim.Strength = FMath::Square(Swim.BeatScale) * FMath::Lerp(0.3f, 1.0f, StaminaFraction());
-    Swim.MouthForce = FVector::ZeroVector;
-    Swim.MouthSpring = 0;
-    Swim.LineTip = Mouth;
-    Swim.LineLength = 0.05f;
-    Swim.LineStiffness = 2000 * WeightKg;
-    // (Carried far in one step, a teleport: it goes along whole.)
-    if (FVector::DistSquared(Swim.P[0], Mouth) > FMath::Square(0.5f * Swim.Length)) Swim.Shift(Mouth - Swim.P[0]);
-    Swim.Advance(DeltaSeconds, TailEffort, Steering, Climb);
-    Swim.Shift(Mouth - Swim.P[0]);
-    Swim.LineLength = 0;
 }
 
 void ALakeFish::Simulate(float DeltaSeconds)
@@ -2696,14 +2194,14 @@ void ALakeFish::Simulate(float DeltaSeconds)
         break;
     }
     case EState::Holding:
-        Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * S.CruiseSpeed * HoldSpeed;
-        MaxSpeed = FMath::Max(S.CruiseSpeed, S.CruiseSpeed * HoldSpeed);
-        bPrecise = BiteNow.Motion == EBiteMotion::Lift || BiteNow.Motion == EBiteMotion::Hold;
+        Desired = (RoamTarget - GetActorLocation()).GetSafeNormal() * S.CruiseSpeed * AtBait.HoldSpeed;
+        MaxSpeed = FMath::Max(S.CruiseSpeed, S.CruiseSpeed * AtBait.HoldSpeed);
+        bPrecise = AtBait.Step.Motion == EBiteMotion::Lift || AtBait.Step.Motion == EBiteMotion::Hold;
         break;
     case EState::Hooked:
     {
         if (!Angler) { State = EState::Roam; break; }
-        UpdateFightMotion(DeltaSeconds, Desired, MaxSpeed);
+        Fight.UpdateFightMotion(DeltaSeconds, Desired, MaxSpeed);
         break;
     }
     case EState::Flee:
@@ -2760,7 +2258,7 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
     if (Girth != LastGirth) { LastGirth = Girth; Body->SetRelativeScale3D(FVector(1, Girth, Girth)); }
 
     // The motion as this machine shows it.
-    const bool bHanging = bLifted || GFrameCounter - LastHangFrame < 3;
+    const bool bHanging = bLifted || GFrameCounter - Fight.LastHangFrame < 3;
     const FVector Here = GetActorLocation();
     const float CurrentYaw = GetActorRotation().Yaw;
     FVector ShownVel = HasAuthority() ? Vel : Smooth.Velocity;
@@ -2807,7 +2305,7 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
 
     // Tail beat: faster the faster it swims (about one beat per 0.7 body lengths travelled), harder
     // with effort; gliding, the tail barely moves. On the line: the hanging fish's thrashing.
-    float E = bHanging ? HangEffort : HasAuthority() ? Effort : NetEffort;
+    float E = bHanging ? Fight.HangEffort : HasAuthority() ? Effort : NetEffort;
     // On the hook under water it keeps working its tail even when it holds position: a fighting fish
     // never stands still, and a wooden one gives its weight away as a rag on a string.
 
@@ -2828,7 +2326,7 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
     // where it was at this moment (the material bends by sin(u - Time * Rate + Phase)).
     // (On the hook the swimmer's own stroke works the body: the material's wave only keeps a resting
     // fish from looking stiff.)
-    if (bSwimming && (bHanging || bNetHooked || State == EState::Hooked)) Amp *= 0.3f * (1 - FMath::SmoothStep(0.0f, 0.25f, Swim.Drive));
+    if (Fight.bSwimming && (bHanging || bNetHooked || State == EState::Hooked)) Amp *= 0.3f * (1 - FMath::SmoothStep(0.0f, 0.25f, Fight.Swim.Drive));
     Beat = FMath::RoundToFloat(Beat * 4) / 4;
     Amp = FMath::RoundToFloat(Amp * 400) / 400;
     if (Beat != LastBeat)
@@ -2843,7 +2341,7 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
     // On the hook the whole model, tail fin and all, bends along its swimmer: each segment's direction
     // (yaw, pitch) from the head's, in the model's own frame (it is turned round: its +X runs to the
     // tail, its +Y is the fish's left), in Custom Primitive Data 5..12.
-    const bool bSpine = bSwimming && (bHanging || bNetHooked || State == EState::Hooked);
+    const bool bSpine = Fight.bSwimming && (bHanging || bNetHooked || State == EState::Hooked);
     if (bSpine || bSpineShown)
     {
         const FQuat Q = GetActorQuat();
@@ -2852,7 +2350,7 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
             float SegYaw = 0, SegPitch = 0;
             if (bSpine)
             {
-                const FVector L = Q.UnrotateVector(Swim.SegmentDir(I));
+                const FVector L = Q.UnrotateVector(Fight.Swim.SegmentDir(I));
                 const FVector M(-L.X, -L.Y, L.Z);
                 SegYaw = FMath::Atan2((float)M.Y, (float)M.X);
                 SegPitch = FMath::Asin(FMath::Clamp((float)M.Z, -1.0f, 1.0f));
@@ -2869,7 +2367,7 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
         static const bool bFinCheck = FParse::Param(FCommandLine::Get(), TEXT("FinDebug"));
         const bool bOnHook = bNetHooked || State == EState::Hooked;
         float Paddle, Spread, Rate;
-        if (bHanging) { Paddle = 0.4f + 0.6f * FMath::Clamp(HangEffort * 1.5f, 0.0f, 1.0f); Spread = 1; Rate = 16; }
+        if (bHanging) { Paddle = 0.4f + 0.6f * FMath::Clamp(Fight.HangEffort * 1.5f, 0.0f, 1.0f); Spread = 1; Rate = 16; }
         else if (bOnHook) { Paddle = 0.4f + 0.6f * FMath::Clamp(E, 0.0f, 1.0f); Spread = 0.9f; Rate = 10; }
         else
         {
@@ -2897,7 +2395,7 @@ void ALakeFish::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
     // Out of the water on a line the angler's rod places the fish (HangOnLine).
-    const bool bHanging = bLifted || GFrameCounter - LastHangFrame < 3;
+    const bool bHanging = bLifted || GFrameCounter - Fight.LastHangFrame < 3;
     if (HasAuthority() && !bHanging)
     {
         // Fixed sub-steps keep the swimming model stable at low frame rates; far from every
@@ -2905,8 +2403,8 @@ void ALakeFish::Tick(float DeltaSeconds)
         const float StepLength = bNear ? 0.02f : 0.1f;
         const int32 Steps = FMath::Clamp(FMath::CeilToInt(DeltaSeconds / StepLength), 1, bNear ? 5 : 3);
         for (int32 I = 0; I < Steps; ++I) Simulate(DeltaSeconds / Steps);
-        PendingLineForce = FVector::ZeroVector; // consumed for every substep of this frame
-        if (State != EState::Hooked) { bNetHooked = false; bSwimming = false; }
+        Fight.PendingLineForce = FVector::ZeroVector; // consumed for every substep of this frame
+        if (State != EState::Hooked) { bNetHooked = false; Fight.bSwimming = false; }
         NetLocation = GetActorLocation();
         NetVelocity = Vel;
         NetRotation = GetActorRotation();
@@ -2929,14 +2427,14 @@ void ALakeFish::Tick(float DeltaSeconds)
         if (bNetHooked)
         {
             const FVector Mouth = MouthLocation(), Forward = GetActorForwardVector();
-            Swim.Surface = LakeFish::SurfaceZ;
-            Swim.Floor = BottomZ(Mouth.X, Mouth.Y);
-            const FVector Lies = bSwimming ? Swim.Heading() : Forward;
+            Fight.Swim.Surface = LakeFish::SurfaceZ;
+            Fight.Swim.Floor = BottomZ(Mouth.X, Mouth.Y);
+            const FVector Lies = Fight.bSwimming ? Fight.Swim.Heading() : Forward;
             const float YawErr = FMath::FindDeltaAngleDegrees(Lies.Rotation().Yaw, Forward.Rotation().Yaw);
             const float PitchErr = FMath::RadiansToDegrees(FMath::Asin(FMath::Clamp(float(Forward.Z), -1.0f, 1.0f)) - FMath::Asin(FMath::Clamp(float(Lies.Z), -1.0f, 1.0f)));
-            SwimHeldByMouth(Mouth, NetEffort, FMath::Clamp(-YawErr / 40, -1.0f, 1.0f), FMath::Clamp(PitchErr / 30, -1.0f, 1.0f), DeltaSeconds);
+            Fight.SwimHeldByMouth(Mouth, NetEffort, FMath::Clamp(-YawErr / 40, -1.0f, 1.0f), FMath::Clamp(PitchErr / 30, -1.0f, 1.0f), DeltaSeconds);
         }
-        else bSwimming = false;
+        else Fight.bSwimming = false;
     }
     if (GetNetMode() != NM_DedicatedServer) UpdateVisual(DeltaSeconds);
 }

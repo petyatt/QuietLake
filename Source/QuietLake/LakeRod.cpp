@@ -231,6 +231,12 @@ void ALakeRod::PrepareBlank(const FTransform& Hold)
         for (int32 I = 0; I <= N; ++I) BlankFloor.Add(WaterOrGround(Start + Axis * Seg * I) + BlankRadius(float(I) / N) * FMath::Sqrt(Heft));
 }
 
+namespace
+{
+    // With a fish on, the hands damp the blank's bending (ALakeRod::BendDamp), 1/s.
+    constexpr float FightBendDamp = 14;
+}
+
 void ALakeRod::StepBlank(float H, float S)
 {
     // The butt is clamped in the hands (the first two points follow them); every other point has
@@ -244,9 +250,18 @@ void ALakeRod::StepBlank(float H, float S)
     Points[0] = BlankPrev[0] = Start;
     Points[1] = BlankPrev[1] = Start + Axis * Seg;
     const float Keep = FMath::Exp(-BlankDamp * H);
+    const float KeepBend = FMath::Exp(-BendDamp * H);
+    const bool bStraightKnown = !StraightAxis.IsNearlyZero();
     for (int32 I = 2; I <= N; ++I)
     {
-        const FVector V = (Points[I] - BlankPrev[I]) * Keep;
+        FVector V = Points[I] - BlankPrev[I];
+        if (BendDamp > 0 && bStraightKnown)
+        {
+            // (How the unbent blank moved this step with the hands; only the rest is bending.)
+            const FVector Carried = (Start + Axis * (Seg * I)) - (StraightStart + StraightAxis * (Seg * I));
+            V = Carried + (V - Carried) * KeepBend;
+        }
+        V *= Keep;
         BlankPrev[I] = Points[I];
         FVector Acc(0, 0, -Gravity);
         if (I == N) Acc += TipForce * BlankW[N];
@@ -278,6 +293,8 @@ void ALakeRod::StepBlank(float H, float S)
     }
     if (BlankFloor.Num() == N + 1)
         for (int32 I = 2; I <= N; ++I) Points[I].Z = FMath::Max(Points[I].Z, BlankFloor[I]);
+    StraightStart = Start;
+    StraightAxis = Axis;
 }
 
 void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
@@ -397,6 +414,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
     const FVector2D WaveSlope = Waves ? Waves->ShownSlopeAt(FVector2D(FloatK)) : FVector2D::ZeroVector;
     for (int32 Step = 0; Step < Steps; ++Step)
     {
+        BendDamp = In.FishingState == EFishingState::Fight || In.FishingState == EFishingState::Landing ? FightBendDamp : 0.0f;
         StepBlank(H, float(Step + 1) / Steps);
         FVector& RodTip = Points.Last();
         // --- the float: weight and the buoyancy of every submerged slice, shared between K and T ---

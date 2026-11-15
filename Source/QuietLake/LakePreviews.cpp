@@ -931,11 +931,11 @@ void ALakeCharacter::RunPreviews()
                         (FishingState == EFishingState::Fight && Now - *FightStart < 2))
                         UE_LOG(LogTemp, Display, TEXT("LIVE_RIG t=%.2f state=%d fish=%d lift=%.2f elev=%.1f force=%.1f contactOld=%.3f contactNow=%.3f impulse=%.2f grip=%.3f caught=%d status=%s"),
                             Now, int32(FishingState), int32(Fish->State), RodLift, RodElevation, LoadOnFish(Fish).Size(),
-                            FVector::Dist(Fish->MouthLocation(), BaitPoint), FVector::Dist(Fish->MouthLocation(), RodVisual->HookLocation()), HookImpulse, Fish->HookGrip, CatchCount, *Status);
+                            FVector::Dist(Fish->MouthLocation(), BaitPoint), FVector::Dist(Fish->MouthLocation(), RodVisual->HookLocation()), HookImpulse, Fish->HookGripNow(), CatchCount, *Status);
                     *Previous = int32(FishingState);
                     if (CatchCount > 0)
                     {
-                        UE_LOG(LogTemp, Display, TEXT("LIVE_RIG SUCCESS caught=%d inHand=%d weight=%.2f t=%.2f grip=%.3f"), CatchCount, bFishInHand ? 1 : 0, Fish->WeightKg, Now, Fish->HookGrip);
+                        UE_LOG(LogTemp, Display, TEXT("LIVE_RIG SUCCESS caught=%d inHand=%d weight=%.2f t=%.2f grip=%.3f"), CatchCount, bFishInHand ? 1 : 0, Fish->WeightKg, Now, Fish->HookGripNow());
                         FPlatformMisc::RequestExit(false);
                     }
                 }), 0.1f, true);

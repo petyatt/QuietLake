@@ -1,17 +1,10 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "LakeSwimmer.h"
+#include "LakeFishFight.h"
 #include "LakeFish.generated.h"
 
 class ALakeCharacter;
-
-// Volume-weighted body samples, expressed relative to the hooked mouth.
-struct FFishImmersion
-{
-    float Fraction = 0;
-    FVector BuoyantMoment = FVector::ZeroVector;
-};
 
 /**
  * A species of fish: its number in the species files (Content/LiveFish/Species/*.json, "order").
@@ -104,6 +97,21 @@ struct FBiteState
     bool bTried = false;      // the last step was a try: a pause comes next
     float Felt = 0;           // what put it on guard: the float's pull, the rig moved (0..)
     bool bDone = false;       // it lets go after the current step
+};
+
+/** A fish at an angler's bait: the bite under way (LakeFish::NextBiteStep) and its coming back to it. */
+struct FFishAtBait
+{
+    FBiteStep Step;                   // what it does with the bait now
+    FBiteState Bite;                  // how the bite has gone so far
+    float StepEnd = 0;                // SimTime the step ends
+    int32 NibblesLeft = 0;
+    float HoldSpeed = 0.6f;           // swimming with the bait, fraction of the cruise speed
+    int32 Visits = 0;                 // times it came to this angler's bait in a row
+    TWeakObjectPtr<ALakeCharacter> ReturnTo;   // let go of this bait meaning to come back to it
+    int32 ReturnRig = -1;
+    /** A new bite at the bait starts over; the visits and the return stay. */
+    void NewBite() { Step = FBiteStep(); Bite = FBiteState(); StepEnd = 0; }
 };
 
 /**
@@ -611,6 +619,8 @@ class QUIETLAKE_API ALakeFish : public AActor
 {
     GENERATED_BODY()
 public:
+    /** What it is doing: living its life, at someone's bait, on the hook, or fleeing. */
+    enum class EState : uint8 { Roam, Investigate, Nibble, Holding, Hooked, Flee };
     ALakeFish();
     virtual void Tick(float DeltaSeconds) override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
@@ -654,37 +664,39 @@ public:
     /** 0..1 how afraid it is now of a predator close by (see SenseThreats). */
     float FearNow() const { return Fear; }
     /** Holding the bait: the chance a strike now sets the hook (see FBiteStep::Hook). */
-    float StrikeHookChance() const { return State == EState::Holding ? BiteNow.Hook : 1.0f; }
+    float StrikeHookChance() const { return State == EState::Holding ? AtBait.Step.Hook : 1.0f; }
     /** Seconds it has held the bait in its mouth (0 if it does not). */
     float HeldFor() const { return State == EState::Holding ? StateTime : 0.0f; }
     /** Drawn out of the water on the line (server): from now on the angler's rod carries it. */
-    void LiftOut();
-    void LowerIntoWater(FVector LineVelocity);
+    void LiftOut() { Fight.LiftOut(); }
+    void LowerIntoWater(FVector LineVelocity) { Fight.LowerIntoWater(LineVelocity); }
     bool IsLifted() const { return bLifted; }
     /** The hooked fish's body (mouth to tail fin), on every machine that shows it. */
-    const FLakeSwimmer& GetSwimmer() const { return Swim; }
+    const FLakeSwimmer& GetSwimmer() const { return Fight.Swim; }
     /** On the hook: how much of its body the water holds (1 under, 0 clear of it). */
-    float BodyInWater() const { return bLifted ? ImmersionAt(MouthLocation(), GetActorQuat()).Fraction : HookedWater; }
-    FFishImmersion ImmersionAt(FVector Mouth, FQuat Rotation) const;
-    /**
-     * Out of the water on the line: placed on every machine from the rod's simulated hook. It hangs
-     * from its mouth along the line, swings with it and thrashes; still in the water it is drawn
-     * mouth first.
-     */
-    void HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds);
+    float BodyInWater() const { return bLifted ? Fight.ImmersionAt(MouthLocation(), GetActorQuat()).Fraction : Fight.HookedWater; }
+    FFishImmersion ImmersionAt(FVector Mouth, FQuat Rotation) const { return Fight.ImmersionAt(Mouth, Rotation); }
+    /** Out of the water on the line (see FLakeFishFight::HangOnLine). */
+    void HangOnLine(FVector Mouth, FVector LineUp, float DeltaSeconds) { Fight.HangOnLine(Mouth, LineUp, DeltaSeconds); }
+    /** Its fight and its body on the hook. */
+    FLakeFishFight& GetFight() { return Fight; }
+    const FLakeFishFight& GetFight() const { return Fight; }
     bool IsHooked() const { return State == EState::Hooked; }
     /**
      * The hook is in, but the line may still be slack: the fish has not felt the pull yet and holds
      * at the bait until it does (the angler raises the rod, the line tightens).
      */
-    bool IsFightAwake() const { return bFightAwake; }
-    void WakeOnLine() { bFightAwake = true; }
+    bool IsFightAwake() const { return Fight.bFightAwake; }
+    void WakeOnLine() { Fight.bFightAwake = true; }
     bool IsHoldingBait() const { return State == EState::Holding; }
     float ContactRadius() const;
-    void SetHookGrip(float Grip) { HookGrip = FMath::Clamp(Grip, 0.2f, 1.0f); }
+    void SetHookGrip(float Grip) { Fight.HookGrip = FMath::Clamp(Grip, 0.2f, 1.0f); }
+    /** How well the hook holds now, 1 .. 0 (off); the angler's pull past what the hook bears wears it loose. */
+    float HookGripNow() const { return Fight.HookGrip; }
+    void LoosenHook(float Amount) { Fight.HookGrip -= Amount; }
     FVector MouthOffset() const;
     /** Consider a final run before landing; a leap or final run must finish first. */
-    bool ReadyToLand();
+    bool ReadyToLand() { return Fight.ReadyToLand(); }
     float StaminaFraction() const { return Stamina / FMath::Max(0.01f, MaxStamina); }
     FVector MouthLocation() const;
     FVector Velocity() const { return Vel; }
@@ -736,8 +748,49 @@ public:
     // Exposed for tests: advance the simulation by a fixed step.
     void Simulate(float DeltaSeconds);
 
+#if WITH_DEV_AUTOMATION_TESTS
+    // --- for the automated tests: the simulation's own state, read and set directly ---
+    EState& TestState() { return State; }
+    FVector& TestRoamTarget() { return RoamTarget; }
+    FVector& TestVel() { return Vel; }
+    float& TestStateTime() { return StateTime; }
+    float& TestHunger() { return Hunger; }
+    float& TestStamina() { return Stamina; }
+    float& TestMaxStamina() { return MaxStamina; }
+    TWeakObjectPtr<ALakeCharacter>& TestTargetAngler() { return TargetAngler; }
+    int32& TestTargetRig() { return TargetRig; }
+    float& TestSimTime() { return SimTime; }
+    float& TestNextMoodCheck() { return NextMoodCheck; }
+    float& TestEnergy() { return Energy; }
+    float& TestNextLook() { return NextLook; }
+    TWeakObjectPtr<ALakeFish>& TestPrey() { return Prey; }
+    EFishFood& TestFeedOn() { return FeedOn; }
+    float& TestNextFoodCheck() { return NextFoodCheck; }
+    bool& TestbAtSpot() { return bAtSpot; }
+    float& TestFear() { return Fear; }
+    float& TestNextThreatLook() { return NextThreatLook; }
+    float& TestYaw() { return Yaw; }
+    float& TestYawRate() { return YawRate; }
+    float& TestSize01() { return Size01; }
+    float& TestAgility() { return Agility; }
+    float& TestWanderSeed() { return WanderSeed; }
+    float& TestSurfaceUntil() { return SurfaceUntil; }
+    bool& TestbRooting() { return bRooting; }
+    float& TestPhaseUntil() { return PhaseUntil; }
+    FVector& TestLieFacing() { return LieFacing; }
+    float& TestLieUntil() { return LieUntil; }
+    FRandomStream& TestRandom() { return Random; }
+    FFishAtBait& TestAtBait() { return AtBait; }
+    class UStaticMeshComponent* TestBody() const { return Body; }
+    void TestDecide() { Decide(); }
+    void TestSetGoal(EFishGoal NewGoal, float Seconds) { SetGoal(NewGoal, Seconds); }
+    void TestSenseThreats(float DeltaSeconds) { SenseThreats(DeltaSeconds); }
+    bool TestAtSurfaceMoment() const { return AtSurfaceMoment(); }
+    float TestCeilingZ() const { return CeilingZ(); }
+    void TestMove(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds) { Move(DesiredVelocity, MaxSpeed, DeltaSeconds); }
+#endif
+
 private:
-    enum class EState : uint8 { Roam, Investigate, Nibble, Holding, Hooked, Flee };
     void ChooseRoamTarget(bool bLocal = false);
     void PickRoamTarget(bool bLocal);
     /** Pick what to do next from hunger, tiredness, the daily rhythm and the weather. */
@@ -774,12 +827,6 @@ private:
     void UpdateRooting(FVector& Desired, float& MaxSpeed);
     void UpdateBait(float DeltaSeconds);
     void Move(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds);
-    void ChooseFightTarget(bool bShoreRun = false);
-    void StartFightBurst();
-    void UpdateFightMotion(float DeltaSeconds, FVector& Desired, float& MaxSpeed);
-    void FightSplash();
-    /** On the hook: the fish's swimmer (FLakeSwimmer) under its own muscles, the water and the line. */
-    void MoveHooked(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds);
     void UpdateVisual(float DeltaSeconds);
     UFUNCTION() void OnRep_NetLocation();
 
@@ -794,29 +841,11 @@ private:
     UPROPERTY(Replicated) uint8 NetFeedOn = 0;   // EFishFood, for the F3 panel on clients
     UPROPERTY(Replicated) bool bLifted = false;  // out of the water on an angler's line
     UPROPERTY(Replicated) bool bNetHooked = false;  // on a hook: clients bend its body too (Swim)
-    // On the hook the fish is this body: on the server all of its motion (MoveHooked), out of the water
-    // and on clients the bending of the body behind a mouth held from outside (SwimHeldByMouth).
-    FLakeSwimmer Swim;
-    bool bSwimming = false;
+    // On the hook: the fight and the body (FLakeFishFight), on the server and on every machine that shows it.
+    FLakeFishFight Fight;
+    friend class FLakeFishFight;
     bool bSpineShown = false;   // the material is bent by the swimmer (Custom Primitive Data 5..12)
-    // Where the swimmer left the fish, to notice it being moved or thrown from outside.
-    FVector SwimAt = FVector::ZeroVector, SwimVel = FVector::ZeroVector;
-    FQuat SwimPose = FQuat::Identity;
     float LastFin[4] = { -1, -1, -1, -1 };   // the fins' paddle, spread, rate and check as last given to the material
-    /** The body's greatest height as a share of its length. */
-    float BodyHeightShare() const;
-    /** How fast this species beats its tail for its length: its strength (see FLakeSwimmer::BeatScale). */
-    float SwimBeatScale() const;
-    /** Lays the swimmer out straight behind the mouth along Direction, moving as the fish does. */
-    void StartSwimmer(FVector Direction);
-    /** Puts the fish on its swimmer: the head along the swimmer's head, the mouth where it has it. */
-    void PoseFromSwimmer(float RollDegrees);
-    /** One step of the swimmer with its mouth held at Mouth from outside. */
-    void SwimHeldByMouth(FVector Mouth, float TailEffort, float Steering, float Climb, float DeltaSeconds);
-    // Hanging on the line (every machine).
-    float HangTime = 0, HangEffort = 0;
-    float NextFightDisturb = 0, HookGrip = 1, HookedWater = 1;
-    uint64 LastHangFrame = 0;
 
     EState State = EState::Roam;
     int32 School = -1;
@@ -827,25 +856,10 @@ private:
     FVector FleeFrom;
     float StateTime = 0, FleeTime = 0, NextThink = 0, Hunger = 1, Effort = 0;
     float Stamina = 1, MaxStamina = 1, BurstTime = 0, Phase = 0;
-    int32 NibblesLeft = 0;
     TWeakObjectPtr<ALakeCharacter> TargetAngler;
     int32 TargetRig = -1;             // which of the angler's rods (ERodKind); -1: the one in his hands
     TMap<TWeakObjectPtr<ALakeCharacter>, float> IgnoreBaitUntil;
-    FVector PendingLineForce = FVector::ZeroVector;
-    float PendingLineSpring = 0;
     float SimTime = 0;
-    enum class EFightPhase : uint8 { Pull, Burst, Gap, Pause };
-    EFightPhase FightPhase = EFightPhase::Pause;
-    float FightRemaining = 0, FightIndividual = 1, NextFightJump = 0;
-    bool bFightAwake = false;         // the line has pulled: it now knows and fights
-    int32 FightPulses = 0;
-    bool bFightJump = false, bShoreTried = false, bShoreRun = false;
-    bool bFirstRunDone = false;       // the rush a fish makes the moment it feels the hook
-    float SurfaceRoll = 0;            // degrees: how far a hooked fish has turned on its side at the top
-    bool bWasSlack = false;           // the line was slack last step
-    float NextEscape = 0;             // when a fish on a slack line picks where to make off to again
-    /** On a slack line: somewhere it would rather be (weeds, snags, the deep, or back at the angler). */
-    void ChooseEscapeTarget();
     float Activity = 1;               // see LakeFish::Activity
     float NextMoodCheck = 0;
     FFishConditions Seen;             // the time and the weather, looked at with the mood
@@ -868,17 +882,10 @@ private:
     bool bAtSpot = false;             // reached its feeding or resting spot
     bool bNear = true;                // full detail
     float LastBeat = -1, LastAmp = -1;// what the material was last given
-    // The bite in progress (see LakeFish::NextBiteStep).
-    FBiteStep BiteNow;
-    FBiteState BiteState;
-    float BiteStepEnd = 0;
-    int32 BaitVisits = 0;             // times it came to this angler's bait in a row
-    TWeakObjectPtr<ALakeCharacter> ReturnTo;   // let go of this bait meaning to come back to it
-    int32 ReturnRig = -1;
+    FFishAtBait AtBait;               // at an angler's bait: the bite under way, coming back to it
     // Fear of predators.
     float Fear = 0, NextThreatLook = 0;
     TWeakObjectPtr<ALakeFish> Threat;
-    float HoldSpeed = 0.6f;           // swimming with the bait, fraction of the cruise speed
     // Body motion (server).
     float Yaw = 0, Pitch = 0, Roll = 0;   // degrees: the body's heading
     float YawRate = 0;                // deg/s, builds up and dies away
@@ -916,21 +923,6 @@ private:
     void NextBiteStep(class ALakeCharacter* Angler);
     /** How much it likes the angler's bait where it hangs, 0..1. */
     float BaitLike(const class ALakeCharacter* Angler) const;
-    friend class FLakePondLifeTest;
-    friend class FLakeFishMotionTest;
-    friend class FLakeBanksAndDepthTest;
-    friend class FLakeBitePatternsTest;
-    friend class FLakeInteractionsTest;
-    friend class FLakeFoodTest;
-    friend class FLakeGroundbaitTest;
-    friend class FLakeLearningTest;
-    friend class FLakeWaterTest;
-    friend class FLakeMixedSchoolsTest;
-    friend class FLakeFightProfilesTest;
-    friend class FLakeContactPhysicsTest;
-    friend class FLakeFishingTest;   // the strike scenarios put a fish on the bait directly
-    friend class FLakeRodCaseTest;
-    friend class FLakeThreeRodsTest;
     friend class ALakeCharacter; // live rig preview seeds approach only
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly
     /** Current conditions from the weather; false (and neutral values) without a weather actor. */

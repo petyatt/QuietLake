@@ -44,6 +44,9 @@ struct FLakeSwimmer
     FVector MouthForce = FVector::ZeroVector;
     float MouthSpring = 0;
     FVector MouthAt = FVector::ZeroVector;
+    // How far the hook sits off the mouth's axis, cm, to the fish's left (negative: right): in the
+    // corner of the jaw. Pulled from straight behind, the fish is still swung round head first.
+    float HookOffset = 0;
     // Scales the fastest beat: a stronger fish for its length beats faster and pulls harder (the
     // pull grows with the square of the beat rate).
     float BeatScale = 1;

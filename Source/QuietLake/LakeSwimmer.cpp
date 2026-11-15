@@ -218,6 +218,15 @@ void FLakeSwimmer::Step(float Effort, float Steering, float Climb)
         V[0] += Moved(0, (AlongBody + AcrossBody * (1 - Astern)) * Gravity) * H;
         V[1] += Moved(1, AcrossBody * (Astern * (1 - LineLiesBack)) * Gravity) * H;
         V[2] += Moved(2, AcrossBody * (Astern * LineLiesBack) * Gravity) * H;
+        // The hook in the corner of the jaw: the pull also turns the head, as a couple on the head's
+        // segment.
+        if (HookOffset != 0 && Pull > UE_SMALL_NUMBER)
+        {
+            const FVector Turn = FVector::CrossProduct(Side[0] * HookOffset, OnMouth);
+            const FVector Couple = FVector::CrossProduct(Turn, Axis[0]) / FMath::Max(1.0f, Segment);
+            V[0] += Moved(0, Couple * Gravity) * H;
+            V[1] -= Moved(1, Couple * Gravity) * H;
+        }
     }
 
     for (int32 I = 0; I < Count; ++I)

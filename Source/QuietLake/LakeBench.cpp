@@ -352,9 +352,9 @@ void ALakeCharacter::RunFishingBench()
                     B.NextLog = Now + 0.25f;
                     UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f rodload %4.0f inwater %.2f hands %4.0f hook-hand %3.0f line-shoulder %3.0f face %.2f hint %d go %.2f"),
                         T, (int32)FishingState, B.bHeld ? 1 : 0, Tension, LoadOnFish(Fish).Size(), RodLift, RodElevation, Out, Down,
-                        Fish->SpeedNow(), Fish->StaminaFraction(), (int32)Fish->FightPhase, Fish->IsFightAwake() ? 1 : 0, SlackTime,
+                        Fish->SpeedNow(), Fish->StaminaFraction(), (int32)Fish->GetFight().FightPhase, Fish->IsFightAwake() ? 1 : 0, SlackTime,
                         RodVisual ? (float)FVector::Dist(RodVisual->Tip(), Mouth) : -1.0f, RodVisual ? RodVisual->TipBend() : -1.0f,
-                        LandProgress, RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, Fish->HookGrip, RodLoadGf, Fish->BodyInWater(), HandLoadGf,
+                        LandProgress, RodVisual ? float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ) : 0.0f, Fish->HookGripNow(), RodLoadGf, Fish->BodyInWater(), HandLoadGf,
                         RodVisual ? (float)FVector::Dist(RodVisual->HookLocation(), HandPoint(0)) : -1.0f,
                         RodVisual ? FMath::PointDistToSegment(LeftShoulder(), RodVisual->Tip(), RodVisual->HookLocation()) : -1.0f,
                         // (Facing the pull: 1 head towards the rod tip, -1 tail towards it.)

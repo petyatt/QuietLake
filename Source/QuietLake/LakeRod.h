@@ -91,6 +91,8 @@ public:
     static FVector TetherForce(FVector Anchor, FVector Mouth, FVector RelativeVelocity, float FreeLength, float Mass, float Spring = 2600.0f / 140.0f);
     FVector PullOnFish(FVector Mouth, FVector Velocity, float Mass) const;
     FVector HookLocation() const { return HookPos; }
+    /** How much the line from the tip to what holds it (a fish's mouth) is short of tight, cm; negative when nothing holds it. */
+    float TipSlack() const { return TipReach > 0 && Points.Num() ? TipReach - float(FVector::Dist(Points.Last(), TipAnchor)) : -1.0f; }
     FVector BobberLocation() const { return BobberPos; }
     float GetBiteTilt() const { return BiteTilt; }
     /** The tip of the float's antenna (how much of it shows above the water tells the angler everything). */
@@ -182,6 +184,11 @@ private:
     FTransform HoldFrom, HoldTo;                  // the hands at the start and at the end of this frame
     FVector TipForce = FVector::ZeroVector;       // this frame's load on the tip (a fish, the cast draw), dyn
     float BlankDamp = 11;                         // 1/s
+    // Damping of the blank's bending alone (1/s), not of its swing with the hands: with a fish on, the
+    // hands holding the rod firmly take the life out of its sway (a free blank kept swaying from side
+    // to side as the hands moved it). Not while casting: the cast lives on the blank's spring.
+    float BendDamp = 0;
+    FVector StraightStart = FVector::ZeroVector, StraightAxis = FVector::ZeroVector;   // the unbent blank a step ago
     FVector StraightTip = FVector::ZeroVector, StraightTipVel = FVector::ZeroVector;   // the tip of the rod were it not bent, and its speed
     FVector TipAnchor = FVector::ZeroVector;      // the line holds the tip within TipReach of this point: the hand at the cast draw, a fish's mouth
     float TipReach = -1;
