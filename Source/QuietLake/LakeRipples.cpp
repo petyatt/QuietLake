@@ -1,4 +1,5 @@
 #include "LakeRipples.h"
+#include "LakeWaves.h"
 #include "WaterBodyActor.h"
 #include "WaterBodyComponent.h"
 #include "EngineUtils.h"
@@ -470,12 +471,15 @@ void ALakeRipples::AddFloatSources(float DeltaSeconds)
         FVector& Last = LastSeen.FindOrAdd(Rod, K);
         const FVector Move = K - Last;
         Last = K;
-        const bool bAtSurface = FMath::Min(K.Z, T.Z) < LakeFish::SurfaceZ + 2 && FMath::Max(K.Z, T.Z) > LakeFish::SurfaceZ - 15;
+        const FVector2D At = FVector2D(FMath::Lerp(K, T, 0.3f));
+        // The lake's wind waves (engine Water) lift it as well as the live ripples.
+        const float Swell = ULakeWaves::SurfaceAt(GetWorld(), At) - LakeFish::SurfaceZ;
+        const float Level = LakeFish::SurfaceZ + Swell;
+        const bool bAtSurface = FMath::Min(K.Z, T.Z) < Level + 2 && FMath::Max(K.Z, T.Z) > Level - 15;
         if (!bAtSurface) continue;
         const FVector Vel = Move / FMath::Max(DeltaSeconds, 1e-3f);
-        const FVector2D At = FVector2D(FMath::Lerp(K, T, 0.3f));
         // Only its motion against the water makes waves: riding a wave, it moves with the water.
-        const float Water = ShownHeightAt(At);
+        const float Water = ShownHeightAt(At) + Swell;
         FloatWave = FMath::Max(FloatWave, FMath::Abs(Water));
         float& LastW = LastWater.FindOrAdd(Rod, Water);
         const float WaterRise = (Water - LastW) / FMath::Max(DeltaSeconds, 1e-3f);

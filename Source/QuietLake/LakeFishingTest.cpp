@@ -9,6 +9,7 @@
 #include "LakeWater.h"
 #include "LakeWeather.h"
 #include "LakeRipples.h"
+#include "LakeWaves.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -3390,6 +3391,45 @@ bool FLakeStartLoadoutTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("The case is on the back and shut"), A->CasePlace == ECasePlace::Back && !A->bCaseOpen);
     TestTrue(TEXT("No tackle in the water, nothing is cast"), A->FishingState == EFishingState::Idle && !A->bCharging && !A->bRigInHand);
     World->DestroyWorld(false);
+    return true;
+}
+// Wind waves on the lake (engine Water Gerstner waves): their energy matches the sea state a wind
+// raises over the lake's fetch, a calm leaves no waves, and the big waves run with the wind.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeWavesTest, "QuietLake.Fishing.Waves", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeWavesTest::RunTest(const FString& Parameters)
+{
+    auto Energy = [](const TArray<FGerstnerWave>& Waves)
+    {
+        float Sum = 0;
+        for (const FGerstnerWave& W : Waves) Sum += W.Amplitude * W.Amplitude;
+        return FMath::Sqrt(8 * Sum);   // the significant height these waves make
+    };
+    TArray<FGerstnerWave> Calm, Breeze, Strong;
+    ULakeWaveGenerator::MakeWaves(0.5f, 0, Calm);
+    ULakeWaveGenerator::MakeWaves(5.0f, 90, Breeze);
+    ULakeWaveGenerator::MakeWaves(12.0f, 90, Strong);
+    float CalmMax = 0;
+    for (const FGerstnerWave& W : Calm) CalmMax = FMath::Max(CalmMax, W.Amplitude);
+    TestTrue(TEXT("A calm raises no waves"), CalmMax < 0.01f);
+    TestTrue(FString::Printf(TEXT("A breeze: waves a few cm high (%.1f cm)"), Energy(Breeze)), Energy(Breeze) > 3 && Energy(Breeze) < 9);
+    TestTrue(FString::Printf(TEXT("A strong wind on a small lake: about a hand high (%.1f cm)"), Energy(Strong)), Energy(Strong) > 9 && Energy(Strong) < 20);
+    TestTrue(TEXT("The energy is the sea state's"), FMath::IsNearlyEqual(Energy(Strong), ULakeWaveGenerator::SignificantHeight(12), 0.1f));
+    TestTrue(TEXT("Stronger wind, longer waves"), ULakeWaveGenerator::PeakWavelength(12) > ULakeWaveGenerator::PeakWavelength(5));
+    // The heights only: the same wavelengths and directions whatever the wind, so it can change
+    // without the surface jumping.
+    bool bSameSet = Breeze.Num() == Strong.Num();
+    for (int32 I = 0; bSameSet && I < Breeze.Num(); ++I)
+        bSameSet = Breeze[I].WaveLength == Strong[I].WaveLength && Breeze[I].Direction.Equals(Strong[I].Direction);
+    TestTrue(TEXT("A change of wind only changes the heights"), bSameSet);
+    // Most of the energy runs with the wind (towards +Y here); none against it.
+    float With = 0, Against = 0;
+    for (const FGerstnerWave& W : Strong)
+        (W.Direction.Y > 0 ? With : Against) += W.Amplitude * W.Amplitude;
+    TestTrue(TEXT("The waves run with the wind"), With > 20 * Against);
+    for (const FGerstnerWave& W : Strong)
+        TestTrue(TEXT("Crests stay waves (no loops)"), W.Steepness <= 0.5f && W.Amplitude * 2 * PI / W.WaveLength < 0.4f);
+    // Without a Water lake (the procedural world) the surface is the still level.
+    TestEqual(TEXT("No Water lake: flat"), ULakeWaves::SurfaceAt(nullptr, FVector2D(0, 0)), LakeFish::SurfaceZ);
     return true;
 }
 #endif

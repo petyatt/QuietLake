@@ -35,7 +35,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods, StartLoadout, CastHold);
+Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods, StartLoadout, CastHold, Waves);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
@@ -65,6 +65,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
 | `-RodPreview` | удилище: изгиб кончика при забросе лёгким, средним и тяжёлым, при вываживании | `LakePreviews.cpp` |
 | `-LeaderPreview` | поводок крупным планом: оснастка в руке, замах, полёт, приводнение, лежащая снасть, подъём с остановкой (ЛКМ отпущена и снова зажата), вынимание; лог `QUIET_LAKE_LEADER` (`-Depth=`) | `LakePreviews.cpp` |
 | `-RetrievePreview` | вынимание снасти: удилище вверх, снасть подлетает, левая рука берёт грузило — сбоку, из-за плеча, от первого лица с остановкой; `-LongCast` — дальний заброс; лог `QUIET_LAKE_RETRIEVE` | `LakePreviews.cpp` |
+| `-WavePreview` | волны от ветра у лагеря: заброс, затем штиль, бриз и сильный ветер по ~26 с — поплавок у самой воды `Saved/Waves_<ветер>_Float.png`, озеро `Waves_<ветер>_Lake.png`; лог `QUIET_LAKE_WAVES_FLOAT` (поверхность и поплавок 4 раза в секунду), `QUIET_LAKE_WAVES` | `LakePreviews.cpp`, `LakeWaves.cpp` |
 | `-LinePreview` | боковой ветер у лагеря сверху: парус лески, снос поплавка, оснастка на дне стоит | `LakePreviews.cpp` |
 | `-GroundbaitPreview` | три шара прикормки у лагеря (полёт, круги), 4 минуты замера: рыба у прикормки и у такого же места без неё, панель F3; лог `QUIET_LAKE_GROUNDBAIT` | `LakePreviews.cpp` |
 | `-LifePreview` | знаки на воде, малёк, панель F3, время кадра | `LakeLife.cpp` |
@@ -113,6 +114,7 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   Здесь же общие перечисления, включая `EFishingState`.
 - `LakeFood.h/.cpp` — естественный корм пруда: планктон, насекомые, мотыль, растения (`FLakeFoodField`: что где есть, выедание и отрастание; глубина планктона по времени суток); рыба выбирает корм по рациону паспорта (`diet`).
 - `LakeWater.h/.cpp` — вода по глубине: расслоение и скачок температуры, кислород (застойное дно, трава ночью), где рыба может жить (`oxygenMin` в паспорте).
+- `LakeWaves.h/.cpp` — волны от ветра на озере Water: `ULakeWaveGenerator` (постоянный набор волн Гёрстнера, от ветра меняются только высоты) и `ULakeWaves` (подсистема мира: волны в такт погоде на сервере и клиентах, серверное время волн; `SurfaceAt` — высота воды в точке для поплавка, лески и рыбы на крючке).
 - `LakeRipples.h/.cpp` — живые волны у игрока: волновое уравнение на сетке вокруг камеры (`FLakeRippleSim`), источники — рыба у поверхности, поплавок, дождь (`ALakeRipples`), высоты уходят в материал воды текстурой.
 - `LakeLife.h/.cpp` — «Live Fish»: стаи, малёк, хищники, знаки на воде, испуг от заброса и шагов (`Disturb`), замеры плавания, панель F3.
 - `LakeMap.h/.cpp` — форма озера (SDF), глубины, рельеф дна (ямы, широкие поднятия и впадины, мягкий шум — без ступенек), места рыбалки, зоны; разметка деревни `Village()` и её мостовых `VillagePaved()`.

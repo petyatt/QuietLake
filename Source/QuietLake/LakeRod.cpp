@@ -1,4 +1,5 @@
 #include "LakeRod.h"
+#include "LakeWaves.h"
 #include "LakeRipples.h"
 #include "LakeGame.h"
 #include "LakeMap.h"
@@ -411,7 +412,12 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
     }
     const ALakeRipples* Waves = Ripples.Get();
     const float Wave = Waves ? Waves->ShownHeightAt(FVector2D(FloatK)) : FMath::Sin(Time * 2.1f) * 0.3f;
-    const FVector2D WaveSlope = Waves ? Waves->ShownSlopeAt(FVector2D(FloatK)) : FVector2D::ZeroVector;
+    const FVector2D RippleSlope = Waves ? Waves->ShownSlopeAt(FVector2D(FloatK)) : FVector2D::ZeroVector;
+    // On top of them the lake's wind waves (engine Water, the same ones that are drawn): they lift and
+    // drop the float and tilt it. Level: the water's height around the float, rig and leader.
+    FVector SwellNormal;
+    const float Level = ULakeWaves::SurfaceAt(GetWorld(), FVector2D(FloatK), &SwellNormal);
+    const FVector2D WaveSlope = RippleSlope + FVector2D(-SwellNormal.X, -SwellNormal.Y) / FMath::Max((float)SwellNormal.Z, 0.3f);
     for (int32 Step = 0; Step < Steps; ++Step)
     {
         BendDamp = In.FishingState == EFishingState::Fight || In.FishingState == EFishingState::Landing ? FightBendDamp : 0.0f;
@@ -420,7 +426,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         // --- the float: weight and the buoyancy of every submerged slice, shared between K and T ---
         const FVector Axis = (FloatT - FloatK).GetSafeNormal();
         const bool bOverWater = ALakeEnvironment::IsWater(FloatK);
-        const float Surface = LakeFish::SurfaceZ + Wave;
+        const float Surface = Level + Wave;
         float LiftK = 0, LiftT = 0, Wet = 0;
         if (bOverWater)
             for (const FFloatSlice& Slice : Slices)
@@ -467,7 +473,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             FloatT += Current * (1 - FloatDamp) * H;
         }
         // --- the shot and the hook: lead sinks steadily (water drag), the bait follows a fish ---
-        const bool bShotWet = ALakeEnvironment::IsWater(ShotPos) && ShotPos.Z < LakeFish::SurfaceZ;
+        const bool bShotWet = ALakeEnvironment::IsWater(ShotPos) && ShotPos.Z < Level;
         if (bShotHeld)
         {
             ShotPrev = ShotPos;
@@ -503,7 +509,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         }
         else
         {
-            const bool bHookWet = ALakeEnvironment::IsWater(HookPos) && HookPos.Z < LakeFish::SurfaceZ;
+            const bool bHookWet = ALakeEnvironment::IsWater(HookPos) && HookPos.Z < Level;
             // Hanging from the held shot the hook settles quickly instead of swinging.
             Integrate(HookPos, HookPrev, FMath::Pow(bHookWet ? 0.0002f : bShotHeld ? 0.002f : 0.8f, H), FVector(0, 0, -Gravity * (bHookWet ? 0.5f : 1.0f)));
         }
@@ -518,7 +524,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             FVector& P = MainSim.P[I];
             FVector& Prev = MainSim.Prev[I];
             FVector V = (P - Prev) / H;
-            if (ALakeEnvironment::IsWater(P) && P.Z <= LakeFish::SurfaceZ + 0.5f)
+            if (ALakeEnvironment::IsWater(P) && P.Z <= ULakeWaves::SurfaceAt(GetWorld(), FVector2D(P)) + 0.5f)
                 V = SurfaceDrift + (V - SurfaceDrift) * FMath::Exp(-30.0f * H);
             else
             {
@@ -543,7 +549,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
                 FVector& P = L->P[I];
                 FVector& Prev = L->Prev[I];
                 FVector V = (P - Prev) / H;
-                if (ALakeEnvironment::IsWater(P) && P.Z < LakeFish::SurfaceZ)
+                if (ALakeEnvironment::IsWater(P) && P.Z < Level)
                     V = V * FMath::Exp(-25.0f * H) + FVector(0, 0, -Gravity * 0.12f * H);
                 else
                 {
@@ -600,7 +606,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         for (int32 I = 1; I < Links; ++I)
         {
             FVector& P = MainSim.P[I];
-            const float Floor = ALakeEnvironment::IsWater(P) ? LakeFish::SurfaceZ + 0.2f : ALakeEnvironment::GroundHeight(P.X, P.Y) + 0.3f;
+            const float Floor = ALakeEnvironment::IsWater(P) ? ULakeWaves::SurfaceAt(GetWorld(), FVector2D(P)) + 0.2f : ALakeEnvironment::GroundHeight(P.X, P.Y) + 0.3f;
             if (P.Z < Floor)
             {
                 P.Z = Floor;
@@ -667,7 +673,7 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
     HookVel = (HookPos - HookPrev) / H;
     BobberPrev = BobberPos;
     BiteTilt = FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp((FloatT - FloatK).GetSafeNormal().Z, -1.0f, 1.0f)));
-    bBobberInWater = ALakeEnvironment::IsWater(BobberPos) && BobberPos.Z < LakeFish::SurfaceZ + 3;
+    bBobberInWater = ALakeEnvironment::IsWater(BobberPos) && BobberPos.Z < Level + 3;
 }
 
 void ALakeRod::Layout(const FRodInput& In)
@@ -772,7 +778,7 @@ float ALakeRod::LineBelly(int32* OutOnWater) const
     {
         const FVector2D D = FVector2D(P) - A;
         Most = FMath::Max(Most, FMath::Abs(D.X * Dir.Y - D.Y * Dir.X));
-        if (ALakeEnvironment::IsWater(P) && P.Z <= LakeFish::SurfaceZ + 0.6f) ++OnWater;
+        if (ALakeEnvironment::IsWater(P) && P.Z <= ULakeWaves::SurfaceAt(GetWorld(), FVector2D(P)) + 0.6f) ++OnWater;
     }
     if (OutOnWater) *OutOnWater = OnWater;
     return Most;
@@ -780,7 +786,7 @@ float ALakeRod::LineBelly(int32* OutOnWater) const
 
 bool ALakeRod::FloatDown() const
 {
-    return ALakeEnvironment::IsWater(FloatK) ? FloatK.Z <= LakeFish::SurfaceZ + 1.0f : FloatK.Z <= ALakeEnvironment::GroundHeight(FloatK.X, FloatK.Y) + 2.0f;
+    return ALakeEnvironment::IsWater(FloatK) ? FloatK.Z <= ULakeWaves::SurfaceAt(GetWorld(), FVector2D(FloatK)) + 1.0f : FloatK.Z <= ALakeEnvironment::GroundHeight(FloatK.X, FloatK.Y) + 2.0f;
 }
 
 const ALakeRod::FCastTuning& ALakeRod::CastTuning()
