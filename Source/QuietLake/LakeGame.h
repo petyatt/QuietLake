@@ -219,13 +219,22 @@ public:
     // tip turns the rod about them, as a pull square to the rod on its whole lever (HandLoad). A fish
     // hanging under a rod raised upright pulls almost along it and weighs little, as far as the blank
     // does not bow out over the water; one pulling out across a low rod weighs it all.
-    static constexpr float HandPullForce = 360.0f;     // tip-equivalent effort: heavier loads slow a held lift, without stopping it
+    static constexpr float HandPullForce = 360.0f;     // tip-equivalent effort the hands keep up: a harder pull drags the rod down
     static constexpr float HandHoldForce = 160.0f;     // what they hold against once LMB is let go
-    // Getting a fish out of the water the angler braces the butt and heaves with both hands, briefly
-    // much harder than the steady pull of the fight: from as the fish's body leaves the water.
-    static constexpr float HandHeaveForce = 450.0f;
-    float HandStrain = 0;   // 0 the steady pull, 1 the heave (how far the fish's body is out of the water)
-    float HandLiftLimit() const { return FMath::Lerp(HandPullForce, HandHeaveForce, HandStrain); }
+    // Getting a fish out of the water the angler braces the butt and heaves with both hands, much
+    // harder than the steady pull of the fight (about 5.5 kg m on the hands), but only for a few
+    // seconds: a fish they cannot heave out in that time is led to the shallows instead.
+    static constexpr float HandHeaveForce = 1000.0f;
+    static constexpr float HeaveSeconds = 3.0f;          // a full heave lasts this long
+    static constexpr float HeaveRecoverSeconds = 6.0f;   // and the arms are fresh again after this under a light load
+    float HandStrain = 0;     // 0 the steady pull, 1 the heave (how far the fish's body is out of the water)
+    float HeaveReserve = 1;   // what is left of the arms' heave (server only)
+    float HandLiftLimit() const
+    {
+        // Spent on a fish out of the water, the arms can only hold the rod, not keep it up.
+        const float Steady = FMath::Lerp(HandPullForce, HandHoldForce, HandStrain * (1 - HeaveReserve));
+        return FMath::Lerp(Steady, HandHeaveForce, HandStrain * HeaveReserve);
+    }
     static constexpr float RodLiftDegrees = 55.0f;     // a fish dragging the rod down below the aim: degrees per part
     static constexpr float RodTopElevation = 86.0f;    // the rod raised all the way, almost upright
     /**
@@ -553,6 +562,9 @@ private:
     double NextActionTime = 0;
     float FightTime = 0;
     int32 FightHint = -1;
+    bool bLeadAshore = false;   // a tired fish too heavy to heave out is being led to the shallows
+    float HeaveTime = 0;        // how long a tired fish has been held at the top without coming out
+    FVector BenchWalk = FVector::ZeroVector;   // -FishingBench: where the scripted angler walks (applied every frame)
     /** Seconds of slack line while the fish is awake: too long and it throws the hook. */
     float SlackTime = 0;
     FVector BaitPoint = FVector::ZeroVector;

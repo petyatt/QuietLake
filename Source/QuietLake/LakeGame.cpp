@@ -768,6 +768,7 @@ void ALakeCharacter::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
     if (bFlyCamera) UpdateFlyCamera(DeltaSeconds);
+    if (!BenchWalk.IsNearlyZero()) AddMovementInput(BenchWalk.GetSafeNormal(), FMath::Min(1.0f, (float)BenchWalk.Size()));
     {
         const float SimDt = FMath::Min(DeltaSeconds, 0.1f);
         CastClock = bCharging ? CastClock + SimDt : 0.0f;
@@ -1454,20 +1455,28 @@ void ALakeCharacter::ConstrainFloat()
 }
 void ALakeCharacter::UpdateRodHands(float DeltaSeconds, float Force)
 {
-    // Held LMB keeps hauling, slowly under a heavy load: the tackle's strength, not a hand-force
-    // ceiling, decides whether the fish comes out or something breaks. Let go to lower the rod and
-    // give to the load. Force is the line's moment on the hands, expressed at the rod tip.
+    // LMB lifts the rod: fast on a slack line, slower the heavier the load, and not at all against
+    // what the hands can pull; a harder pull drags the rod down however it is held (stiffly while
+    // hauling, so a run against held LMB loads the line hard). LMB let go, the rod is eased down to
+    // the aim and yields readily to anything above HandHoldForce. Dragged all the way down the rod
+    // lies along the line: nothing gives any more but the blank. (Force is what turns the rod in the
+    // hands, HandLoad: raised upright over a fish hanging below, the rod is light.)
     const FRotator View = IsLocallyControlled() && GetController() ? GetControlRotation() : GetBaseAimRotation();
     const float Aim = FMath::Clamp(RodBase() + FRotator::NormalizeAxis(View.Pitch) + SwingPitch, RodLowestAngle, RodHighestAngle);
     const float Lowest = FMath::Min(0.0f, (RodLowestAngle - Aim) / RodLiftDegrees);
     const bool bLift = bReeling && ServerNow() >= YieldUntil;
+    // Heaving beyond the steady pull spends the arms, the faster the nearer their utmost; under a
+    // light load they recover.
+    if (bLift && Force > HandPullForce)
+        HeaveReserve = FMath::Max(0.0f, HeaveReserve - FMath::Min(1.0f, (Force - HandPullForce) / (HandHeaveForce - HandPullForce)) * DeltaSeconds / HeaveSeconds);
+    else HeaveReserve = FMath::Min(1.0f, HeaveReserve + DeltaSeconds / HeaveRecoverSeconds);
     const float Over = Force / (bLift ? HandLiftLimit() : HandHoldForce) - 1;
-    if (bLift) RodLift += RodLiftSpeed / FMath::Max(20.0f, RodTopElevation - Aim) / RodHeft() * FMath::Clamp(-Over, 0.15f, 1.0f) * DeltaSeconds;
-    else if (Over > 0) RodLift -= 3.0f * Over * DeltaSeconds;
+    if (Over > 0) RodLift -= (bLift ? 0.45f : 3.0f) * Over * DeltaSeconds;
+    else if (bLift) RodLift += RodLiftSpeed / FMath::Max(20.0f, RodTopElevation - Aim) / RodHeft() * FMath::Min(1.0f, -Over) * DeltaSeconds;
     else if (RodLift > 0) RodLift = FMath::Max(0.0f, RodLift - 0.5f * DeltaSeconds);
     else RodLift = FMath::Min(0.0f, RodLift + 0.6f * FMath::Min(1.0f, -Over * 2.0f) * DeltaSeconds);
     RodLift = FMath::Clamp(RodLift, Lowest, FishingState == EFishingState::Landing && !bFishInHand ? RodDrawMax : 1.0f);
-    bRodLaidFlat = !bLift && RodLift <= Lowest + 0.03f && Lowest < -0.05f && Over > 0;
+    bRodLaidFlat = RodLift <= Lowest + 0.03f && Lowest < -0.05f && Over > 0;
 }
 void ALakeCharacter::UpdateFight(float DeltaSeconds)
 {
@@ -1485,8 +1494,9 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     // (LMB) or stepping back. The rod's bend and the give of the arms are the shock absorber; lowering
     // the rod (release LMB) moves the tip towards the fish and eases the pull.
     const FLakeTackle Gear = Tackle();
-    // (The angler heaves as the fish's body comes out of the water.)
-    HandStrain = 1 - FMath::SmoothStep(0.3f, 0.85f, Fish->BodyInWater());
+    // (The angler heaves as the fish's body comes out of the water — a fish that has given up: a
+    // fresh one thrashing at the top jerks the rod about and bores down again, there is no heaving it.)
+    HandStrain = (1 - FMath::SmoothStep(0.3f, 0.85f, Fish->BodyInWater())) * (1 - FMath::SmoothStep(0.3f, 0.55f, Fish->StaminaFraction()));
     UpdateRodHands(DeltaSeconds, HandLoadGf);
     UpdateRodPose(DeltaSeconds);
     const FVector Tip = RodVisual ? RodVisual->Tip() : RodTip();
@@ -1528,8 +1538,18 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     // takes it in the hand if it is at his feet, or has to step over to it.
     const bool bBeached = !LakeMap::IsWater(Mouth.X, Mouth.Y) || LakeFish::SurfaceZ - ALakeFish::BottomZ(Mouth.X, Mouth.Y) < 0.25f * Length;
     const bool bAtFeet = bBeached && FVector::Dist2D(Mouth, GetActorLocation()) < 70;
-    // A heavy haul is slow, but is never blocked by a missing landing net.
-    const bool bTooHeavy = bTired && bReeling && !bClear && Fish->BodyInWater() < 0.8f && HandLoadGf > HandLiftLimit() * 0.9f;
+    // Tired at the top but too heavy to heave out (or the arms are spent on it): it is led to the
+    // shallows instead, the rod let down (under an upright rod the hands would hold it up out of
+    // the water by the line and hook alone), the angler stepping back from the water.
+    // (Held at the top a few seconds and still not out, more than the utmost heave at once, or a fish
+    // heavier than the hook holds: swung out, its weight would tear the hook or part the line.)
+    // Once begun, the leading goes on until the fish lies in the shallows or has its strength back.
+    const bool bAtTop = bTired && !bClear && Mouth.Z > LakeFish::SurfaceZ - Length * 0.3f;
+    HeaveTime = bAtTop && bReeling ? HeaveTime + DeltaSeconds : FMath::Max(0.0f, HeaveTime - DeltaSeconds);
+    if (!bTired || bBeached || bClear) bLeadAshore = false;
+    else if (bAtTop && (HeaveTime > HeaveSeconds + 2 || (HandLoadGf > 0.9f * HandHeaveForce && HeaveTime > 0.5f) || Fish->WeightKg * 1000 > Gear.HookSafe))
+        bLeadAshore = true;
+    const bool bTooHeavy = bLeadAshore;
     // A wakeful fish throws a hook that hangs on a slack line: the fresher it is, the sooner. Resting
     // the rod (releasing LMB) is safe only when the fish is already tired.
     // (Slack is a line with no load at all: a small fish hanging quietly on a taut line is not slack.)
@@ -1547,7 +1567,7 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
     const float ThrowRate = (0.08f + 0.45f * Fish->StaminaFraction()) * 5.0f * Loose * Working;
     const bool bThrown = bSlackNow && SlackTime > 0.5f && FMath::FRand() < ThrowRate * DeltaSeconds;
     // A short hint as the fight goes: the fish runs, holds, is tiring or can be lifted out.
-    const int32 Hint = !bAwake ? 4 : bRodLaidFlat ? 6 : Tension > 0.85f ? 5 : Force > Gear.HookSafe ? 1 : SlackTime > 0.7f ? 8 : bBeached ? 9 : bTooHeavy ? 10 : bReady ? 3
+    const int32 Hint = !bAwake ? 4 : bRodLaidFlat ? 6 : Tension > 0.85f ? 5 : Force > Gear.HookSafe ? 1 : bBeached ? 9 : bTooHeavy ? 10 : SlackTime > 0.7f ? 8 : bReady ? 3
         : bTired ? 2 : RodLift < 0.3f && HandLoadGf > HandPullForce ? 7 : 0;
     if (Hint != FightHint)
     {
@@ -1559,7 +1579,7 @@ void ALakeCharacter::UpdateFight(float DeltaSeconds)
                : Hint == 7 ? TEXT("Рыба сильно тянет. Держите ЛКМ для подъёма, отпускайте при опасном натяжении.")
                : Hint == 8 ? TEXT("Леска провисла — рыба уходит и может сбросить крючок! Держите ЛКМ, выберите слабину.")
                : Hint == 9 ? TEXT("Рыба на мели у берега. Подойдите к ней — возьмёте рукой.")
-               : Hint == 10 ? TEXT("Рыба тяжёлая. Держите ЛКМ — продолжите подъём. Следите за натяжением: при перегрузе порвётся леска или сломается удилище. Отпустите ЛКМ, чтобы ослабить тягу.")
+               : Hint == 10 ? TEXT("Рыбу не поднять. Отпустите ЛКМ — удилище опустится — и отходите от воды или вдоль берега к мели: рыба на боку пойдёт за вами, на мели возьмёте рукой.")
                : Hint == 2 ? TEXT("Рыба устала. Подводите её к себе, к поверхности.")
                : Hint == 3 ? (Fish->WeightKg * 1000 > Gear.HookSafe ? TEXT("Рыба у поверхности. Она тяжелее, чем держит крючок: поднимая её из воды, держите удилище вертикально и не тяните резко.")
                                                                     : TEXT("Рыба у поверхности. Держите ЛКМ — удилище встанет вертикально, и рыба выйдет из воды."))
@@ -1617,7 +1637,7 @@ void ALakeCharacter::UpdateLiftedFish(float DeltaSeconds)
     LineLoadGf = RodVisual ? LineLoad(Fish) : Fish->WeightKg * 1000;
     RodLoadGf = LineLoadGf * (float)FVector::CrossProduct(RodHold().GetUnitAxis(EAxis::X), (Hook - RodTip()).GetSafeNormal()).Size();
     HandLoadGf = HandLoad(Hook, LineLoadGf);
-    HandStrain = 1;
+    HandStrain = 1 - FMath::SmoothStep(0.3f, 0.55f, Fish->StaminaFraction());   // (as in UpdateFight: only a fish that has given up is heaved)
     Tension = FMath::Clamp(FMath::Max(LineLoadGf / Gear.LineBreak, RodLoadGf / Gear.RodBreak), 0.0f, 1.0f);
     bRodStrained = RodLoadGf / Gear.RodBreak > LineLoadGf / Gear.LineBreak;
     UpdateRodHands(DeltaSeconds, HandLoadGf);
@@ -1663,6 +1683,24 @@ void ALakeCharacter::UpdateLanding()
         RodLift = FMath::Min(RodLift, 1.0f);
         ForceNetUpdate();
         return;
+    }
+    // Drawn out onto the bank it lies on the ground: the angler walks over and takes it.
+    if (RodVisual && !ALakeEnvironment::IsWater(RodVisual->HookLocation()))
+    {
+        const FVector Hook = RodVisual->HookLocation();
+        const bool bOnGround = Hook.Z < ALakeEnvironment::GroundHeight(Hook.X, Hook.Y) + HangLength * 0.8f + 8;
+        if (bOnGround && FVector::Dist2D(Hook, GetActorLocation()) < 90)
+        {
+            TakeInHand(HookedFish.Get());
+            Status = CatchMessage + TEXT(" Взяли рукой на берегу.");
+            return;
+        }
+        if (bOnGround && FightHint != 9)
+        {
+            FightHint = 9;
+            Status = TEXT("Рыба на берегу. Подойдите к ней — возьмёте рукой.");
+        }
+        else if (!bOnGround && FightHint == 9) FightHint = -1;
     }
     // A catch requires actual reach. Waiting with a raised rod cannot pull a distant
     // fish into the hand: move the pole or step closer until it swings within reach.
@@ -1864,6 +1902,9 @@ void ALakeCharacter::ResolveHook(float DeltaSeconds)
     FightTime = 0;
     FightHint = -1;
     SlackTime = 0;
+    HeaveReserve = 1;
+    bLeadAshore = false;
+    HeaveTime = 0;
     Status = bSelf ? TEXT("Рыба засеклась сама! Держите ЛКМ — удилище поднимается и тянет рыбу.")
                    : TEXT("Засекли! Держите ЛКМ — удилище поднимается и тянет рыбу. Можно отходить от воды.");
     ForceNetUpdate();

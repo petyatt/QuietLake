@@ -16,15 +16,31 @@ bool FLakeHeavyLiftInputTest::RunTest(const FString& Parameters)
         ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>();
         Fisher->RodKind = Kind;
         Fisher->FishingState = EFishingState::Fight;
-        Fisher->RodLift = 0.2f;
         Fisher->bReeling = true;
-        Fisher->HandStrain = 1;
-        for (int32 I = 0; I < 60; ++I) Fisher->UpdateRodHands(1 / 60.0f, 1500);
+        auto Hold = [&](float Seconds, float Load) { for (int32 I = 0; I < FMath::RoundToInt(Seconds * 60); ++I) Fisher->UpdateRodHands(1 / 60.0f, Load); };
+        // A fish in the water pulling harder than the hands drags the rod down, LMB held or not.
+        Fisher->RodLift = 0.5f; Fisher->HandStrain = 0;
+        Hold(1, 1500);
+        TestTrue(TEXT("A pull beyond the hands drags the held rod down"), Fisher->RodLift < 0.5f);
+        // A light load is lifted.
+        Fisher->RodLift = 0.2f;
+        Hold(0.5f, 100);
+        TestTrue(TEXT("A light load is lifted"), Fisher->RodLift > 0.2f);
+        // Heaving a fish out: the hands manage a load beyond their steady pull, but only briefly.
+        Fisher->RodLift = 0.3f; Fisher->HandStrain = 1; Fisher->HeaveReserve = 1;
+        Hold(0.5f, 800);
+        const float Raised = Fisher->RodLift;
+        TestTrue(TEXT("A heave lifts more than the steady pull"), Raised > 0.3f);
+        Hold(4.5f, 800);
+        TestTrue(TEXT("The heave is spent after a few seconds"), Fisher->HeaveReserve < 0.1f);
+        TestTrue(TEXT("Spent arms let the rod down"), Fisher->RodLift < Raised - 0.1f);
+        Hold(7, 100);
+        TestTrue(TEXT("The arms recover under a light load"), Fisher->HeaveReserve > 0.9f);
+        // Let go, the rod gives to the load.
         const float Held = Fisher->RodLift;
-        TestTrue(TEXT("Held input can keep raising a heavy load below tackle strength"), Held > 0.25f);
         Fisher->bReeling = false;
         Fisher->UpdateRodHands(0.1f, 1500);
-        TestTrue(TEXT("Releasing gives to the load instead of continuing the haul"), Fisher->RodLift < Held);
+        TestTrue(TEXT("Releasing gives to the load"), Fisher->RodLift < Held);
     }
     World->DestroyWorld(false);
     return true;
@@ -38,7 +54,7 @@ bool FLakeHeavyLandingTest::RunTest(const FString& Parameters)
     const FVector2D Bank = LakeMap::StartSpot(&Facing);
     const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
     for (ERodKind Kind : {ERodKind::Light, ERodKind::Medium, ERodKind::Heavy})
-    for (float Weight : {1.2f, 4.0f})
+    for (float Weight : {0.8f, 1.0f, 1.2f, 4.0f})
     {
         ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Bank, ALakeEnvironment::GroundHeight(Bank.X, Bank.Y) + 95), FRotator(0, Yaw, 0));
         Fisher->Rods[int32(ERodKind::Medium)].Place = ERodPlace::Case;
@@ -80,15 +96,16 @@ bool FLakeHeavyLandingTest::RunTest(const FString& Parameters)
             if (Fish->IsHooked() && !Fish->IsLifted()) Fish->Simulate(1 / 60.0f);
         }
         AddInfo(FString::Printf(TEXT("Rod %d, heavy %.1f kg: lifted=%d caught=%d state=%d peak=%.0f lift=%.2f water=%.2f status=%s"), int32(Kind), Weight, Lifted, Fisher->CatchCount, int32(Fisher->FishingState), Peak, Fisher->RodLift, Fish->BodyInWater(), *Fisher->Status));
-        if (Weight < 2)
+        if (Weight < 0.9f)
         {
-            TestTrue(TEXT("A tired heavy fish within tackle strength can be lifted"), Lifted);
-            TestEqual(TEXT("The lifted heavy fish reaches the hand instead of stalling again"), Fisher->CatchCount, 1);
+            TestTrue(TEXT("A tired fish the arms can heave is lifted out"), Lifted);
+            TestEqual(TEXT("The heaved fish reaches the hand"), Fisher->CatchCount, 1);
         }
-        else
+        else if (Weight > 2)
         {
-            TestTrue(TEXT("Insisting on an overweight fish ends in tackle failure, not a permanent stall"), Fisher->FishingState == EFishingState::Idle && (Fisher->Status.Contains(TEXT("Леска оборвалась")) || Fisher->Status.Contains(TEXT("Удилище не выдержало"))));
-            TestEqual(TEXT("A broken rig awards no catch"), Fisher->CatchCount, 0);
+            TestFalse(TEXT("Held LMB does not winch out a fish beyond the arms"), Lifted);
+            TestTrue(TEXT("Nor does it break the tackle on a tired fish"), Fisher->FishingState == EFishingState::Fight && Fish->IsHooked());
+            TestEqual(TEXT("The hint says to lead it to the shallows"), Fisher->FightHint, 10);
         }
     }
     // Immediately below/above each rig's actual strength, with the rod across the line.
