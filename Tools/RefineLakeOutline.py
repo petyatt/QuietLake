@@ -9,7 +9,8 @@ vegetation and everything else in the level stay as they are.
 
     UnrealEditor.exe C:/Fish/QuietLake.uproject -ExecCmds="py C:/Fish/Tools/RefineLakeOutline.py"
 
-Settings (environment): QUIETLAKE_LAKE_SPACING (cm, default 150), QUIETLAKE_LAKE_DEPTH (cm,
+Settings (environment): QUIETLAKE_LAKE_OUTWARD (cm into the land, default 150),
+QUIETLAKE_WATER_INFO (water info texture size, default 2048), QUIETLAKE_LAKE_SPACING (cm, default 150), QUIETLAKE_LAKE_DEPTH (cm,
 default 600), QUIETLAKE_LAKE_RAMP (cm, default 6000). The full rebuild BuildLakeLevel.py uses the
 same spacing setting.
 """
@@ -19,6 +20,12 @@ import unreal
 
 MAP = '/Game/Maps/Lake'
 SPACING = float(os.environ.get('QUIETLAKE_LAKE_SPACING', '150'))
+# How far the lake's spline runs inside the land (cm): the engine pushes the water under the ground
+# just outside the spline in steps of its water info texture; a little inside the land the flat water
+# meets the bank exactly and the steps are hidden under it.
+OUTWARD = float(os.environ.get('QUIETLAKE_LAKE_OUTWARD', '150'))
+# The water zone's info texture (the engine's 512 gave 2.7 m cells over the 1.4 km zone).
+WATER_INFO = int(os.environ.get('QUIETLAKE_WATER_INFO', '2048'))
 DEPTH = float(os.environ.get('QUIETLAKE_LAKE_DEPTH', '600'))
 RAMP = float(os.environ.get('QUIETLAKE_LAKE_RAMP', '6000'))
 lib = unreal.LakeLevelLibrary
@@ -68,7 +75,7 @@ def tick(delta):
         elif step == 1 and frames > 30:
             profile = lib.create_bed_profile('/Game/Maps', 'LakeBedProfile')
             unreal.EditorAssetLibrary.save_loaded_asset(profile)
-            lib.spawn_lake(DEPTH, RAMP, SPACING, profile)
+            lib.spawn_lake(DEPTH, RAMP, SPACING, profile, OUTWARD)
             lib.spawn_streams(60)
             lib.spawn_shallows(140, 500, 400, 100, 12)
             state.update(step=2, frames=0)
@@ -82,6 +89,7 @@ def tick(delta):
             log('bowl depth before saving: %.0f cm' % lib.update_landscape())
             log('land set back to the design: %d vertices' % lib.rebuild_land_without_brush())
             log('baked %d ground cells' % lib.bake_ground())
+            log('water zones set up: %d' % lib.configure_water_zone(WATER_INFO))
             world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
             if not unreal.EditorLoadingAndSavingUtils.save_map(world, MAP):
                 raise RuntimeError('could not save ' + MAP)
