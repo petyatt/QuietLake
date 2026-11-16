@@ -5,6 +5,8 @@
 #include "Algo/Reverse.h"
 #include "Engine/World.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialExpressionSetMaterialAttributes.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #if WITH_EDITOR
 #include "Editor.h"
 #include "ActorFactories/ActorFactory.h"
@@ -27,6 +29,7 @@
 #include "WaterBodyComponent.h"
 #include "WaterSplineComponent.h"
 #include "WaterSplineMetadata.h"
+#include "WaterZoneActor.h"
 #endif
 
 namespace
@@ -51,17 +54,26 @@ namespace
         return Cast<T>(Actor);
     }
 
-    /** Our lake water (M_LakeSurface: the peaty colour and murk, the foam, the wind's ripple and the
-     *  simulated rings of ALakeRipples) instead of the engine's; and no engine underwater effect,
-     *  the game has its own murk (ALakeLife). */
+    /** Native Water surfaces; underwater murk remains managed by ALakeLife. */
     void UseLakeWater(UWaterBodyComponent* Body)
     {
-        if (UMaterialInterface* Surface = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Materials/M_LakeSurface.M_LakeSurface")))
+        UWaterBodyRiverComponent* River = Cast<UWaterBodyRiverComponent>(Body);
+        const TCHAR* SurfacePath = River
+            ? TEXT("/Game/Water/MI_VillageRiver.MI_VillageRiver")
+            : TEXT("/Game/Water/MI_VillageLake.MI_VillageLake");
+        const TCHAR* LodPath = River
+            ? TEXT("/Game/Water/MI_VillageRiverLOD.MI_VillageRiverLOD")
+            : TEXT("/Game/Water/MI_VillageLakeLOD.MI_VillageLakeLOD");
+        if (UMaterialInterface* Surface = LoadObject<UMaterialInterface>(nullptr, SurfacePath))
         {
             Body->SetWaterMaterial(Surface);
-            Body->SetWaterStaticMeshMaterial(Surface);
-            if (UWaterBodyRiverComponent* River = Cast<UWaterBodyRiverComponent>(Body)) River->SetLakeTransitionMaterial(Surface);
         }
+        if (UMaterialInterface* Lod = LoadObject<UMaterialInterface>(nullptr, LodPath))
+            Body->SetWaterStaticMeshMaterial(Lod);
+        if (River)
+            if (UMaterialInterface* Transition = LoadObject<UMaterialInterface>(nullptr,
+                TEXT("/Game/Water/MI_VillageRiverToLake.MI_VillageRiverToLake")))
+                River->SetLakeTransitionMaterial(Transition);
         Body->SetUnderwaterPostProcessMaterial(nullptr);
     }
 
@@ -366,11 +378,12 @@ namespace
     }
 }
 
-TArray<FVector> ULakeLevelLibrary::LakeOutline(float Spacing)
+TArray<FVector> ULakeLevelLibrary::LakeOutline(float Spacing, float Outward)
 {
-    // The zero line of the signed distance to the waterline (positive in the water), 1 m cells; the
-    // longest loop is the lake.
-    TArray<TArray<FVector2D>> Loops = Contours(LakeMap::LakeBounds().ExpandBy(1500), 100.0f, [](float X, float Y) { return LakeMap::ShoreDistance(X, Y); });
+    // The zero line of the signed distance to the waterline (positive in the water) moved Outward
+    // into the land, 1 m cells; the longest loop is the lake.
+    TArray<TArray<FVector2D>> Loops = Contours(LakeMap::LakeBounds().ExpandBy(1500 + FMath::Max(0.0f, Outward)), 100.0f,
+        [Outward](float X, float Y) { return LakeMap::ShoreDistance(X, Y) + Outward; });
     const TArray<FVector2D>* Best = nullptr;
     for (const TArray<FVector2D>& Loop : Loops) if (!Best || Loop.Num() > Best->Num()) Best = &Loop;
     if (!Best || Best->Num() < 3) return {};
@@ -408,13 +421,13 @@ UObject* ULakeLevelLibrary::CreateBedProfile(const FString& Folder, const FStrin
 #endif
 }
 
-AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float Spacing, UObject* Profile)
+AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float Spacing, UObject* Profile, float Outward)
 {
 #if WITH_EDITOR
     UWorld* World = EditorWorld();
     if (!World) return nullptr;
     for (TActorIterator<AWaterBodyLake> It(World); It; ++It) It->Destroy();
-    const TArray<FVector> Outline = LakeOutline(Spacing);
+    const TArray<FVector> Outline = LakeOutline(Spacing, Outward);
     if (Outline.Num() < 3) return nullptr;
     FVector Centre = FVector::ZeroVector;
     for (const FVector& P : Outline) Centre += P;
@@ -447,10 +460,31 @@ AActor* ULakeLevelLibrary::SpawnLake(float ChannelDepth, float RampWidth, float 
     Lake->SetWaterWaves(nullptr);
     UseLakeWater(Body);
     RefreshWaterBody(Lake);
-    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL lake: %d spline points, channel %.0f cm, ramp %.0f cm, outline reversed %d"), Local.Num(), ChannelDepth, RampWidth, Area < 0);
+    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL lake: %d spline points, %.0f cm into the land, channel %.0f cm, ramp %.0f cm, outline reversed %d"), Local.Num(), Outward, ChannelDepth, RampWidth, Area < 0);
     return Lake;
 #else
     return nullptr;
+#endif
+}
+
+int32 ULakeLevelLibrary::ConfigureWaterZone(int32 Resolution)
+{
+#if WITH_EDITOR
+    UWorld* World = EditorWorld();
+    if (!World) return 0;
+    int32 Count = 0;
+    for (TActorIterator<AWaterZone> It(World); It; ++It)
+    {
+        It->Modify();
+        It->SetRenderTargetResolution(FIntPoint(Resolution, Resolution));
+        const FVector2D Extent = It->GetZoneExtent();
+        UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_LEVEL water zone %s: %.0f x %.0f m, info texture %d (%.2f x %.2f m a cell)"),
+            *It->GetActorLabel(), Extent.X / 100, Extent.Y / 100, Resolution, Extent.X / 100 / Resolution, Extent.Y / 100 / Resolution);
+        ++Count;
+    }
+    return Count;
+#else
+    return 0;
 #endif
 }
 
@@ -781,5 +815,25 @@ int32 ULakeLevelLibrary::ConnectStreamMouths()
     return Count;
 #else
     return 0;
+#endif
+}
+
+bool ULakeLevelLibrary::AddSetAttributeInputs(UMaterialExpression* Node, const TArray<int32>& Properties)
+{
+#if WITH_EDITOR
+    UMaterialExpressionSetMaterialAttributes* Set = Cast<UMaterialExpressionSetMaterialAttributes>(Node);
+    if (!Set) return false;
+    Set->Modify();
+    for (const int32 Property : Properties)
+    {
+        const FGuid Id = FMaterialAttributeDefinitionMap::GetID(EMaterialProperty(Property));
+        if (Set->AttributeSetTypes.Contains(Id)) continue;
+        Set->AttributeSetTypes.Add(Id);
+        FExpressionInput& Input = Set->Inputs.AddDefaulted_GetRef();
+        Input.InputName = FName(*FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(Id, Set->Material).ToString());
+    }
+    return true;
+#else
+    return false;
 #endif
 }

@@ -61,6 +61,7 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out) const override;
     virtual void EndPlay(const EEndPlayReason::Type Reason) override;
     virtual void BeginPlay() override;
+    virtual void PossessedBy(AController* NewController) override;
     UPROPERTY(Replicated) EFishingState FishingState = EFishingState::Idle;
     UPROPERTY(Replicated) int32 CatchCount = 0;
     /** Balls of groundbait left in the bag (G throws one). */
@@ -78,7 +79,7 @@ public:
     UPROPERTY(Replicated) float BiteDuration = 1;
     UPROPERTY(Replicated) float BiteAmount = 0;
     // Cast and rod state, replicated so every machine can animate the rod and line itself.
-    UPROPERTY(Replicated) bool bCharging = false;          // LMB held for a cast: the rig held in the hand, the rod tip loading
+    UPROPERTY(Replicated) bool bCharging = false;          // LMB held for a cast: the rod sweeps forward, carrying the rig out
     UPROPERTY(Replicated) float ChargeServerStart = 0;     // when LMB was pressed
     UPROPERTY(Replicated) float CastDropElevation = 45;
     UPROPERTY(Replicated) FVector CastDropGrip = FVector(28, 18, 14);
@@ -97,6 +98,9 @@ public:
     bool bRetrieveAuto = false;
     /** Seconds of LMB held to raise the rod from the water to upright: slow, the pole is heavy. */
     static constexpr float RetrieveTime = 3.6f;
+    /** A rig lying far out is lifted more slowly (times RetrieveTime): it skates in over the water
+     *  and leaves it nearer the angler, instead of swinging in from afar and past him. */
+    float RetrieveSlow = 1;
     /** At the top of the lift: the rod almost upright. */
     static constexpr float RetrieveTopElevation = 84;
     /**
@@ -114,6 +118,24 @@ public:
     float CastLoadTime() const { return CastLoad * RodHeft(); }
     UPROPERTY(Replicated) ECastResult CastResult = ECastResult::Good;
     UPROPERTY(Replicated) float CastSeverity = 0;            // 0..1: how much too soon the rig was let go
+    /**
+     * The pendulum cast by holding LMB: the fingers let the shot go (CastFingersOpen) and the rig swings
+     * forward under the rod tip and up beyond it, the rod raised smoothly under it (ALakeRod::CastTuning;
+     * slower with a heavier rod). The longer LMB is held, the farther along its swing the rig is when the
+     * rod is lowered; held to the top of the swing, the angler lays it down there. Let go, the rod is
+     * lowered and the rig comes down where its swing has taken it.
+     */
+    static constexpr float CastFingersOpen = 0.1f;
+    /**
+     * Seconds the cast has been held (CastClock) and since it was let go (DropClock), counted on each
+     * machine by the time its rod simulation has actually run (at most a tenth of a second a frame):
+     * the hands keep time with the swinging rig, so a hitch in the frame cannot cut a cast short.
+     */
+    float CastClock = 0, DropClock = 0;
+    /** 0..1: how far along its swing the rig is (the HUD shows it while LMB is held). */
+    float CastSweep(float Now) const;
+    FVector HandFishFrom = FVector::ZeroVector;     // where the fish hung when the free hand took it
+    bool bHandFishSeen = false;
     UPROPERTY(Replicated) FVector_NetQuantize10 CastHookLanding;   // where the hook came down (beyond the float when laid out straight)
     /** Seconds since LMB was pressed for the cast (0 when not casting). */
     float SwingTime(float Now) const { return bCharging ? FMath::Max(0.0f, Now - ChargeServerStart) : 0.0f; }
@@ -152,8 +174,9 @@ public:
     {
         // (Also while the cast flies: the rod goes down with it, so the line reaches the place picked.)
         const bool bInWater = !bRetrieving && (FishingState == EFishingState::Waiting || FishingState == EFishingState::Bite || FishingState == EFishingState::Fight);
-        return bInWater ? RodWaitAngle : SwingBase;
+        return bInWater ? CastRestElevation() : SwingBase;
     }
+    float CastRestElevation() const;
     /** The free hand holds the rig by the shot (it catches it as the rig swings by, and lets go to cast). */
     UPROPERTY(Replicated) bool bRigInHand = true;
     /** Let go and not yet down: the server takes where it lands from its own run of the rod simulation. */
@@ -171,7 +194,7 @@ public:
     UPROPERTY(Replicated) float HandFishStart = -100;
     static constexpr float HandFishTime = 2.5f;
     static constexpr float LandTime = 4.0f;
-    /** Seconds of raising the rod with a fish on the line, LMB held. */
+    /** A fish out of the water still swings on the line this long before a still one is drawn in by hand. */
     static constexpr float LandLiftTime = 2.8f;
     UPROPERTY(Replicated) float HookDepth = 100;            // rig in the water: bobber to hook
     /** Bobber-to-hook distance the angler has set (cm); the bait sinks this deep, or lies on the bottom. */
@@ -179,8 +202,69 @@ public:
     static constexpr float MinDepth = 10.0f;
     static constexpr float MaxDepth = 500.0f;   // about 17% short of the 6 m rod
     UPROPERTY(Replicated) bool bReeling = false;            // fighting: LMB held = lifting the rod, pulling
-    UPROPERTY(Replicated) float RodLift = 0;                // fighting: 0 = rod lowered towards the fish, 1 = raised high
+    /**
+     * A bite, a fight or a fish on the line out of the water: how far the hands have raised the rod
+     * from where the mouse aims it towards upright (0 = the aim, 1 = RodTopElevation). Below zero a
+     * fish has dragged it down past the aim (in parts of RodLiftDegrees); at the lowest the rod lies
+     * along the line and gives no more.
+     */
+    UPROPERTY(Replicated) float RodLift = 0;
     float RodLiftShown = 0;   // the lift the pose shows: follows RodLift, then eases out when the fish leaves
+    float ArmGiveShown = 0;   // degrees the loaded rod is drawn down in the hands at once (from Tension), smoothed
+    // The tackle in the hands (what its line, hook and rod stand: FLakeTackle) and the hands on a
+    // loaded rod. Forces in gf at the rod tip.
+    static FLakeTackle TackleOf(ERodKind Kind);
+    FLakeTackle Tackle() const { return TackleOf(RodKind); }
+    // The hands hold the rod by its butt: what weighs on them is how hard the line's pull at the bent
+    // tip turns the rod about them, as a pull square to the rod on its whole lever (HandLoad). A fish
+    // hanging under a rod raised upright pulls almost along it and weighs little, as far as the blank
+    // does not bow out over the water; one pulling out across a low rod weighs it all.
+    static constexpr float HandPullForce = 360.0f;     // tip-equivalent effort: heavier loads slow a held lift, without stopping it
+    static constexpr float HandHoldForce = 160.0f;     // what they hold against once LMB is let go
+    // Getting a fish out of the water the angler braces the butt and heaves with both hands, briefly
+    // much harder than the steady pull of the fight: from as the fish's body leaves the water.
+    static constexpr float HandHeaveForce = 450.0f;
+    float HandStrain = 0;   // 0 the steady pull, 1 the heave (how far the fish's body is out of the water)
+    float HandLiftLimit() const { return FMath::Lerp(HandPullForce, HandHeaveForce, HandStrain); }
+    static constexpr float RodLiftDegrees = 55.0f;     // a fish dragging the rod down below the aim: degrees per part
+    static constexpr float RodTopElevation = 86.0f;    // the rod raised all the way, almost upright
+    /**
+     * A fish out of the water, the rod upright and LMB still held: the hands go on drawing the rod back
+     * towards the body, the tip over the left shoulder (RodLift from 1 up to RodDrawMax), so the fish
+     * hanging under the bowed tip comes in to the angler.
+     */
+    static constexpr float RodDrawMax = 1.5f;
+    static constexpr float RodLiftSpeed = 55.0f;       // degrees per second on a slack line
+    /**
+     * The arms give under load like a second spring behind the rod's bend: ArmGiveForce gf at the tip
+     * draws the rod down a degree at once (a degree moves the tip 10.5 cm). In series with the blank
+     * (ALakeRod::TetherForce) this leaves HandSeries of the blank's own stiffness: with the medium rod
+     * about 4.4 m of give before the line breaks instead of 1.4.
+     */
+    static constexpr float ArmGiveForce = 90.0f;
+    static float HandSeries(const FLakeTackle& T) { return 1.0f / (1.0f + T.RodSpring * 10.47f / ArmGiveForce); }
+    /**
+     * The blank bends and the arms give only to a pull across the rod. Along it (a fish hanging under
+     * a rod raised upright, or one that has drawn the rod into line with the line) the blank barely
+     * shortens and the arms give little: RodAlongStiffness times the bare blank. The spring the line
+     * pulls with blends the two by the angle between the rod and the line (gf per cm).
+     */
+    static constexpr float RodAlongStiffness = 4.0f;
+    static float LineSpring(const FLakeTackle& T, FVector RodAxis, FVector LineDir)
+    {
+        const float Across = T.RodSpring * HandSeries(T), Along = T.RodSpring * RodAlongStiffness;
+        const float Sin2 = (float)FVector::CrossProduct(RodAxis.GetSafeNormal(), LineDir.GetSafeNormal()).SizeSquared();
+        return 1.0f / (Sin2 / Across + (1 - Sin2) / Along);
+    }
+    /** Held LMB keeps lifting under load; release yields. The line/rod strength limits the haul. */
+    void UpdateRodHands(float DeltaSeconds, float Force);
+    void UpdateLiftedFish(float DeltaSeconds);
+    /** The fish is taken in the free hand: the catch counts (from the line, or from the shallows at the bank). */
+    void TakeInHand(class ALakeFish* Fish);
+    bool bTookLine = false;   // this catch: the free hand took the line, not the fish
+    /** gf: the line's pull Force towards Toward as it turns the rod in the hands, on the rod's lever. */
+    float HandLoad(FVector Toward, float Force) const;
+    float HandLoadGf = 0;
     // --- the three rods and the case ---
     static constexpr int32 NumRods = (int32)ERodKind::Count;
     /** Every rod: in the case, in the hands, on its stand (fishing) or lying on the ground. */
@@ -199,6 +283,8 @@ public:
     bool HasRodInHands() const { return Rods.IsValidIndex((int32)RodKind) && Rods[(int32)RodKind].Place == ERodPlace::Hands; }
     /** A new game starts with empty hands: every rod in its compartment of the case on the back. */
     void StowRodsInCase();
+    /** StowRodsInCase for a real game start (not the previews), once the angler has a controller and has begun play. */
+    void StowRodsAtStart();
     /** The rod in the hands can go into the case or onto the ground: its rig held in the free hand, nothing going on. */
     bool CanPutRodAway() const;
     /** Where a rod on its stand rests (butt on the ground behind the fork). */
@@ -282,6 +368,8 @@ private:
     friend class FLakeContactPhysicsTest;
     friend class FLakeFishBehaviourTest;
     friend class FLakeCastingTest;
+    friend class FLakeHeavyLandingTest;
+    friend class FLakeCastHoldTest;
     friend class FLakeWindDriftTest;
     friend class FLakeRodControlTest;
     friend class FLakeGroundbaitTest;
@@ -344,6 +432,16 @@ private:
     void PlaceBait();
     UFUNCTION(Server, Reliable) void ServerSelectBait(EBait NewBait);
     FVector RodTip() const;
+    /** Where the free hand holds a fish it has taken: up in front of the chest. */
+    FVector HeldFishPoint() const;
+    /** The line's own load on a fish (gf): the rod's and the arms' spring, without the damping that steadies the fish. */
+    float LineLoad(ALakeFish* Fish) const;
+    bool bRodLaidFlat = false;   // a fish has dragged the rod down along the line: nothing gives any more
+    /** The pull in the line (gf), and the part of it square to the rod that bends (and may break) the blank. */
+    UPROPERTY(Replicated) float LineLoadGf = 0;
+    float RodLoadGf = 0;
+    /** The rod, not the line, is nearer what it stands (held across the line). */
+    UPROPERTY(Replicated) bool bRodStrained = false;
     void ToggleRod();
     void ToggleView();
     void ToggleLifePanel();
@@ -362,6 +460,8 @@ private:
     UFUNCTION(Server, Reliable) void ServerDevWeather();
     /** -LakePreview, -BitePreview, -LandPreview: scripted scenes, filmed and logged (LakePreviews.cpp). */
     void RunPreviews();
+    /** -FishingBench: casts, bites and fights played by a scripted hand and measured (LakeBench.cpp). */
+    void RunFishingBench();
     /** Previews: this rod in the hands at once, the one held put into its compartment. */
     void UseRod(ERodKind Kind);
     void RunRodDiagnostics(float DeltaSeconds);
@@ -388,7 +488,7 @@ private:
     FVector LeftShoulder() const;
     static constexpr float ArmReach = 62.0f;
     /** Fastest the shot may pass (cm/s, relative to the angler) and still be taken in the fingers. */
-    static constexpr float CatchSpeed = 320.0f;
+    static constexpr float CatchSpeed = 480.0f;
     /** 0..1: how far the free hand reaches out for the rig coming in on the line. */
     float RigReach() const;
     /** Rod elevation while waiting (deg): with a deep float the main line is short, so the tip goes down to the water. */

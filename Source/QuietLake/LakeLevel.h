@@ -1,6 +1,7 @@
 #pragma once
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Materials/MaterialExpression.h"
 #include "LakeLevel.generated.h"
 
 /**
@@ -30,9 +31,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
     static void WaterAlignmentLog();
 
-    /** The lake's waterline as one closed loop, ordered, a point every SpacingCm, at the water level. */
+    /** The lake's waterline as one closed loop, ordered, a point every SpacingCm, at the water level;
+     *  OutwardCm moves the loop that far into the land. */
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
-    static TArray<FVector> LakeOutline(float SpacingCm = 600);
+    static TArray<FVector> LakeOutline(float SpacingCm = 600, float OutwardCm = 0);
 
     /** The lake bed's profile across the ramp for the Water lake's carving: the curve asset Name in
      *  Folder (created or reset): steep by the bank, where the float fisher reaches, flattening towards
@@ -42,9 +44,18 @@ public:
 
     /** A Water lake along the waterline that carves its bowl into the landscape: ChannelDepthCm deep,
      *  sloping down over RampWidthCm from the edge along Profile (a curve; null: the engine's default).
-     *  Replaces an existing one. */
+     *  Replaces an existing one. Its spline runs OutwardCm inside the land: the engine draws the water
+     *  only inside the spline, at the resolution of the water info texture, and pushes it under the
+     *  ground just outside, so on the waterline itself the edge came out in steps and fell short of
+     *  the bank; a little inside the land the flat water meets the bank exactly and the step is hidden.
+     *  (Below the waterline the bank is under the water anyway, so the land shows where it should.) */
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
-    static AActor* SpawnLake(float ChannelDepthCm = 600, float RampWidthCm = 4000, float SpacingCm = 600, UObject* Profile = nullptr);
+    static AActor* SpawnLake(float ChannelDepthCm = 600, float RampWidthCm = 4000, float SpacingCm = 600, UObject* Profile = nullptr, float OutwardCm = 150);
+
+    /** The water zone's info texture at Resolution x Resolution over the whole zone (the engine's 512
+     *  gave 2.7 m cells over our 1.4 km zone: the shore of the water came out in 2-3 m steps). */
+    UFUNCTION(BlueprintCallable, Category = "Lake|Level")
+    static int32 ConfigureWaterZone(int32 Resolution = 2048);
 
     /** Rebuilds the landscape from the carved bed but with the designed ground on land, and frees it
      *  from the water brushes: whatever the brushes dug above the waterline (a shelf ending in a wall
@@ -76,6 +87,13 @@ public:
     /** Connects the generated streams on the saved map without replacing their actors. */
     UFUNCTION(BlueprintCallable, Category = "Lake|Level")
     static int32 ConnectStreamMouths();
+
+    /** Gives a SetMaterialAttributes node (made by Python) an input for each of Properties. Its own
+     *  pin sync runs only in an open material editor, so a commandlet would leave the node without
+     *  the inputs. Properties are EMaterialProperty values (unreal.MaterialProperty.MP_NORMAL.value).
+     *  Returns false for any other node. */
+    UFUNCTION(BlueprintCallable, Category = "Lake|Level")
+    static bool AddSetAttributeInputs(UMaterialExpression* Node, const TArray<int32>& Properties);
 
 private:
     /** Spawns a fresh landscape over LakeMap::TerrainBounds from heights on its 1 m grid, with the

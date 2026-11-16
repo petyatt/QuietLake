@@ -3,6 +3,7 @@
 // lifted out of the water. Each one sets the scene, takes screenshots into Saved/, logs what it
 // measured (QUIET_LAKE_* lines) and quits.
 #include "LakeGame.h"
+#include "LakeWaves.h"
 #include "LakeFood.h"
 #include "LakeLife.h"
 #include "LakeHUD.h"
@@ -55,6 +56,7 @@ void ALakeCharacter::RunRodDiagnostics(float DeltaSeconds)
 
 void ALakeCharacter::RunPreviews()
 {
+    RunFishingBench();
     // -LookFrom=X,Y,Yaw,Pitch (world cm, degrees): a still camera exactly there, for reproducing a
     // player's screenshot, plus the ground profile straight ahead.
     if (FString Look; FParse::Value(FCommandLine::Get(), TEXT("LookFrom="), Look, false) && GetNetMode() == NM_Standalone)
@@ -930,11 +932,11 @@ void ALakeCharacter::RunPreviews()
                         (FishingState == EFishingState::Fight && Now - *FightStart < 2))
                         UE_LOG(LogTemp, Display, TEXT("LIVE_RIG t=%.2f state=%d fish=%d lift=%.2f elev=%.1f force=%.1f contactOld=%.3f contactNow=%.3f impulse=%.2f grip=%.3f caught=%d status=%s"),
                             Now, int32(FishingState), int32(Fish->State), RodLift, RodElevation, LoadOnFish(Fish).Size(),
-                            FVector::Dist(Fish->MouthLocation(), BaitPoint), FVector::Dist(Fish->MouthLocation(), RodVisual->HookLocation()), HookImpulse, Fish->HookGrip, CatchCount, *Status);
+                            FVector::Dist(Fish->MouthLocation(), BaitPoint), FVector::Dist(Fish->MouthLocation(), RodVisual->HookLocation()), HookImpulse, Fish->HookGripNow(), CatchCount, *Status);
                     *Previous = int32(FishingState);
                     if (CatchCount > 0)
                     {
-                        UE_LOG(LogTemp, Display, TEXT("LIVE_RIG SUCCESS caught=%d inHand=%d weight=%.2f t=%.2f grip=%.3f"), CatchCount, bFishInHand ? 1 : 0, Fish->WeightKg, Now, Fish->HookGrip);
+                        UE_LOG(LogTemp, Display, TEXT("LIVE_RIG SUCCESS caught=%d inHand=%d weight=%.2f t=%.2f grip=%.3f"), CatchCount, bFishInHand ? 1 : 0, Fish->WeightKg, Now, Fish->HookGripNow());
                         FPlatformMisc::RequestExit(false);
                     }
                 }), 0.1f, true);
@@ -1047,7 +1049,17 @@ void ALakeCharacter::RunPreviews()
                 const FString Name = FString::Printf(TEXT("Mouth_%s.png"), *LakeFish::Info(Sp).Id);
                 Shot(Name);
             });
-            At(6.75f + I, [Current] { if (ALakeFish* Fish = Current->Get()) Fish->Destroy(); });
+            // The whole fish from the side, for its fins (-FinDebug blows the marked fins out).
+            At(6.68f + I, [this, I, Current, LookFrom, Shot]
+            {
+                ALakeFish* Fish = Current->Get();
+                if (!Fish) return;
+                const float Len = LakeFish::LengthCm(Fish->Species, Fish->WeightKg);
+                const FVector Middle = Fish->MouthLocation() - Fish->GetActorForwardVector() * (Len * 0.5f);
+                LookFrom(Middle + Fish->GetActorRightVector() * (Len * 1.9f) + FVector(0, 0, Len * 0.15f), Middle, 40);
+                Shot(FString::Printf(TEXT("Fin_%s.png"), *LakeFish::Info((EFishSpecies)I).Id));
+            });
+            At(6.85f + I, [Current] { if (ALakeFish* Fish = Current->Get()) Fish->Destroy(); });
         }
         At(7.0f + LakeFish::NumSpecies(), [] { FPlatformMisc::RequestExit(false); });
     }
@@ -1128,7 +1140,9 @@ void ALakeCharacter::RunPreviews()
                 if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(Try.Pitch, GetActorRotation().Yaw, 0));
             });
             At(Try.At, [this] { NextActionTime = 0; ServerFish_Implementation(); });
-            At(Try.At + (Try.Held > 0 ? ReleaseAt : 0.0f), [this] { ServerRelease_Implementation(); });
+            // (LMB held as long as the try says: the longer, the farther the rod's sweep carries the rig.)
+            At(Try.At + Try.Held, [this] { ServerRelease_Implementation(); });
+            (void)ReleaseAt;
             At(Try.At + Try.Held + 1.7f, [this]
             {
                 UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_CASTRESULT result=%d severity=%.2f out=%.0f cm hook beyond float=%.0f cm: %s"), (int32)CastResult, CastSeverity,
@@ -1293,6 +1307,92 @@ void ALakeCharacter::RunPreviews()
                     *Rel(FloatPosition), *Rel(RodVisual->BobberLocation()), Belly, OnWater, ALakeWeather::Get(GetWorld()) ? ALakeWeather::Get(GetWorld())->WindVelocity().Size() / 100 : 0.0f);
             });
         At(50.0f, [] { FPlatformMisc::RequestExit(false); });
+    }
+    // -WavePreview: the lake's wind waves (engine Water, ULakeWaves) at the camp: a float cast 5 m out,
+    // then a calm, a breeze, a strong wind and a rainy calm, ~25 s each (the waves follow the wind over seconds):
+    // the float close at the water (Saved/Waves_<wind>_Float.png), the lake (Waves_<wind>_Lake.png),
+    // and how the float rides the surface 4 times a second (QUIET_LAKE_WAVES_FLOAT).
+    if (FParse::Param(FCommandLine::Get(), TEXT("WavePreview")) && GetNetMode() == NM_Standalone)
+    {
+        auto At = [this](float Seconds, TFunction<void()> Action)
+        {
+            FTimerHandle Handle;
+            GetWorldTimerManager().SetTimer(Handle, [Action] { Action(); }, Seconds, false);
+        };
+        auto Shot = [](const FString& Name) { FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / Name, false, false); };
+        auto LookFrom = [this](FVector From, FVector Target, float Fov)
+        {
+            auto* Cam = GetWorld()->SpawnActor<ACameraActor>(From, (Target - From).Rotation());
+            Cam->GetCameraComponent()->SetFieldOfView(Fov);
+            if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(Cam);
+        };
+        TSharedRef<float> WindYaw = MakeShared<float>(0.0f);
+        At(4.0f, [this, WindYaw]
+        {
+            FVector2D Facing;
+            const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
+            const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+            *WindYaw = Yaw + 60;
+            if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+            {
+                FLakeWeatherState Calm;
+                Calm.Cloud = 0.25f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.03f; Calm.WindYaw = *WindYaw;
+                Weather->SetWeatherNow(Calm);
+                Weather->SetHours(10.0f);
+            }
+            SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+            if (APlayerController* PC = Cast<APlayerController>(GetController()))
+            {
+                PC->SetControlRotation(FRotator(-12, Yaw, 0));
+                if (PC->MyHUD) PC->MyHUD->bShowHUD = false;
+            }
+            FloatDepth = 60;
+        });
+        // (The angler starts with the rods in the case.)
+        At(4.5f, [this] { UseRod(ERodKind::Medium); });
+        At(6.0f, [this] { NextActionTime = 0; ServerFish_Implementation(); });
+        At(6.6f, [this] { ServerRelease_Implementation(); });
+        struct FWind { const TCHAR* Name; float Wind; float Rain = 0; };
+        static const FWind Winds[] = { { TEXT("Calm"), 0.03f }, { TEXT("Breeze"), 0.4f }, { TEXT("Strong"), 0.85f }, { TEXT("Rain"), 0.05f, 0.6f } };
+        for (int32 K = 0; K < UE_ARRAY_COUNT(Winds); ++K)
+        {
+            const float T0 = 10.0f + K * 26.0f;
+            const FWind Wind = Winds[K];
+            At(T0, [this, Wind, WindYaw]
+            {
+                if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
+                {
+                    FLakeWeatherState State;
+                    State.Cloud = Wind.Rain > 0 ? 0.9f : 0.25f; State.Fog = 0; State.Rain = Wind.Rain; State.Wind = Wind.Wind; State.WindYaw = *WindYaw;
+                    Weather->SetWeatherNow(State);
+                }
+            });
+            At(T0 + 20.0f, [this, LookFrom]
+            {
+                if (!RodVisual) return;
+                const FVector Float = RodVisual->BobberLocation();
+                LookFrom(FVector(FVector2D(Float) + FVector2D(GetActorRightVector()) * 160 - FVector2D(GetActorForwardVector()) * 120, LakeFish::SurfaceZ + 40),
+                         FVector(FVector2D(Float), LakeFish::SurfaceZ), 50);
+            });
+            At(T0 + 21.0f, [Shot, Wind] { Shot(FString::Printf(TEXT("Waves_%s_Float.png"), Wind.Name)); });
+            At(T0 + 22.0f, [this, LookFrom]
+            {
+                LookFrom(GetActorLocation() + FVector(0, 0, 90) + GetActorRightVector() * 120,
+                         GetActorLocation() + GetActorForwardVector() * 2500 + FVector(0, 0, -400), 70);
+            });
+            At(T0 + 23.0f, [Shot, Wind] { Shot(FString::Printf(TEXT("Waves_%s_Lake.png"), Wind.Name)); });
+            for (int32 I = 0; I < 40; ++I)
+                At(T0 + 10.0f + I * 0.25f, [this, Wind, I]
+                {
+                    if (!RodVisual) return;
+                    const FVector Keel = RodVisual->FloatKeel(), Tip = RodVisual->FloatTip();
+                    const ULakeWaves* Waves = ULakeWaves::Get(GetWorld());
+                    UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_WAVES_FLOAT %s t=%.2f surface %.2f cm, float keel %.2f tip %.2f cm, tilt %.1f deg, waves built for %.1f m/s"),
+                        Wind.Name, I * 0.25f, ULakeWaves::SurfaceAt(GetWorld(), FVector2D(Keel)) - LakeFish::SurfaceZ, Keel.Z - LakeFish::SurfaceZ, Tip.Z - LakeFish::SurfaceZ,
+                        FMath::RadiansToDegrees(FMath::Acos(FMath::Clamp((Tip - Keel).GetSafeNormal().Z, -1.0f, 1.0f))), Waves ? Waves->BuiltWind() : -1.0f);
+                });
+        }
+        At(10.0f + UE_ARRAY_COUNT(Winds) * 26.0f + 1.0f, [] { FPlatformMisc::RequestExit(false); });
     }
     // -GroundbaitPreview: at the camp on a calm morning the angler throws three balls of groundbait
     // 6 m out (the ball in flight, the rings); then for four minutes the log counts the fish within

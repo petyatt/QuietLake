@@ -59,8 +59,8 @@ try {
         if ($turn99 -gt 1500) { throw "Fish turns on a client are jerky (p99 turn acceleration $turn99 deg/s2)" }
     }
     Write-Output 'PASS: fish swim smoothly on both clients'
-    # Each client sees the other angler's rod case on his back, the medium rod in his hands and the
-    # light and heavy ones in the first and third compartments (LakeRods.cpp, QUIET_LAKE_CASE_SEEN).
+    # Each client sees the other angler start with empty hands: the case on his back, the three rods in
+    # their compartments 0/1/2 (ALakeCharacter::PossessedBy stows them on the server, QUIET_LAKE_CASE_SEEN).
     $cases = $null
     for ($i = 0; $i -lt 30; $i++) {
         $cases = foreach ($number in 1,2) {
@@ -73,11 +73,11 @@ try {
     foreach ($line in $cases) {
         Write-Output ('Client sees: ' + ($line.Line -replace '^.*QUIET_LAKE_CASE_SEEN ', ''))
         $g = $line.Matches[0].Groups
-        if ($g[1].Value -ne '0' -or $g[2].Value -ne '0' -or $g[3].Value -ne '1' -or $g[4].Value -ne '0' -or $g[5].Value -ne '0' -or $g[7].Value -ne '2') {
+        if ($g[1].Value -ne '0' -or $g[2].Value -ne '0' -or $g[3].Value -ne '0' -or $g[4].Value -ne '0' -or $g[5].Value -ne '0' -or $g[6].Value -ne '1' -or $g[7].Value -ne '2') {
             throw 'The other angler''s case and rods did not replicate as expected'
         }
     }
-    Write-Output 'PASS: both clients see the other angler''s rod case and rods'
+    Write-Output 'PASS: both clients see the other angler start with all rods in the case'
 } finally {
     foreach ($process in $processes) {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }

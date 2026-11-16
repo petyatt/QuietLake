@@ -13,6 +13,7 @@ struct FRodInput
     FVector FloatTarget = FVector::ZeroVector;   // where the bobber sits / lands (server)
     float HookDepth = 100;        // leader length under the bobber
     bool bRigFlying = false;      // let go and not yet down on the water (the server says when it lands)
+
     bool bFreeRig = false;        // no network drift correction during casts, pulls or settling
     float HookHold = 0;           // 0..1: how firmly the angler's left hand has the rig (1: the shot held in the fingers)
     float RodHeft = 1;            // how sluggish the rod is: 1 medium, less for a light rod, more for a heavy one
@@ -34,6 +35,19 @@ struct FRodInput
     float FishGrams = 0, FishLength = 0;
     /** Landing with the rod let down: a fish lying on the bank flops back towards the water. */
     bool bFishLowered = false;
+    /** The fish is in the angler's free hand, the hook still in its mouth. */
+    bool bFishHeld = false;
+    /**
+     * gf per cm: the spring the server holds a fish with (LoadOnFish): the rod's bend and the arms
+     * to a pull across the rod, and the far stiffer rod and arms to one along it.
+     */
+    float LineSpring = 0, LineSpringAlong = 0;
+    /**
+     * The tip of the rod as the hands hold it, unbent and before the arms give (the server's RodTip),
+     * and its axis: the spring is measured from there, exactly as the server measures it (the give of
+     * the arms is already in LineSpring).
+     */
+    FVector SpringTip = FVector::ZeroVector, SpringAxis = FVector::ZeroVector;
     FVector HandPoint = FVector::ZeroVector;
 };
 
@@ -62,12 +76,23 @@ public:
     static constexpr float RodLength = 600.0f;
     static constexpr float LineLength = 600.0f;  // tip to hook: the same as the rod, so the rig never drags
     static constexpr float GripPoint = 12.0f;    // right hand, from the butt (at the end of the handle)
+    /**
+     * The pendulum cast's numbers: the rod's angle as the fingers let go (Start), how high it is raised
+     * while the rig swings down under it (Raise, by RaiseTime seconds for the medium rod), and how far it
+     * is brought forward and down while the rig swings up beyond the tip (Follow, by LayAfter); held on,
+     * the rod lays the rig down at the top of its swing (over LayTime). Development builds take
+     * -CastTune=Start,Raise,RaiseTime,Follow,LayAfter,LayTime to try others without a rebuild.
+     */
+    struct FCastTuning { float Start = 45, Raise = 68, RaiseTime = 1.0f, Follow = 34, LayAfter = 1.95f, LayTime = 0.35f; };
+    static const FCastTuning& CastTuning();
 
     FVector Tip() const { return Points.Num() ? Points.Last() : FVector::ZeroVector; }
     static float FishSupport(float MouthZ, float Length);
-    static FVector TetherForce(FVector Anchor, FVector Mouth, FVector RelativeVelocity, float FreeLength, float Mass);
+    static FVector TetherForce(FVector Anchor, FVector Mouth, FVector RelativeVelocity, float FreeLength, float Mass, float Spring = 2600.0f / 140.0f);
     FVector PullOnFish(FVector Mouth, FVector Velocity, float Mass) const;
     FVector HookLocation() const { return HookPos; }
+    /** How much the line from the tip to what holds it (a fish's mouth) is short of tight, cm; negative when nothing holds it. */
+    float TipSlack() const { return TipReach > 0 && Points.Num() ? TipReach - float(FVector::Dist(Points.Last(), TipAnchor)) : -1.0f; }
     FVector BobberLocation() const { return BobberPos; }
     float GetBiteTilt() const { return BiteTilt; }
     /** The tip of the float's antenna (how much of it shows above the water tells the angler everything). */
@@ -93,6 +118,7 @@ public:
     }
     /** The float has come down: on the water's surface, or on the ground. */
     bool FloatDown() const;
+
     /** How far the tip is bent off the line of the butt (cm). */
     float TipBend() const
     {
@@ -122,6 +148,9 @@ private:
     TWeakObjectPtr<class ALakeRipples> Ripples;
     float NextRipplesLookup = 0;
     FVector ShotVel = FVector::ZeroVector, HookVel = FVector::ZeroVector;
+    // The cast: the shot, the rig's weight, is thrown to the spot aimed at and flies there like any
+    // thrown weight (a parabola); the float, the hook and the line fly after it on their own.
+
     /** Once a frame: the blank's weights and stiffness for this rod, and where the hands are. */
     void PrepareBlank(const FTransform& Hold);
     /** One substep of the blank (S: 0..1 through the frame, moving the hands smoothly). */
@@ -155,7 +184,13 @@ private:
     FTransform HoldFrom, HoldTo;                  // the hands at the start and at the end of this frame
     FVector TipForce = FVector::ZeroVector;       // this frame's load on the tip (a fish, the cast draw), dyn
     float BlankDamp = 11;                         // 1/s
-    FVector TipAnchor = FVector::ZeroVector;      // the cast draw: the line holds the tip within TipReach of this point
+    // Damping of the blank's bending alone (1/s), not of its swing with the hands: with a fish on, the
+    // hands holding the rod firmly take the life out of its sway (a free blank kept swaying from side
+    // to side as the hands moved it). Not while casting: the cast lives on the blank's spring.
+    float BendDamp = 0;
+    FVector StraightStart = FVector::ZeroVector, StraightAxis = FVector::ZeroVector;   // the unbent blank a step ago
+    FVector StraightTip = FVector::ZeroVector, StraightTipVel = FVector::ZeroVector;   // the tip of the rod were it not bent, and its speed
+    FVector TipAnchor = FVector::ZeroVector;      // the line holds the tip within TipReach of this point: the hand at the cast draw, a fish's mouth
     float TipReach = -1;
     FVector LastTip = FVector::ZeroVector;
     FVector BobberPos, BobberPrev, HookPos, HookPrev;

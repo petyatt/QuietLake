@@ -9,6 +9,7 @@
 #include "LakeWater.h"
 #include "LakeWeather.h"
 #include "LakeRipples.h"
+#include "LakeWaves.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -87,6 +88,15 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     };
     // The strike needs contact and load (the hook physics): the line is taken up first, as the angler
     // does by stepping back, and the hook resolves on the spot by contact and the strike's load.
+    // After the strike, the fish back in the water at the line's reach (held up for the strike, it
+    // hung in the air at the line's end).
+    auto BackInWater = [&](ALakeFish* Fish)
+    {
+        if (!IsValid(Fish)) return;
+        FVector P = Fisher->RodTip() + FVector(Facing, 0) * (ALakeRod::LineLength - 40);
+        P.Z = FMath::Max(ALakeEnvironment::GroundHeight(P.X, P.Y) + 25, LakeFish::SurfaceZ - 70);
+        Fish->SetActorLocation(P);
+    };
     auto StrikeHome = [&](ALakeFish* Fish)
     {
         Fisher->NextActionTime = 0;
@@ -94,8 +104,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
         for (int32 Step = 0; Step < 8 && Fisher->FishingState == EFishingState::Bite && IsValid(Fish); ++Step)
         {
             Fish->SetActorLocation(Fisher->RodTip() + FVector(Facing, 0) * (ALakeRod::LineLength + 30));
-            Fish->State = ALakeFish::EState::Holding;
-            Fish->TargetAngler = Fisher;
+            Fish->TestState() = ALakeFish::EState::Holding;
+            Fish->TestTargetAngler() = Fisher;
             Fisher->BaitPoint = Fish->MouthLocation();
             Fisher->ResolveHook(0.05f);
         }
@@ -147,6 +157,7 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     }
     TestTrue(TEXT("Strike hooks the fish"), Fisher->FishingState == EFishingState::Fight);
     TestTrue(TEXT("Fish knows it is hooked"), Perch->IsHooked());
+    BackInWater(Perch);
     for (int32 Step = 0; Step < 3000 && Fisher->FishingState == EFishingState::Fight; ++Step)
     {
         if (Fisher->Tension > 0.55f) Fisher->ServerRelease_Implementation();
@@ -170,17 +181,25 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     // The same careful play takes longer with a heavy fish than with a light one of its species.
     auto FightSeconds = [&](float Weight)
     {
+        Fisher->SetActorLocation(Back(0));
         Cast();
         TestTrue(TEXT("Cast for the crucian fight"), Fisher->FishingState == EFishingState::Waiting);
         for (int32 Pose = 0; Pose < 60; ++Pose) Fisher->UpdateRodPose(0.05f);   // the rod settles to the waiting pose
-        ALakeFish* Fish = SpawnFish(World, EFishSpecies::Crucian, Weight, Fisher->BaitLocation());
+        const FVector TookAt = Fisher->BaitLocation();
+        ALakeFish* Fish = SpawnFish(World, EFishSpecies::Crucian, Weight, TookAt);
         Fisher->OnFishTake(Fish);
         StrikeHome(Fish);
+        BackInWater(Fish);
         int32 Step = 0;
-        for (; Step < 2400 && Fisher->FishingState == EFishingState::Fight; ++Step)
+        for (; Step < 4800 && Fisher->FishingState == EFishingState::Fight; ++Step)
         {
             if (Fisher->Tension > 0.55f) Fisher->ServerRelease_Implementation();
             else if (Fisher->Tension < 0.2f) Fisher->ServerFish_Implementation();
+            // Too heavy to lift out: lead it to the bank, stepping back from the water; once it lies
+            // in the shallows, step over to it and take it in the hand.
+            if (Fisher->FightHint == 10) Fisher->SetActorLocation(Fisher->GetActorLocation() - FVector(Facing, 0) * 50 * 0.05f);
+            else if (Fisher->FightHint == 9 && IsValid(Fish))
+                Fisher->SetActorLocation(Fisher->GetActorLocation() + (Fish->GetActorLocation() - Fisher->GetActorLocation()).GetSafeNormal2D() * 60 * 0.05f);
             Fisher->UpdateFight(0.05f);
             if (IsValid(Fish)) Fish->Simulate(0.05f);
         }
@@ -213,7 +232,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->ServerFish_Implementation();
     TestTrue(TEXT("LMB after the cast starts drawing the rig out"), Fisher->bRetrieving);
     // The rod rises only while LMB is held; let go, it stops where it is; held again, it goes on.
-    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.4f);
+    // (A rig lying far out is lifted more slowly: RetrieveSlow.)
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * Fisher->RetrieveSlow * 0.4f);
     const float Held = Fisher->RetrieveLift;
     TestTrue(TEXT("Holding LMB raises the rod"), Held > 0.35f && Held < 0.45f);
     Fisher->ServerRelease_Implementation();
@@ -221,9 +241,9 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Releasing LMB lowers the rod back"), !Fisher->bRetrieving && Fisher->RetrieveLift < 0.05f);
     Fisher->NextActionTime = 0;
     Fisher->ServerFish_Implementation();
-    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * 0.1f);
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * Fisher->RetrieveSlow * 0.1f);
     TestTrue(TEXT("Holding LMB again starts from the lowered rod"), Fisher->bRetrieving && Fisher->RetrieveLift > 0.05f && Fisher->RetrieveLift < Held);
-    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime);
+    Fisher->UpdateRetrieve(ALakeCharacter::RetrieveTime * Fisher->RetrieveSlow);
     TestTrue(TEXT("Raised to the top the rig is out"), !Fisher->bRetrieving && Fisher->FishingState == EFishingState::Idle);
 
     // An early LMB during a bite must not cut the lift short: when the fish lets go, the rod settles
@@ -234,7 +254,8 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Early lift: a bite starts"), Fisher->FishingState == EFishingState::Bite);
     Fisher->bReeling = true;   // LMB held during the bite raises the rod
     for (int32 Step = 0; Step < 20; ++Step) { Fisher->UpdateRodPose(0.05f); Fisher->Tick(0.05f); }
-    TestTrue(TEXT("Holding LMB during a bite raises the rod"), Fisher->RodLift > 0.5f);
+    AddInfo(FString::Printf(TEXT("Early lift: rod lift %.2f after 1 s, hand load %.0f gf, state %d, reeling %d, yield %.2f now %.2f"), Fisher->RodLift, Fisher->HandLoadGf, (int32)Fisher->FishingState, Fisher->bReeling, Fisher->YieldUntil, Fisher->ServerNow()));
+    TestTrue(TEXT("Holding LMB during a bite raises the rod"), Fisher->RodLift > 0.2f);   // (towards upright, slowed by the fish holding the bait)
     Fisher->UpdateRodPose(0.01f);
     const float Raised = Fisher->RodElevation;
     const float LiftShown = Fisher->RodLiftShown;
@@ -252,21 +273,36 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->OnFishTake(Pike);
     StrikeHome(Pike);
     Fisher->ServerFish_Implementation();
-    Pike->SetActorLocation(Fisher->RodTip() + FVector(Facing, 0) * (ALakeRod::LineLength + 300));
+    // (The rod's bend and the give of the arms take up about 4.4 m before the line parts.)
+    Pike->SetActorLocation(Fisher->RodTip() + FVector(Facing, 0) * (ALakeRod::LineLength + 520));
     Fisher->UpdateFight(0.05f);
     TestTrue(TEXT("Exceeding the fixed line's stretch limit breaks it"), Fisher->FishingState == EFishingState::Idle);
     TestEqual(TEXT("Broken line awards no fish"), Fisher->CatchCount, 1);
     TestFalse(TEXT("Pike is free again"), Pike->IsHooked());
 
-    // Never reeling: the fight times out.
-    Cast();
-    ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.5f, Fisher->BaitLocation());
-    Fisher->OnFishTake(Crucian);
-    StrikeHome(Crucian);
-    Fisher->ServerRelease_Implementation();
-    for (int32 Step = 0; Step < 3000 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); Crucian->Simulate(0.05f); }
-    TestTrue(TEXT("Abandoned fight times out"), Fisher->FishingState == EFishingState::Idle);
-    TestEqual(TEXT("Timeout awards no fish"), Fisher->CatchCount, 1);
+    // Never reeling: left on a slack line, a fish hooked deep (it swallowed the bait) stays on and
+    // goes where it likes; one hooked in the edge of the lip soon shakes the hook out.
+    auto Abandoned = [&](float Grip)
+    {
+        Cast();
+        const FVector TookAt = Fisher->BaitLocation();
+        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.5f, TookAt);
+        Fisher->OnFishTake(Crucian);
+        StrikeHome(Crucian);
+        BackInWater(Crucian);
+        if (IsValid(Crucian)) Crucian->SetHookGrip(Grip);
+        Fisher->ServerRelease_Implementation();
+        int32 Step = 0;
+        for (; Step < 4800 && Fisher->FishingState == EFishingState::Fight; ++Step) { Fisher->UpdateFight(0.05f); if (IsValid(Crucian)) Crucian->Simulate(0.05f); }
+        AddInfo(FString::Printf(TEXT("Abandoned crucian, hook grip %.2f: %s after %.0f s | %s"), Grip,
+            Fisher->FishingState == EFishingState::Fight ? TEXT("still on") : TEXT("off"), Step * 0.05f, *Fisher->Status));
+        const bool bOn = Fisher->FishingState == EFishingState::Fight;
+        if (bOn) Fisher->FinishFishing(TEXT("test over"));
+        return bOn;
+    };
+    TestTrue(TEXT("A fish hooked deep stays on a slack line for minutes"), Abandoned(1.0f));
+    TestFalse(TEXT("A fish hooked in the edge of the lip shakes the hook out on a slack line"), Abandoned(0.35f));
+    TestEqual(TEXT("A fish left on the line awards no fish"), Fisher->CatchCount, 1);
 
     // Fixed line: walking away from the water drags the float after the angler.
     Fisher->SetActorLocation(Back(0));
@@ -333,7 +369,7 @@ bool FLakeFishingTest::RunTest(const FString& Parameters)
     Fisher->Forward(1);
     TestTrue(TEXT("Angler may walk away from a rod on the stand"), !Fisher->ConsumeMovementInputVector().IsNearlyZero());
     ALakeFish* Taker = SpawnFish(World, EFishSpecies::Perch, 0.2f, Fisher->BaitLocation(OnStand));
-    Taker->TargetRig = OnStand;
+    Taker->TestTargetRig() = OnStand;
     Fisher->OnFishTake(Taker);
     TestTrue(TEXT("A take on the stand"), Fisher->Rods[OnStand].State == EFishingState::Bite);
     const FVector StandBase = Fisher->Rods[OnStand].Base;
@@ -473,28 +509,28 @@ bool FLakePondLifeTest::RunTest(const FString& Parameters)
     int32 Feeds = 0, Rests = 0;
     for (int32 I = 0; I < 20; ++I)
     {
-        Crucian->Hunger = 1; Crucian->Energy = 1;
-        Crucian->Decide();
+        Crucian->TestHunger() = 1; Crucian->TestEnergy() = 1;
+        Crucian->TestDecide();
         Feeds += Crucian->GetGoal() == EFishGoal::Feed;
-        Crucian->Hunger = 0.05f; Crucian->Energy = 0.1f;
-        Crucian->Decide();
+        Crucian->TestHunger() = 0.05f; Crucian->TestEnergy() = 0.1f;
+        Crucian->TestDecide();
         Rests += Crucian->GetGoal() == EFishGoal::Rest;
     }
     TestTrue(FString::Printf(TEXT("Hungry fish feed (%d/20), tired full ones rest (%d/20)"), Feeds, Rests), Feeds >= 18 && Rests >= 18);
 
     // A feeding crucian roots in the silt: bubbles come up, and it gets full.
-    Crucian->Hunger = 1; Crucian->Energy = 1;
-    Crucian->SetGoal(EFishGoal::Feed, 600);
+    Crucian->TestHunger() = 1; Crucian->TestEnergy() = 1;
+    Crucian->TestSetGoal(EFishGoal::Feed, 600);
     Run(180);   // the spot it picks may be a couple of minutes' swim away at a crucian's pace
     AddInfo(FString::Printf(TEXT("Crucian after 3 min of feeding: hunger %.2f, bubbles %d; at %s target %s, goal %d, at spot %d, water %.0f cm, state %d"),
-        Crucian->GetHunger(), Life->Stats().Signs[(int32)ELakeSign::Bubbles], *Crucian->GetActorLocation().ToString(), *Crucian->RoamTarget.ToString(),
-        (int32)Crucian->GetGoal(), Crucian->bAtSpot, LakeMap::Depth(Crucian->GetActorLocation().X, Crucian->GetActorLocation().Y), (int32)Crucian->State));
+        Crucian->GetHunger(), Life->Stats().Signs[(int32)ELakeSign::Bubbles], *Crucian->GetActorLocation().ToString(), *Crucian->TestRoamTarget().ToString(),
+        (int32)Crucian->GetGoal(), Crucian->TestbAtSpot(), LakeMap::Depth(Crucian->GetActorLocation().X, Crucian->GetActorLocation().Y), (int32)Crucian->TestState()));
     TestTrue(TEXT("A rooting crucian sends up bubbles"), Life->Stats().Signs[(int32)ELakeSign::Bubbles] > 0);
     TestTrue(TEXT("Feeding fills the fish"), Crucian->GetHunger() < 0.8f);
 
     // Resting restores its strength.
-    Crucian->Energy = 0.15f; Crucian->Hunger = 0;
-    Crucian->SetGoal(EFishGoal::Rest, 600);
+    Crucian->TestEnergy() = 0.15f; Crucian->TestHunger() = 0;
+    Crucian->TestSetGoal(EFishGoal::Rest, 600);
     Run(90);
     AddInfo(FString::Printf(TEXT("Crucian after 1.5 min of rest: energy %.2f"), Crucian->GetEnergy()));
     TestTrue(TEXT("Resting restores energy"), Crucian->GetEnergy() > 0.5f);
@@ -506,7 +542,7 @@ bool FLakePondLifeTest::RunTest(const FString& Parameters)
     Life->Step(0);
     ALakeFish* Leader = Life->SchoolLeader(7);
     TestNotNull(TEXT("The school has a leader"), Leader);
-    if (Leader) { Leader->Energy = 0.2f; Leader->SetGoal(EFishGoal::Rest, 600); }
+    if (Leader) { Leader->TestEnergy() = 0.2f; Leader->TestSetGoal(EFishGoal::Rest, 600); }
     Run(12);
     int32 Following = 0;
     for (ALakeFish* Fish : Roach) Following += IsValid(Fish) && Fish->GetGoal() == EFishGoal::Rest;
@@ -521,9 +557,9 @@ bool FLakePondLifeTest::RunTest(const FString& Parameters)
         const FVector2D P = FVector2D(Fry) + Deeper * (300 + I * 40);
         Perch.Add(Spawn(EFishSpecies::Perch, 0.25f, FVector(P, FMath::Max(ALakeFish::BottomZ(P.X, P.Y) + 20, SurfaceZ - 60)), 8));
     }
-    for (ALakeFish* Fish : Perch) { Fish->Hunger = 1; Fish->Energy = 1; }
+    for (ALakeFish* Fish : Perch) { Fish->TestHunger() = 1; Fish->TestEnergy() = 1; }
     Life->Step(0);
-    if (ALakeFish* PerchLead = Life->SchoolLeader(8)) PerchLead->SetGoal(EFishGoal::Feed, 600);
+    if (ALakeFish* PerchLead = Life->SchoolLeader(8)) PerchLead->TestSetGoal(EFishGoal::Feed, 600);
     const int32 ScatterBefore = Life->Stats().Signs[(int32)ELakeSign::Scatter];
     Run(60);
     float PerchHunger = 0;
@@ -535,21 +571,21 @@ bool FLakePondLifeTest::RunTest(const FString& Parameters)
     // A pike in ambush strikes at a small fish swimming past its snout.
     const FVector Ambush = PickSpot(EFishSpecies::Pike, Random, LakeMap::Centre, 0, nullptr, EFishGoal::Feed);
     ALakeFish* Pike = Spawn(EFishSpecies::Pike, 2.5f, Ambush);
-    Pike->Hunger = 1;
-    Pike->SetGoal(EFishGoal::Feed, 600);
-    for (int32 Wait = 0; Wait < 18 && !Pike->bAtSpot; ++Wait)
+    Pike->TestHunger() = 1;
+    Pike->TestSetGoal(EFishGoal::Feed, 600);
+    for (int32 Wait = 0; Wait < 18 && !Pike->TestbAtSpot(); ++Wait)
     {
         Run(5);
     }
-    AddInfo(FString::Printf(TEXT("Pike at %s target %s, water %.0f cm, shore %.0f cm, goal %d, state %d"), *Pike->GetActorLocation().ToString(), *Pike->RoamTarget.ToString(),
-        LakeMap::Depth(Pike->GetActorLocation().X, Pike->GetActorLocation().Y), LakeMap::ShoreDistance(Pike->GetActorLocation().X, Pike->GetActorLocation().Y), (int32)Pike->GetGoal(), (int32)Pike->State));
-    TestTrue(TEXT("The pike settles in its ambush"), Pike->bAtSpot);
+    AddInfo(FString::Printf(TEXT("Pike at %s target %s, water %.0f cm, shore %.0f cm, goal %d, state %d"), *Pike->GetActorLocation().ToString(), *Pike->TestRoamTarget().ToString(),
+        LakeMap::Depth(Pike->GetActorLocation().X, Pike->GetActorLocation().Y), LakeMap::ShoreDistance(Pike->GetActorLocation().X, Pike->GetActorLocation().Y), (int32)Pike->GetGoal(), (int32)Pike->TestState()));
+    TestTrue(TEXT("The pike settles in its ambush"), Pike->TestbAtSpot());
     const int32 StrikesBefore = Life->Stats().PikeStrikes;
     for (int32 Try = 0; Try < 6 && Life->Stats().PikeStrikes == StrikesBefore && IsValid(Pike); ++Try)
     {
         const FVector Front = Pike->MouthLocation() + Pike->GetActorForwardVector() * 90;
         Spawn(EFishSpecies::Roach, 0.12f, FVector(Front.X, Front.Y, FMath::Max(Front.Z, ALakeFish::BottomZ(Front.X, Front.Y) + 10)));
-        Pike->NextLook = 0;
+        Pike->TestNextLook() = 0;
         Run(4);
     }
     AddInfo(FString::Printf(TEXT("Pike: %d strikes, %d fish eaten"), Life->Stats().PikeStrikes, Life->Stats().Eaten));
@@ -679,7 +715,7 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
             }
             ALakeFish* Fish = SpawnFish(World, Kind.Species, Kind.Weight, Fisher->BaitLocation() + FVector(150, 0, 0), -1,
                 1000 * ((int32)Kind.Species + 1) + Trial);
-            Fish->Hunger = 1;
+            Fish->TestHunger() = 1;
             ++Sv.Trials;
             float Touch = -1, TakeAt = -1;
             int32 TakesHere = 0;
@@ -690,7 +726,7 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
                 Fish->Simulate(Dt);
                 ++GFrameCounter;
                 World->GetTimerManager().Tick(Dt);
-                if (Touch < 0 && Fish->State == ALakeFish::EState::Nibble) Touch = T;
+                if (Touch < 0 && Fish->TestState() == ALakeFish::EState::Nibble) Touch = T;
                 if (Before != EFishingState::Bite && Fisher->FishingState == EFishingState::Bite)
                 {
                     TakeAt = T;
@@ -728,13 +764,24 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     Fisher->FloatDepth = 80;
     FLakeFishingFixture::ImmersedRig(Fisher);
     ALakeFish* Shy = SpawnFish(World, EFishSpecies::Roach, 0.15f, Fisher->BaitLocation() + FVector(100, 0, 0), -1, 900);
-    Shy->Hunger = 1;
-    for (int32 Step = 0; Step < 600 && Shy->State != ALakeFish::EState::Nibble; ++Step) Shy->Simulate(Dt);
-    const bool bTrying = Shy->State == ALakeFish::EState::Nibble;
+    Shy->TestHunger() = 1;
+    for (int32 Step = 0; Step < 600 && Shy->TestState() != ALakeFish::EState::Nibble; ++Step) Shy->Simulate(Dt);
+    const bool bTrying = Shy->TestState() == ALakeFish::EState::Nibble;
     Fisher->RodElevationSpeed = 120;
     Shy->Simulate(Dt);
     Fisher->RodElevationSpeed = 0;
-    TestTrue(TEXT("A roach trying the bait backs off when the rod is jerked"), bTrying && Shy->State != ALakeFish::EState::Nibble && Fisher->FishingState == EFishingState::Waiting);
+    TestTrue(TEXT("A roach trying the bait backs off when the rod is jerked"), bTrying && Shy->TestState() != ALakeFish::EState::Nibble && Fisher->FishingState == EFishingState::Waiting);
+    // Past its take a crucian may keep the bait a long while (keepHolding), swallowing it ever deeper;
+    // a roach lets go once its take is over.
+    int32 LongCrucian = 0, LongRoach = 0;
+    for (int32 I = 0; I < 200; ++I)
+    {
+        LongCrucian += Summarise(MakeBite(EFishSpecies::Crucian, 0.5f, 1.0f, true, false, R)).Window > 20;
+        LongRoach += Summarise(MakeBite(EFishSpecies::Roach, 0.5f, 1.0f, true, false, R)).Window > 20;
+    }
+    AddInfo(FString::Printf(TEXT("Bites holding the bait over 20 s: crucian %d of 200, roach %d of 200"), LongCrucian, LongRoach));
+    TestTrue(TEXT("A crucian often keeps the bait a long while"), LongCrucian > 30);
+    TestEqual(TEXT("A roach lets go once its take is over"), LongRoach, 0);
     World->DestroyWorld(false);
     return true;
 }
@@ -783,7 +830,8 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
         TestFalse(TEXT("Cast remains finite"), Landed.ContainsNaN());
         TestTrue(TEXT("Cast settles on water"), !Fisher->bRigFlying && !Fisher->bRetrieving && ALakeEnvironment::IsWater(Landed) && Fisher->RodVisual->FloatDown());
         TestTrue(TEXT("Fixed length line bounds the cast"), FVector::Dist(Landed, Fisher->RodVisual->Tip()) < ALakeRod::LineLength - Fisher->HookDepth + 15);
-        TestTrue(TEXT("Underhand flight stays below head height"), Highest < Fisher->GetActorLocation().Z + 70);
+        // The held pendulum can rise above the angler, but cannot fly above the raised pole.
+        TestTrue(TEXT("Cast stays below the pole's overhead reach"), Highest < Fisher->GetActorLocation().Z + ALakeRod::RodLength);
         Fisher->BaitActiveTime = -10;
         Fisher->NextActionTime = 0;
         Fisher->ServerFish_Implementation();
@@ -822,7 +870,7 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("Frame rate preserves physical landing within 60 cm"), FVector::Dist2D(Base, Exercise(Fps, 1.2f)) < 60);
     Exercise(60, 0.6f);
     // A lifted fish keeps its weight and position when the player lets it back down.
-    for (float Weight : { 0.18f, 0.6f })
+    for (float Weight : { 0.18f, 0.3f })
     {
         ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Bank, ALakeEnvironment::GroundHeight(Bank.X, Bank.Y) + 95), FRotator(0, Yaw, 0));
         APlayerController* PC = World->SpawnActor<APlayerController>(); PC->Possess(Fisher);
@@ -835,6 +883,7 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
             for (int32 I = 0; I < Seconds * 60; ++I)
             {
                 Fisher->ChargeServerStart -= 1 / 60.0f; Fisher->CastServerTime -= 1 / 60.0f; Fisher->RigGripTime -= 1 / 60.0f;
+                Fisher->LandServerTime -= 1 / 60.0f;
                 Fisher->Tick(1 / 60.0f);
             }
         };
@@ -848,6 +897,9 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
             else if (Fisher->Tension < 0.2f) Fisher->ServerFish_Implementation();
             Run(1 / 60.0f);
             if (IsValid(Fish)) Fish->Simulate(1 / 60.0f);
+            if (I % 120 == 0 && IsValid(Fish))
+                AddInfo(FString::Printf(TEXT("  %.0f s: lift %.2f elev %.0f line %.0f hands %.0f rod %.0f bend %.0f mouth %.0f in water %.2f stamina %.2f lmb %d"), I / 60.0f, Fisher->RodLift, Fisher->RodElevation,
+                    Fisher->LineLoadGf, Fisher->HandLoadGf, Fisher->RodLoadGf, Fisher->RodVisual->TipBend(), Fish->MouthLocation().Z - LakeFish::SurfaceZ, Fish->BodyInWater(), Fish->StaminaFraction(), Fisher->bReeling));
         }
         AddInfo(FString::Printf(TEXT("Physical fight %.2f kg: state %d time %.1f status %s"), Weight, int32(Fisher->FishingState), Fisher->FightTime, *Fisher->Status));
         TestTrue(TEXT("Real rod and fish simulation lead to a lift"), Fisher->FishingState == EFishingState::Landing);
@@ -867,12 +919,19 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
         AddInfo(FString::Printf(TEXT("Lowered fish %.2f: state=%d lift=%.2f progress=%.2f hook=%s water=%d elevation=%.0f"), Weight, int32(Fisher->FishingState), Fisher->RodLift, Fisher->LandProgress, *Fisher->RodVisual->HookLocation().ToCompactString(), ALakeEnvironment::IsWater(Fisher->RodVisual->HookLocation()), Fisher->RodElevation));
         TestTrue(TEXT("A fully lowered fish resumes swimming on the hook"), Fisher->FishingState == EFishingState::Fight && !Fish->IsLifted());
         Fisher->ServerFish_Implementation();
-        for (int32 I = 0; I < 600 && Fisher->FishingState == EFishingState::Fight; ++I)
+        // (Lifting again: the fish swims while it is in the water, hangs while it is out.)
+        for (int32 I = 0; I < 1800 && Fisher->CatchCount == 0 && Fisher->FishingState != EFishingState::Idle; ++I)
         {
-            Run(1 / 60.0f); if (IsValid(Fish)) Fish->Simulate(1 / 60.0f);
+            Run(1 / 60.0f);
+            if (IsValid(Fish) && Fisher->FishingState == EFishingState::Fight) Fish->Simulate(1 / 60.0f);
+            if (I % 30 == 0 && IsValid(Fish))
+                AddInfo(FString::Printf(TEXT("  relift %.1f s: state %d lift %.2f elev %.0f line %.0f hands %.0f mouth %.0f water %.2f out %.0f"), I / 60.0f, int32(Fisher->FishingState),
+                    Fisher->RodLift, Fisher->RodElevation, Fisher->LineLoadGf, Fisher->HandLoadGf, Fish->MouthLocation().Z - LakeFish::SurfaceZ, Fish->BodyInWater(),
+                    FVector::Dist2D(Fish->MouthLocation(), Fisher->GetActorLocation())));
         }
-        Run(20);
-        AddInfo(FString::Printf(TEXT("Physical fish %.2f kg: caught %d state %d hook-to-hand %.0f bend %.0f"), Weight, Fisher->CatchCount, int32(Fisher->FishingState), FVector::Dist(Fisher->RodVisual->HookLocation(), Fisher->HandPoint(0)), Fisher->RodVisual->TipBend()));
+        AddInfo(FString::Printf(TEXT("Physical fish %.2f kg: caught %d state %d hook-to-hand %.0f bend %.0f lift %.2f hand load %.0f hook speed %.0f hook %.0f cm over the water, elevation %.0f"), Weight, Fisher->CatchCount, int32(Fisher->FishingState),
+            FVector::Dist(Fisher->RodVisual->HookLocation(), Fisher->HandPoint(0)), Fisher->RodVisual->TipBend(), Fisher->RodLift, Fisher->HandLoadGf,
+            (Fisher->RodVisual->HookVelocity() - Fisher->GetVelocity()).Size(), Fisher->RodVisual->HookLocation().Z - LakeFish::SurfaceZ, Fisher->RodElevation));
         TestEqual(TEXT("A physically lifted fish reaches the hand"), Fisher->CatchCount, 1);
         Fisher->RodVisual->Destroy(); Fisher->Destroy(); PC->Destroy(); if (IsValid(Fish)) Fish->Destroy();
     }
@@ -883,6 +942,88 @@ bool FLakeCastingTest::RunTest(const FString& Parameters)
 }
 
 // Wind: it drifts a float whose bait hangs free downwind until the line holds it; a rig on the bottom stays put.
+// The pendulum cast by holding LMB: no throw, the rig swings out on its line; the longer LMB is held,
+// the farther it comes down; held to the end, the rod lays it down by itself; LMB again lifts it out
+// and the free hand takes the shot within its reach, in front of the body, not off to the right.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeCastHoldTest, "QuietLake.Fishing.CastHold", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeCastHoldTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    FVector2D Facing;
+    const FVector2D Bank = LakeMap::StartSpot(&Facing);
+    const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+    struct FResult { float Out = 0; bool bLanded = false, bByItself = false, bCaught = false; float StartSpeed = 0, CatchGap = 1e6f, CatchAside = 0; };
+    auto Cast = [&](float Hold, float Fps)
+    {
+        FResult R;
+        ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(FVector(Bank, ALakeEnvironment::GroundHeight(Bank.X, Bank.Y) + 95), FRotator(0, Yaw, 0));
+        APlayerController* PC = World->SpawnActor<APlayerController>();
+        PC->Possess(Fisher);
+        PC->SetControlRotation(FRotator(-8, Yaw, 0));
+        Fisher->RodVisual = World->SpawnActor<ALakeRod>();
+        Fisher->FloatDepth = Fisher->HookDepth = 110;
+        Fisher->bRigInHand = true;
+        const float Dt = 1 / Fps;
+        auto Step = [&]()
+        {
+            // (This world's clock does not tick: move the phase clocks back instead.)
+            if (Fisher->bCharging) Fisher->ChargeServerStart -= Dt;
+            Fisher->CastServerTime -= Dt;
+            Fisher->RigGripTime -= Dt;
+            Fisher->Tick(Dt);
+        };
+        auto Run = [&](float Seconds) { for (int32 I = 0; I < FMath::RoundToInt(Seconds * Fps); ++I) Step(); };
+        Run(2);
+        Fisher->NextActionTime = 0;
+        Fisher->ServerFish_Implementation();
+        for (int32 I = 0; I < FMath::RoundToInt(Hold * Fps) && Fisher->bCharging; ++I)
+        {
+            Step();
+            if (I == FMath::RoundToInt(0.15f * Fps)) R.StartSpeed = Fisher->RodVisual->ShotVelocity().Size();
+        }
+        R.bByItself = !Fisher->bCharging;
+        if (Fisher->bCharging) Fisher->ServerRelease_Implementation();
+        Run(6);
+        const FVector Float = Fisher->RodVisual->FloatKeel();
+        R.bLanded = Fisher->FishingState == EFishingState::Waiting && !Fisher->bRigFlying && ALakeEnvironment::IsWater(Float) && Fisher->RodVisual->FloatDown();
+        R.Out = FVector::Dist2D(Float, Fisher->GetActorLocation());
+        // LMB again: the rod comes up, the rig swings in and the free hand takes it.
+        Fisher->BaitActiveTime = -10;
+        Fisher->NextActionTime = 0;
+        Fisher->ServerFish_Implementation();
+        for (int32 I = 0; I < FMath::RoundToInt(14 * Fps) && !Fisher->bRigInHand; ++I)
+        {
+            Step();
+            if (Fisher->bRigInHand)
+            {
+                const FVector Shot = Fisher->RodVisual->ShotLocation();
+                R.CatchGap = FVector::Dist(Shot, Fisher->LeftShoulder());
+                R.CatchAside = FVector::DotProduct(Shot - Fisher->GetActorLocation(), Fisher->GetActorRightVector());
+            }
+        }
+        R.bCaught = Fisher->bRigInHand;
+        AddInfo(FString::Printf(TEXT("Cast held %.1f s at %.0f fps: %s %.0f cm out%s, first speed %.0f cm/s, caught %d at %.0f cm from the shoulder, %.0f cm aside"),
+            Hold, Fps, R.bLanded ? TEXT("landed") : TEXT("NOT landed"), R.Out, R.bByItself ? TEXT(" (laid by itself)") : TEXT(""), R.StartSpeed, R.bCaught ? 1 : 0, R.CatchGap, R.CatchAside));
+        Fisher->RodVisual->Destroy(); Fisher->Destroy(); PC->Destroy();
+        return R;
+    };
+    const FResult Short = Cast(0.4f, 60), Middle = Cast(1.0f, 60), Long = Cast(2.1f, 60), Held = Cast(4.0f, 60), Slow = Cast(1.0f, 30);
+    for (const FResult* R : { &Short, &Middle, &Long, &Held, &Slow })
+    {
+        TestTrue(TEXT("Every cast comes down on the water"), R->bLanded);
+        TestTrue(TEXT("The rig is not thrown: it starts its swing from the hand's rest"), R->StartSpeed < 200);
+        TestTrue(TEXT("LMB again lifts the rig out and the free hand takes it within its reach"), R->bCaught && R->CatchGap <= ALakeCharacter::ArmReach + 1);
+        TestTrue(TEXT("Lifted out, the rig comes in to the middle of the body or left of it, not off to the right"), R->CatchAside < 20);
+    }
+    TestTrue(TEXT("The longer LMB is held, the farther the rig comes down"), Short.Out + 100 < Middle.Out && Middle.Out + 50 < Long.Out);
+    TestTrue(TEXT("A short hold lays the rig close, under the rod tip"), Short.Out < 450);
+    TestTrue(TEXT("A full swing carries the rig out past 6.5 m"), Long.Out > 650);
+    TestTrue(TEXT("Held to the end, the rod lays the rig down by itself, well out"), Held.bByItself && Held.Out > Middle.Out);
+    TestTrue(TEXT("The frame rate does not change where the cast comes down"), FMath::Abs(Slow.Out - Middle.Out) < 60);
+    World->DestroyWorld(false);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeWindDriftTest, "QuietLake.Fishing.WindDrift", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeWindDriftTest::RunTest(const FString& Parameters)
 {
@@ -949,7 +1090,6 @@ bool FLakeWindDriftTest::RunTest(const FString& Parameters)
     World->DestroyWorld(false);
     return true;
 }
-// Exercise the actual input and rod simulation, rather than DoCast's no-rod rules fixture.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeRodControlTest, "QuietLake.Fishing.RodControl", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeRodControlTest::RunTest(const FString& Parameters)
 {
@@ -1134,20 +1274,20 @@ bool FLakeFishMotionTest::RunTest(const FString& Parameters)
         ALakeFish* Fish = SpawnFish(World, Species, Weight, Open);
         const FFishSpeciesInfo& S = Info(Species);
         const float Dt = 0.02f;
-        auto Swim = [&](const FVector& Want) { Fish->SimTime += Dt; Fish->Move(Want, S.CruiseSpeed, Dt); };
+        auto Swim = [&](const FVector& Want) { Fish->TestSimTime() += Dt; Fish->TestMove(Want, S.CruiseSpeed, Dt); };
         Fish->SetActorRotation(FRotator::ZeroRotator);
-        Fish->Yaw = 0;
+        Fish->TestYaw() = 0;
         for (int32 I = 0; I < 150; ++I) Swim(FVector(S.CruiseSpeed, 0, 0));
         OutSeconds = -1; OutMinSpeed = 1e9f; OutMaxRate = 0; OutMaxRateStep = 0;
-        float PrevRate = Fish->YawRate;
+        float PrevRate = Fish->TestYawRate();
         for (int32 I = 0; I < 600; ++I)
         {
             Swim(FVector(-S.CruiseSpeed, 0, 0));
             OutMinSpeed = FMath::Min(OutMinSpeed, (float)Fish->Velocity().Size());
-            OutMaxRate = FMath::Max(OutMaxRate, FMath::Abs(Fish->YawRate));
-            OutMaxRateStep = FMath::Max(OutMaxRateStep, FMath::Abs(Fish->YawRate - PrevRate) / Dt);
-            PrevRate = Fish->YawRate;
-            if (OutSeconds < 0 && FMath::Abs(FMath::FindDeltaAngleDegrees(Fish->Yaw, 180)) < 10) OutSeconds = (I + 1) * Dt;
+            OutMaxRate = FMath::Max(OutMaxRate, FMath::Abs(Fish->TestYawRate()));
+            OutMaxRateStep = FMath::Max(OutMaxRateStep, FMath::Abs(Fish->TestYawRate() - PrevRate) / Dt);
+            PrevRate = Fish->TestYawRate();
+            if (OutSeconds < 0 && FMath::Abs(FMath::FindDeltaAngleDegrees(Fish->TestYaw(), 180)) < 10) OutSeconds = (I + 1) * Dt;
         }
         Fish->Destroy();
     };
@@ -1205,21 +1345,21 @@ bool FLakeFishMotionTest::RunTest(const FString& Parameters)
     // Sizes: the model follows the weight in length and build.
     const FFishSpeciesInfo& CrucianInfo = LakeFish::Info(EFishSpecies::Crucian);
     TestTrue(TEXT("A big crucian is deeper-bodied than a small one"), Girth(EFishSpecies::Crucian, CrucianInfo.MaxWeight) > Girth(EFishSpecies::Crucian, CrucianInfo.MinWeight) + 0.1f);
-    TestTrue(TEXT("Big fish are calmer"), SpawnFish(World, EFishSpecies::Perch, 0.8f, Open)->Agility < SpawnFish(World, EFishSpecies::Perch, 0.08f, Open + FVector(200, 0, 0))->Agility);
+    TestTrue(TEXT("Big fish are calmer"), SpawnFish(World, EFishSpecies::Perch, 0.8f, Open)->TestAgility() < SpawnFish(World, EFishSpecies::Perch, 0.08f, Open + FVector(200, 0, 0))->TestAgility());
 
     // A feeding crucian roots nose down at the bottom.
     const FVector FeedSpot = PickSpot(EFishSpecies::Crucian, Random, LakeMap::Centre, 0, nullptr, EFishGoal::Feed);
     ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.5f, FeedSpot);
-    Crucian->Hunger = 1;
-    Crucian->SetGoal(EFishGoal::Feed, 600);
-    Crucian->RoamTarget = FeedSpot;
-    Crucian->bAtSpot = true;
+    Crucian->TestHunger() = 1;
+    Crucian->TestSetGoal(EFishGoal::Feed, 600);
+    Crucian->TestRoamTarget() = FeedSpot;
+    Crucian->TestbAtSpot() = true;
     float Steepest = 0, Lowest = 1000;
     for (int32 Step = 0; Step < 600; ++Step)
     {
         Life->Step(0.05f);
         Crucian->Simulate(0.05f);
-        if (Crucian->bRooting)
+        if (Crucian->TestbRooting())
         {
             Steepest = FMath::Min(Steepest, (float)Crucian->GetActorRotation().Pitch);
             Lowest = FMath::Min(Lowest, (float)(Crucian->GetActorLocation().Z - ALakeFish::BottomZ(Crucian->GetActorLocation().X, Crucian->GetActorLocation().Y)));
@@ -1633,7 +1773,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeFightProfilesTest, "QuietLake.Fishing.Figh
 bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
 {
     using namespace LakeFish;
-    using EPhase = ALakeFish::EFightPhase;
+    using EPhase = FLakeFishFight::EFightPhase;
     UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
     const FVector Open(LakeMap::Centre, SurfaceZ - 80);
     ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(Open - FVector(600, 0, -150), FRotator::ZeroRotator);
@@ -1644,70 +1784,84 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
         const EFishSpecies Sp = (EFishSpecies)I;
         const FFishSpeciesInfo& S = Info(Sp);
         ALakeFish* Fish = SpawnFish(World, Sp, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.4f), Open);
-        Fish->Random.Initialize(1234 + I);
-        Fish->FightIndividual = 1;
+        Fish->TestRandom().Initialize(1234 + I);
+        Fish->GetFight().FightIndividual = 1;
         Fish->Hook(Fisher);
         Fish->WakeOnLine();   // the line is taut here: the fish feels the hook and fights
         FStats& T = Stats.Add(S.Id);
         // Each frame uses the actual actor simulation, including motion, stamina and profile phases.
-        EPhase Previous = Fish->FightPhase;
+        EPhase Previous = Fish->GetFight().FightPhase;
         for (int32 Step = 0; Step < 2400; ++Step)
         {
             Fish->SetActorLocation(Open);
-            Fish->Stamina = Fish->MaxStamina; // isolate the species' fresh rhythm
+            Fish->TestStamina() = Fish->TestMaxStamina(); // isolate the species' fresh rhythm
+            Fish->ApplyLineForce(FVector(-40, 0, 0));   // a taut line: on a slack one it makes off instead
             Fish->Simulate(0.025f);
-            T.Bursts += Fish->FightPhase == EPhase::Burst && Previous != EPhase::Burst;
-            T.Gaps += Fish->FightPhase == EPhase::Gap && Previous != EPhase::Gap;
-            T.Rest += Fish->FightPhase == EPhase::Pause ? 0.025f : 0;
-            T.Pull += Fish->FightPhase == EPhase::Pull ? 0.025f : 0;
-            Previous = Fish->FightPhase;
-            if (Step == 0) TestTrue(S.Id + TEXT(": Hook starts a new target immediately"), FVector::Dist(Fish->RoamTarget, Open) > 100);
+            T.Bursts += Fish->GetFight().FightPhase == EPhase::Burst && Previous != EPhase::Burst;
+            T.Gaps += Fish->GetFight().FightPhase == EPhase::Gap && Previous != EPhase::Gap;
+            T.Rest += Fish->GetFight().FightPhase == EPhase::Pause ? 0.025f : 0;
+            T.Pull += Fish->GetFight().FightPhase == EPhase::Pull ? 0.025f : 0;
+            Previous = Fish->GetFight().FightPhase;
+            if (Step == 0) TestTrue(S.Id + TEXT(": Hook starts a new target immediately"), FVector::Dist(Fish->TestRoamTarget(), Open) > 100);
         }
         for (int32 Pick = 0; Pick < 1000; ++Pick)
         {
             Fish->SetActorLocation(Open);
-            Fish->Stamina = Fish->MaxStamina;
-            Fish->ChooseFightTarget();
-            const FVector Target = Fish->RoamTarget;
+            Fish->TestStamina() = Fish->TestMaxStamina();
+            Fish->GetFight().ChooseFightTarget();
+            const FVector Target = Fish->TestRoamTarget();
             T.Dives += Target.Z < ALakeFish::BottomZ(Target.X, Target.Y) + 20;
             T.Surfaces += Target.Z > SurfaceZ - 20;
         }
         // Under a sustained opposing load, effort drains the reserve; a genuine pause restores it.
         Fish->SetActorLocation(Open);
-        Fish->Vel = FVector::ZeroVector;
+        Fish->TestVel() = FVector::ZeroVector;
         Fish->SetActorRotation(FRotator::ZeroRotator);
-        Fish->Stamina = Fish->MaxStamina * 0.6f;
-        Fish->FightPhase = EPhase::Pull;
-        const float BeforeLoad = Fish->Stamina;
+        Fish->TestStamina() = Fish->TestMaxStamina() * 0.6f;
+        Fish->GetFight().FightPhase = EPhase::Pull;
+        const float BeforeLoad = Fish->TestStamina();
         for (int32 Step = 0; Step < 40; ++Step)
         {
             Fish->ApplyLineForce(FVector(-S.Acceleration * S.Strength * Fish->WeightKg, 0, 0));
-            Fish->MoveHooked(FVector(S.BurstSpeed, 0, 0), S.BurstSpeed, 0.025f);
+            Fish->GetFight().MoveHooked(FVector(S.BurstSpeed, 0, 0), S.BurstSpeed, 0.025f);
         }
-        TestTrue(S.Id + TEXT(": resisting the line costs stamina"), Fish->Stamina < BeforeLoad - 0.2f);
-        Fish->FightPhase = EPhase::Pause;
-        Fish->FightRemaining = 4;
-        Fish->Vel = FVector::ZeroVector;
-        Fish->RoamTarget = Fish->GetActorLocation();
-        const float BeforeRest = Fish->Stamina;
-        Fish->Simulate(0.05f);
-        TestTrue(S.Id + TEXT(": Hooked pause really recovers stamina"), Fish->Stamina > BeforeRest);
+        TestTrue(S.Id + TEXT(": resisting the line costs stamina"), Fish->TestStamina() < BeforeLoad - 0.2f);
+        // A rest is a rest only on a slack line: leaning against a pull is work too. (The body's
+        // stamina alone: on a slack line a fresh fish would rather make off, see ChooseEscapeTarget.)
+        Fish->ApplyLineForce(FVector::ZeroVector);
+        Fish->GetFight().FightPhase = EPhase::Pause;
+        Fish->GetFight().FightRemaining = 4;
+        Fish->TestVel() = FVector::ZeroVector;
+        Fish->TestRoamTarget() = Fish->GetActorLocation();
+        const float BeforeRest = Fish->TestStamina();
+        Fish->GetFight().MoveHooked(FVector::ZeroVector, 0, 0.05f);
+        TestTrue(S.Id + TEXT(": Hooked pause really recovers stamina"), Fish->TestStamina() > BeforeRest);
+        // Given slack, a fish with strength left makes off somewhere in the water instead of waiting.
+        Fish->SetActorLocation(Open);
+        Fish->TestStamina() = Fish->TestMaxStamina();
+        Fish->GetFight().FightPhase = EPhase::Pause;
+        Fish->GetFight().FightRemaining = 4;
+        Fish->GetFight().bWasSlack = false;
+        Fish->ApplyLineForce(FVector::ZeroVector);
+        Fish->Simulate(0.025f);
+        TestTrue(S.Id + TEXT(": on a slack line it makes off to water of its choosing"), Fish->GetFight().FightPhase != EPhase::Pause
+            && LakeMap::IsWater(Fish->TestRoamTarget().X, Fish->TestRoamTarget().Y) && FVector::Dist2D(Fish->TestRoamTarget(), Open) > 100);
         // Neither a current burst nor the common movement tail can restore a tired fish to full speed.
-        Fish->FightPhase = EPhase::Burst;
-        Fish->FightRemaining = 2;
-        Fish->Stamina = Fish->MaxStamina;
+        Fish->GetFight().FightPhase = EPhase::Burst;
+        Fish->GetFight().FightRemaining = 2;
+        Fish->TestStamina() = Fish->TestMaxStamina();
         FVector Desired; float FreshSpeed = 0, TiredSpeed = 0;
-        Fish->UpdateFightMotion(0.01f, Desired, FreshSpeed);
-        Fish->Stamina = Fish->MaxStamina * 0.1f;
-        Fish->UpdateFightMotion(0.01f, Desired, TiredSpeed);
+        Fish->GetFight().UpdateFightMotion(0.01f, Desired, FreshSpeed);
+        Fish->TestStamina() = Fish->TestMaxStamina() * 0.1f;
+        Fish->GetFight().UpdateFightMotion(0.01f, Desired, TiredSpeed);
         TestTrue(S.Id + TEXT(": even bursts weaken with fatigue"), TiredSpeed < FreshSpeed * 0.3f);
-        Fish->FightPhase = EPhase::Pause;
-        Fish->FightRemaining = 10;
-        Fish->Stamina = Fish->MaxStamina;
-        Fish->Vel = FVector::ZeroVector;
-        Fish->MoveHooked(FVector::ZeroVector, 0, 0.05f);
-        TestTrue(S.Id + TEXT(": recovery never overfills reserve"), Fish->Stamina <= Fish->MaxStamina);
-        TestTrue(S.Id + TEXT(": stamina never negative"), Fish->Stamina >= 0);
+        Fish->GetFight().FightPhase = EPhase::Pause;
+        Fish->GetFight().FightRemaining = 10;
+        Fish->TestStamina() = Fish->TestMaxStamina();
+        Fish->TestVel() = FVector::ZeroVector;
+        Fish->GetFight().MoveHooked(FVector::ZeroVector, 0, 0.05f);
+        TestTrue(S.Id + TEXT(": recovery never overfills reserve"), Fish->TestStamina() <= Fish->TestMaxStamina());
+        TestTrue(S.Id + TEXT(": stamina never negative"), Fish->TestStamina() >= 0);
         AddInfo(FString::Printf(TEXT("%s: bursts=%d gaps=%d rest=%.1fs pull=%.1fs dives=%d surface=%d /1000"), *S.Id, T.Bursts, T.Gaps, T.Rest, T.Pull, T.Dives, T.Surfaces));
         Fish->Destroy();
     }
@@ -1719,40 +1873,41 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
 
     ALakeFish* Pike = SpawnFish(World, EFishSpecies::Pike, 1.4f, Open);
     Pike->Hook(Fisher);
-    Pike->Random.Initialize(77);
-    Pike->FightIndividual = 1;
+    Pike->TestRandom().Initialize(77);
+    Pike->GetFight().FightIndividual = 1;
     // Find a permitted probabilistic leap, then follow the real ballistic movement.
-    for (int32 I = 0; I < 100 && !Pike->bFightJump; ++I)
+    for (int32 I = 0; I < 100 && !Pike->GetFight().bFightJump; ++I)
     {
         Pike->SetActorLocation(FVector(Open.X, Open.Y, SurfaceZ - 8));
-        Pike->Stamina = Pike->MaxStamina;
-        Pike->StartFightBurst();
+        Pike->TestStamina() = Pike->TestMaxStamina();
+        Pike->GetFight().StartFightBurst();
     }
-    TestTrue(TEXT("A fresh pike can launch a hooked leap"), Pike->bFightJump);
+    TestTrue(TEXT("A fresh pike can launch a hooked leap"), Pike->GetFight().bFightJump);
     TestFalse(TEXT("A leaping pike cannot be landed"), Pike->ReadyToLand());
-    const float LaunchStamina = Pike->Stamina;
+    const float LaunchStamina = Pike->TestStamina();
     float Peak = -1000;
     for (int32 Step = 0; Step < 100; ++Step)
     {
-        Pike->MoveHooked(FVector::ZeroVector, 0, 0.01f);
+        Pike->GetFight().MoveHooked(FVector::ZeroVector, 0, 0.01f);
         Peak = FMath::Max(Peak, float(Pike->GetActorLocation().Z - SurfaceZ));
     }
-    TestTrue(TEXT("The fish itself clears the water and returns"), Peak > 25 && !Pike->bFightJump && Pike->GetActorLocation().Z <= SurfaceZ);
-    TestTrue(TEXT("The leap does not regenerate stamina in flight"), Pike->Stamina <= LaunchStamina);
+    TestTrue(TEXT("The fish itself clears the water and returns"), Peak > 25 && !Pike->GetFight().bFightJump && Pike->GetActorLocation().Z <= SurfaceZ);
+    TestTrue(TEXT("The leap does not regenerate stamina in flight"), Pike->TestStamina() <= LaunchStamina);
     Pike->SetActorLocation(FVector(Open.X, Open.Y, SurfaceZ - 8));
-    for (int32 I = 0; I < 100; ++I) Pike->StartFightBurst();
-    TestFalse(TEXT("The jump cooldown prevents repeated leaps"), Pike->bFightJump);
+    for (int32 I = 0; I < 100; ++I) Pike->GetFight().StartFightBurst();
+    TestFalse(TEXT("The jump cooldown prevents repeated leaps"), Pike->GetFight().bFightJump);
     // Applied line force is still integrated in the airborne branch.
-    Pike->bFightJump = true;
-    Pike->Vel = FVector(0, 0, 200);
+    Pike->GetFight().bFightJump = true;
+    Pike->SetActorLocation(FVector(Open.X, Open.Y, SurfaceZ + 60));   // (in the air: under water the water would hold its head)
+    Pike->TestVel() = FVector(0, 0, 200);
     Pike->ApplyLineForce(FVector(140, 0, 0));
-    Pike->MoveHooked(FVector::ZeroVector, 0, 0.01f);
-    TestTrue(TEXT("The line remains attached and affects an airborne fish"), Pike->Vel.X > 0.5);
-    Pike->bFightJump = false;
-    Pike->NextFightJump = 0;
-    Pike->Stamina = Pike->MaxStamina * 0.1f;
-    for (int32 I = 0; I < 100; ++I) Pike->StartFightBurst();
-    TestFalse(TEXT("An exhausted pike cannot leap"), Pike->bFightJump);
+    Pike->GetFight().MoveHooked(FVector::ZeroVector, 0, 0.01f);
+    TestTrue(TEXT("The line remains attached and affects an airborne fish"), Pike->TestVel().X > 0.5);
+    Pike->GetFight().bFightJump = false;
+    Pike->GetFight().NextFightJump = 0;
+    Pike->TestStamina() = Pike->TestMaxStamina() * 0.1f;
+    for (int32 I = 0; I < 100; ++I) Pike->GetFight().StartFightBurst();
+    TestFalse(TEXT("An exhausted pike cannot leap"), Pike->GetFight().bFightJump);
 
     FVector2D Facing;
     const FVector2D Edge = LakeMap::StartSpot(&Facing);
@@ -1764,34 +1919,34 @@ bool FLakeFightProfilesTest::RunTest(const FString& Parameters)
     {
         Pike->SetActorLocation(NearBank);
         Pike->Hook(Fisher);
-        Pike->Random.Initialize(Seed);
-        Pike->StateTime = 4;
-        Pike->Stamina = Pike->MaxStamina * 0.3f;
+        Pike->TestRandom().Initialize(Seed);
+        Pike->TestStateTime() = 4;
+        Pike->TestStamina() = Pike->TestMaxStamina() * 0.3f;
         Fisher->FishingState = EFishingState::Fight;
         Fisher->HookedFish = Pike;
         Fisher->bReeling = true;
         Fisher->FightTime = 4;
         Fisher->UpdateFight(0.01f);
-        bFinalRun = Pike->bShoreRun;
+        bFinalRun = Pike->GetFight().bShoreRun;
     }
     TestTrue(TEXT("A final run gets a chance before automatic landing"), bFinalRun && Fisher->FishingState == EFishingState::Fight);
-    TestTrue(TEXT("The final run heads away from the angler"), FVector::DotProduct(Pike->RoamTarget - NearBank, FVector(Facing, 0)) > 0);
-    Pike->bShoreRun = false;
+    TestTrue(TEXT("The final run heads away from the angler"), FVector::DotProduct(Pike->TestRoamTarget() - NearBank, FVector(Facing, 0)) > 0);
+    Pike->GetFight().bShoreRun = false;
     for (int32 I = 0; I < 100; ++I) Pike->ReadyToLand();
-    TestFalse(TEXT("The final run cannot be rolled over and over"), Pike->bShoreRun);
+    TestFalse(TEXT("The final run cannot be rolled over and over"), Pike->GetFight().bShoreRun);
     Pike->Hook(Fisher);
-    TestTrue(TEXT("Rehook clears old manoeuvre state"), !Pike->bShoreTried && !Pike->bFightJump && Pike->FightRemaining == 0);
+    TestTrue(TEXT("Rehook clears old manoeuvre state"), !Pike->GetFight().bShoreTried && !Pike->GetFight().bFightJump && Pike->GetFight().FightRemaining == 0);
     // Size and individuality influence the production burst timing.
     ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.3f, Open);
     Perch->Hook(Fisher);
-    Perch->Random.Initialize(9); Perch->Size01 = 0; Perch->FightIndividual = 1;
-    Perch->StartFightBurst(); const float SmallBurst = Perch->FightRemaining;
-    Perch->Random.Initialize(9); Perch->Size01 = 1;
-    Perch->StartFightBurst(); const float BigBurst = Perch->FightRemaining;
-    Perch->Random.Initialize(9); Perch->FightIndividual = 1.15f;
-    Perch->StartFightBurst();
-    TestTrue(TEXT("Size and individual pace alter bouts"), BigBurst > SmallBurst * 1.5f && Perch->FightRemaining < BigBurst);
-    TestFalse(TEXT("Perch have no hooked leap"), Perch->bFightJump);
+    Perch->TestRandom().Initialize(9); Perch->TestSize01() = 0; Perch->GetFight().FightIndividual = 1;
+    Perch->GetFight().StartFightBurst(); const float SmallBurst = Perch->GetFight().FightRemaining;
+    Perch->TestRandom().Initialize(9); Perch->TestSize01() = 1;
+    Perch->GetFight().StartFightBurst(); const float BigBurst = Perch->GetFight().FightRemaining;
+    Perch->TestRandom().Initialize(9); Perch->GetFight().FightIndividual = 1.15f;
+    Perch->GetFight().StartFightBurst();
+    TestTrue(TEXT("Size and individual pace alter bouts"), BigBurst > SmallBurst * 1.5f && Perch->GetFight().FightRemaining < BigBurst);
+    TestFalse(TEXT("Perch have no hooked leap"), Perch->GetFight().bFightJump);
 
     EFishSpecies Bream = EFishSpecies::Crucian;
     for (int32 I = 0; I < NumSpecies(); ++I) if (Info((EFishSpecies)I).Id == TEXT("bream")) Bream = (EFishSpecies)I;
@@ -1828,10 +1983,10 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
         {
             ALakeFish* F = SpawnFish(World, Sp, Weight, Open);
             F->SetActorRotation(FRotator(25, 63, 0));
-            const FVector Expected = F->Body->GetComponentTransform().TransformPosition(S.MouthPoint * S.MeshLength);
+            const FVector Expected = F->TestBody()->GetComponentTransform().TransformPosition(S.MouthPoint * S.MeshLength);
             TestTrue(TEXT("Physical mouth equals the scaled model attachment"), FVector::Dist(Expected, F->MouthLocation()) < 0.01f);
             TestTrue(TEXT("Contact is small and scales with the mouth"), F->ContactRadius() >= 0.4f && F->ContactRadius() <= 2);
-            F->State = ALakeFish::EState::Nibble; F->TargetAngler = Angler; F->BiteStepEnd = 10000;
+            F->TestState() = ALakeFish::EState::Nibble; F->TestTargetAngler() = Angler; F->TestAtBait().StepEnd = 10000;
             Angler->FishingState = EFishingState::Waiting;
             Angler->BaitPoint = F->MouthLocation() + FVector(5,2,-1);
             for (int32 Dock = 0; Dock < 100; ++Dock) F->Simulate(0.02f);
@@ -1843,20 +1998,20 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
             TestTrue(TEXT("Slack fish remains alive and swims"), FVector::Dist(Start, F->GetActorLocation()) > 1);
             F->ApplyLineForce(FVector(100, 0, 0));
             TestTrue(TEXT("A real load awakens resistance"), F->IsFightAwake());
-            F->Stamina = F->MaxStamina * 0.5f;
-            F->FightPhase = ALakeFish::EFightPhase::Pull;
-            F->Vel = FVector::ZeroVector;
-            const float Before = F->Stamina;
-            F->MoveHooked(FVector(100, 0, 0), 100, 0.05f);
-            TestTrue(TEXT("Muscular work consumes stamina"), F->Stamina < Before);
-            F->Vel = FVector::ZeroVector; F->PendingLineForce = FVector::ZeroVector;
-            F->FightPhase = ALakeFish::EFightPhase::Pause;
-            const float Rest = F->Stamina;
-            F->MoveHooked(FVector::ZeroVector, 0, 0.05f);
-            TestTrue(TEXT("A real pause recovers stamina"), F->Stamina > Rest);
+            F->TestStamina() = F->TestMaxStamina() * 0.5f;
+            F->GetFight().FightPhase = FLakeFishFight::EFightPhase::Pull;
+            F->TestVel() = FVector::ZeroVector;
+            const float Before = F->TestStamina();
+            F->GetFight().MoveHooked(FVector(100, 0, 0), 100, 0.05f);
+            TestTrue(TEXT("Muscular work consumes stamina"), F->TestStamina() < Before);
+            F->TestVel() = FVector::ZeroVector; F->GetFight().PendingLineForce = FVector::ZeroVector;
+            F->GetFight().FightPhase = FLakeFishFight::EFightPhase::Pause;
+            const float Rest = F->TestStamina();
+            F->GetFight().MoveHooked(FVector::ZeroVector, 0, 0.05f);
+            TestTrue(TEXT("A real pause recovers stamina"), F->TestStamina() > Rest);
             F->SetActorLocation(FVector(Open.X, Open.Y, LakeFish::SurfaceZ - 1));
-            F->Vel = FVector(0, 0, 120);
-            F->MoveHooked(FVector::ZeroVector, 0, 0.02f);
+            F->TestVel() = FVector(0, 0, 120);
+            F->GetFight().MoveHooked(FVector::ZeroVector, 0, 0.02f);
             TestTrue(TEXT("Surface has no hard position ceiling"), F->GetActorLocation().Z > LakeFish::SurfaceZ - 1);
             F->LiftOut();
             for (int32 I = 0; I < 40; ++I)
@@ -1866,6 +2021,26 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
                 TestTrue(TEXT("Hanging mouth stays on hook while body swings"), FVector::Dist(F->MouthLocation(), Hook) < 0.01f);
                 TestFalse(TEXT("Hanging body remains finite"), F->GetActorLocation().ContainsNaN());
             }
+            const float Length = LakeFish::LengthCm(Sp, Weight);
+            FVector Mouth(Open.X, Open.Y, LakeFish::SurfaceZ + Length * 0.3f);
+            const float Horizontal = F->ImmersionAt(Mouth, FQuat::Identity).Fraction;
+            const float Vertical = F->ImmersionAt(Mouth, FRotator(90,0,0).Quaternion()).Fraction;
+            TestTrue(TEXT("A submerged tail still supports a raised mouth"), Vertical>Horizontal+0.25f);
+            float Previous = 1;
+            for (int32 Step=0; Step<=100; ++Step)
+            {
+                Mouth.Z=LakeFish::SurfaceZ+Length*(-0.3f+Step*0.015f);
+                const float Supported=F->ImmersionAt(Mouth, FRotator(60,0,0).Quaternion()).Fraction;
+                TestTrue(TEXT("Emergence transfers weight continuously"), Supported<=Previous+0.0001f && Previous-Supported<0.12f);
+                Previous=Supported;
+            }
+            TestTrue(TEXT("A fully emerged body has no buoyancy"), Previous<0.001f);
+            F->SetActorRotation(FRotator::ZeroRotator);
+            F->SetActorLocation(Mouth-F->MouthOffset());
+            F->LiftOut();
+            for (int32 Step=0; Step<360; ++Step) F->HangOnLine(Mouth, FVector::ForwardVector, 1/60.0f);
+            TestTrue(TEXT("An airborne body hangs under its mouth, independently of line angle"), F->GetActorForwardVector().Z>0.94f);
+            TestTrue(TEXT("Turning the body never detaches the mouth"), FVector::Dist(F->MouthLocation(),Mouth)<0.01f);
         }
     }
     TestTrue(TEXT("Fully submerged body is supported"), ALakeRod::FishSupport(LakeFish::SurfaceZ - 1, 30) == 1);
@@ -1877,10 +2052,23 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
     const FVector PlayerPull = ALakeRod::TetherForce(FVector(-20,0,0), FVector(600,0,0), FVector::ZeroVector, 600, 0.4f);
     TestTrue(TEXT("Player moving away produces the same stretch force"), (PlayerPull - Load(620)).IsNearlyZero());
     TestTrue(TEXT("Damping opposes outward motion"), Load(620, 100).Size() > Load(620).Size());
+    // The tackle: a softer blank loads the line less for the same pull-out, the arms behind it give
+    // too, and with matched tackle the line is the weakest link of every rod.
+    for (ERodKind Kind : { ERodKind::Light, ERodKind::Medium, ERodKind::Heavy })
+    {
+        const FLakeTackle Gear = ALakeCharacter::TackleOf(Kind);
+        TestTrue(TEXT("A rod breaks from its bend: it stands a pull of its own"), Gear.RodBreak > 1000);
+        TestTrue(TEXT("The hook's hold wears below the line's strength"), Gear.HookSafe < Gear.LineBreak);
+        TestTrue(TEXT("The arms give behind the blank"), ALakeCharacter::HandSeries(Gear) > 0.1f && ALakeCharacter::HandSeries(Gear) < 0.6f);
+    }
+    const FLakeTackle Soft = ALakeCharacter::TackleOf(ERodKind::Light), Stiff = ALakeCharacter::TackleOf(ERodKind::Heavy);
+    TestTrue(TEXT("Held across the line the light pole breaks before the line; the heavy one outlasts it"), Soft.RodBreak < Soft.LineBreak && Stiff.RodBreak > Stiff.LineBreak);
+    auto Spring = [](const FLakeTackle& Gear) { return ALakeRod::TetherForce(FVector::ZeroVector, FVector(700, 0, 0), FVector::ZeroVector, 600, 0.4f, Gear.RodSpring).Size() * ALakeCharacter::HandSeries(Gear); };
+    TestTrue(TEXT("A softer rod loads the line less for the same run"), Spring(Soft) < Spring(Stiff));
     ALakeFish* F = SpawnFish(World, EFishSpecies::Perch, 0.4f, Open);
     auto Holding = [&](float Reach)
     {
-        F->State = ALakeFish::EState::Holding; F->TargetAngler = Angler; F->BiteNow.Hook = 1;
+        F->TestState() = ALakeFish::EState::Holding; F->TestTargetAngler() = Angler; F->TestAtBait().Step.Hook = 1;
         Angler->FishingState = EFishingState::Bite; Angler->BaitFish = F; Angler->BiteMotion = EBiteMotion::Hold;
         F->SetActorRotation(FRotator::ZeroRotator);
         F->SetActorLocation(Angler->RodTip() + FVector(Reach,0,0) - F->MouthOffset());
@@ -1894,8 +2082,8 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("Contact and a transmitted strike set hook"), F->IsHooked());
     Holding(620); Angler->StrikeUntil = -1; Angler->HookImpulse = 0; Angler->ResolveHook(0.1f);
     TestTrue(TEXT("Fish can hook itself by loading the held bait"), F->IsHooked());
-    F->HookGrip = 0.001f; F->ApplyLineForce(FVector(-10000,0,0));
-    F->MoveHooked(FVector(100,0,0),100,0.1f);
+    F->GetFight().HookGrip = 0.001f; F->ApplyLineForce(FVector(-10000,0,0));
+    F->GetFight().MoveHooked(FVector(100,0,0),100,0.1f);
     TestFalse(TEXT("An unreliable hook can give under severe opposing load"), F->IsHooked());
 
     // Use the physical rod: its continuous aim used to overwrite the bite lift and strike.
@@ -1916,10 +2104,10 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
 
     FLakeFishingFixture::ImmersedRig(Angler);
     Holding(400);
-    F->State = ALakeFish::EState::Nibble; // isolate pose assertions; real loaded takes are tested above and in LiveRigPreview
+    F->TestState() = ALakeFish::EState::Nibble; // isolate pose assertions; real loaded takes are tested above and in LiveRigPreview
     Angler->RodLift = 0; Angler->Tension = 0; Angler->StrikeServerTime = -100;
     Angler->StrikeUntil = -1; Angler->HookImpulse = 0;
-    F->BiteStepEnd = 10000;
+    F->TestAtBait().StepEnd = 10000;
     auto TargetElevation = [&](float Now)
     {
         float Elevation, Stiffness, Yaw; FVector Grip;
@@ -1931,7 +2119,7 @@ bool FLakeContactPhysicsTest::RunTest(const FString& Parameters)
     Angler->FishingState = EFishingState::Waiting; Angler->BaitFish = nullptr;
     const int32 StandRod = (int32)Angler->RodKind;
     Angler->ParkHandRod(ERodPlace::Stand, Angler->GetActorLocation(), Angler->GetActorRotation().Yaw);
-    F->TargetRig = StandRod;
+    F->TestTargetRig() = StandRod;
     Angler->OnFishTake(F, 60);
     Angler->ServerFish_Implementation();
     TestTrue(TEXT("LMB takes a nearby rod from the stand during a bite"), Angler->HasRodInHands() && Angler->FishingState == EFishingState::Bite && Angler->bReeling);
@@ -2022,7 +2210,7 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
     const FVector2D Right(-Facing.Y, Facing.X);
     const FVector2D Open = Start + Facing * 1400;
     auto At = [](FVector2D P) { return FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)); };
-    auto Spawn = [&](EFishSpecies Species, float Weight, FVector2D P) { ALakeFish* Fish = SpawnFish(World, Species, Weight, At(P)); Fish->Hunger = 1; return Fish; };
+    auto Spawn = [&](EFishSpecies Species, float Weight, FVector2D P) { ALakeFish* Fish = SpawnFish(World, Species, Weight, At(P)); Fish->TestHunger() = 1; return Fish; };
     auto Step = [&](const TArray<ALakeFish*>& Fish) { Life->Step(Dt); for (ALakeFish* F : Fish) if (IsValid(F)) F->Simulate(Dt); };
     auto Gone = [](TArray<ALakeFish*>& Fish) { for (ALakeFish* F : Fish) if (IsValid(F)) F->Destroy(); Fish.Reset(); };
 
@@ -2033,16 +2221,16 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
         TArray<ALakeFish*> Fish = { Pike, Roach };
         // Seeded: how far the roach turns away depends on its own random decisions, and the test
         // must not pass or fail on a lucky draw.
-        Pike->Random.Initialize(3110);
-        Roach->Random.Initialize(3111);
+        Pike->TestRandom().Initialize(3110);
+        Roach->TestRandom().Initialize(3111);
         const FVector RoachStart = Roach->GetActorLocation();
         float Before = FVector::Dist(Pike->GetActorLocation(), Roach->GetActorLocation()), Fear = 0, Fastest = 0;
         for (int32 I = 0; I < 80; ++I)
         {
-            Pike->Vel = FVector(Facing, 0) * 25;   // it keeps swimming
+            Pike->TestVel() = FVector(Facing, 0) * 25;   // it keeps swimming
             Step({ Roach });
             Fear = FMath::Max(Fear, Roach->FearNow());
-            Fastest = FMath::Max(Fastest, float(Roach->Vel.Size()));
+            Fastest = FMath::Max(Fastest, float(Roach->TestVel().Size()));
         }
         const float After = FVector::Dist(Pike->GetActorLocation(), Roach->GetActorLocation());
         AddInfo(FString::Printf(TEXT("Roach by a swimming pike: fear %.2f, %.0f -> %.0f cm, moved %.0f cm at up to %.0f cm/s"), Fear, Before, After, FVector::Dist(RoachStart, Roach->GetActorLocation()), Fastest));
@@ -2055,9 +2243,9 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
         ALakeFish* Far = Spawn(EFishSpecies::Roach, 0.15f, Open + Right * 250);
         ALakeFish* Close = Spawn(EFishSpecies::Roach, 0.15f, Open - Right * 90);
         TArray<ALakeFish*> Fish = { Pike, Far, Close };
-        Pike->Vel = FVector::ZeroVector;
+        Pike->TestVel() = FVector::ZeroVector;
         Life->Step(0);
-        for (ALakeFish* F : { Far, Close }) { F->NextThreatLook = 0; F->SenseThreats(Dt); }
+        for (ALakeFish* F : { Far, Close }) { F->TestNextThreatLook() = 0; F->TestSenseThreats(Dt); }
         AddInfo(FString::Printf(TEXT("Still pike: roach at 2.5 m fear %.2f, at 0.9 m %.2f"), Far->FearNow(), Close->FearNow()));
         TestTrue(TEXT("A pike lying still is noticed only close by"), Far->FearNow() == 0 && Close->FearNow() > 0.1f);
         Gone(Fish);
@@ -2072,14 +2260,14 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
         Fisher->FloatDepth = 80;
         FLakeFishingFixture::ImmersedRig(Fisher);
         ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, Fisher->BaitLocation() + FVector(100, 0, 0));
-        Roach->Hunger = 1;
+        Roach->TestHunger() = 1;
         TArray<ALakeFish*> Fish = { Roach };
         for (int32 I = 0; I < 600 && !Roach->IsNibbling(); ++I) Step(Fish);
         const bool bTrying = Roach->IsNibbling();
         ALakeFish* Pike = SpawnFish(World, EFishSpecies::Pike, 2.5f, Roach->GetActorLocation() + FVector(0, 80, 0));
-        Pike->SetGoal(EFishGoal::Feed, 1000);   // a hunting pike
+        Pike->TestSetGoal(EFishGoal::Feed, 1000);   // a hunting pike
         Fish.Add(Pike);
-        for (int32 I = 0; I < 40 && Roach->IsNibbling(); ++I) { Pike->Vel = FVector(0, -30, 0); Step({ Roach }); }
+        for (int32 I = 0; I < 40 && Roach->IsNibbling(); ++I) { Pike->TestVel() = FVector(0, -30, 0); Step({ Roach }); }
         TestTrue(TEXT("A roach trying the bait backs off when a pike swims up"), bTrying && !Roach->IsNibbling());
 
         // 6. At the bait: a big perch pushes a small roach off it, a small roach cannot push a perch.
@@ -2087,7 +2275,7 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
         Roach->Destroy();
         FLakeFishingFixture::ImmersedRig(Fisher);
         Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, Fisher->BaitLocation() + FVector(100, 0, 0));
-        Roach->Hunger = 1;
+        Roach->TestHunger() = 1;
         Fish = { Roach };
         for (int32 I = 0; I < 1200 && !Roach->IsNibbling(); ++I) Step(Fish);
         const bool bRoachOn = Roach->IsNibbling();
@@ -2097,7 +2285,7 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
         TestTrue(TEXT("A big perch pushes a small roach off the bait"), bRoachOn && bPushed);
         FLakeFishingFixture::ImmersedRig(Fisher);
         ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.3f, Fisher->BaitLocation() + FVector(150, 0, 0));
-        Perch->Hunger = 1;
+        Perch->TestHunger() = 1;
         Big->Destroy();
         Roach->Destroy();
         Fish = { Perch };
@@ -2110,7 +2298,7 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
     // 4. A pike eats small fish of any kind - a small perch too - but leaves a big perch alone.
     {
         ALakeFish* Pike = Spawn(EFishSpecies::Pike, 2.5f, Open);
-        Pike->SetGoal(EFishGoal::Feed, 1000);
+        Pike->TestSetGoal(EFishGoal::Feed, 1000);
         const int32 EatenBefore = Life->Stats().Eaten;
         int32 Tries = 0;
         bool bBigStruck = false;
@@ -2118,16 +2306,16 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
         for (; Tries < 40 && Life->Stats().Eaten == EatenBefore; ++Tries)
         {
             // It lies where it is, facing ahead.
-            Pike->bAtSpot = true;
-            Pike->LieUntil = Pike->SimTime + 100;
-            Pike->RoamTarget = Pike->GetActorLocation();
-            Pike->LieFacing = Pike->GetActorForwardVector();
+            Pike->TestbAtSpot() = true;
+            Pike->TestLieUntil() = Pike->TestSimTime() + 100;
+            Pike->TestRoamTarget() = Pike->GetActorLocation();
+            Pike->TestLieFacing() = Pike->GetActorForwardVector();
             const FVector Front = Pike->MouthLocation() + Pike->GetActorForwardVector() * 80;
             ALakeFish* Small = SpawnFish(World, EFishSpecies::Perch, 0.1f, FVector(Front.X, Front.Y, FMath::Max(Front.Z, ALakeFish::BottomZ(Front.X, Front.Y) + 10)));
             for (int32 I = 0; I < 60 && IsValid(Small); ++I)
             {
                 Step({ Pike, Small, Big });
-                bBigStruck |= Pike->Prey.Get() == Big;
+                bBigStruck |= Pike->TestPrey().Get() == Big;
             }
             if (IsValid(Small)) Small->Destroy();
         }
@@ -2140,7 +2328,7 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
     // 5. A big perch dashes at a small roach right in front of it.
     {
         ALakeFish* Perch = Spawn(EFishSpecies::Perch, 0.8f, Open);
-        Perch->SetGoal(EFishGoal::Feed, 1000);
+        Perch->TestSetGoal(EFishGoal::Feed, 1000);
         const int32 StrikesBefore = Life->Stats().PikeStrikes;
         int32 Tries = 0;
         for (; Tries < 40 && Life->Stats().PikeStrikes == StrikesBefore; ++Tries)
@@ -2165,9 +2353,9 @@ bool FLakeInteractionsTest::RunTest(const FString& Parameters)
         Life->Fry.Reset();
         Life->Fry.Add(Shoal);
         ALakeFish* Perch = Spawn(EFishSpecies::Perch, 0.3f, Shallow + Right * 230);
-        Perch->SetGoal(EFishGoal::Feed, 1000);   // a hunting perch
+        Perch->TestSetGoal(EFishGoal::Feed, 1000);   // a hunting perch
         const int32 FlightsBefore = Life->Stats().FryFlights;
-        for (int32 I = 0; I < 40 && Life->Stats().FryFlights == FlightsBefore; ++I) { Perch->Vel = FVector(-Right, 0) * 40; Life->Step(Dt); }
+        for (int32 I = 0; I < 40 && Life->Stats().FryFlights == FlightsBefore; ++I) { Perch->TestVel() = FVector(-Right, 0) * 40; Life->Step(Dt); }
         const FFryShoal& Fled = Life->Fry[0];
         const float From = FVector::Dist2D(Fled.Location, Perch->GetActorLocation()), To = FVector::Dist2D(Fled.Target, Perch->GetActorLocation());
         AddInfo(FString::Printf(TEXT("Fry by a hunting perch 2.3 m off: darted %d, heading from %.0f to %.0f cm off it"), Life->Stats().FryFlights - FlightsBefore, From, To));
@@ -2266,11 +2454,11 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
     auto Spawn = [&](EFishSpecies Species, float Weight, FVector2D P)
     {
         ALakeFish* Fish = SpawnFish(World, Species, Weight, FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)));
-        Fish->Hunger = 1;
-        Fish->NextMoodCheck = 0;
+        Fish->TestHunger() = 1;
+        Fish->TestNextMoodCheck() = 0;
         return Fish;
     };
-    auto Choose = [](ALakeFish* Fish) { Fish->SetGoal(EFishGoal::Cruise, 1000); Fish->SetGoal(EFishGoal::Feed, 1000); };
+    auto Choose = [](ALakeFish* Fish) { Fish->TestSetGoal(EFishGoal::Cruise, 1000); Fish->TestSetGoal(EFishGoal::Feed, 1000); };
 
     // 5. A crucian in the lilies roots for silt fauna, eats its patch down and moves on.
     {
@@ -2287,17 +2475,17 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
         Life->Food() = FLakeFoodField();
         Life->Step(0);
         ALakeFish* Crucian = Spawn(EFishSpecies::Crucian, 0.4f, Lily);
-        Crucian->Random.Initialize(Seed);
-        Crucian->WanderSeed = 0;
-        Crucian->Energy = 1;
+        Crucian->TestRandom().Initialize(Seed);
+        Crucian->TestWanderSeed() = 0;
+        Crucian->TestEnergy() = 1;
         int32 OnSilt = 0;
-        for (int32 I = 0; I < 20; ++I) { Choose(Crucian); OnSilt += Crucian->FeedOn == EFishFood::Benthos; }
+        for (int32 I = 0; I < 20; ++I) { Choose(Crucian); OnSilt += Crucian->TestFeedOn() == EFishFood::Benthos; }
         AddInfo(FString::Printf(TEXT("Crucian in the lilies: on silt fauna %d of 20"), OnSilt));
         TestTrue(TEXT("A crucian feeds mostly on the silt fauna"), OnSilt >= 12);
-        for (int32 K = 0; K < 50 && Crucian->FeedOn != EFishFood::Benthos; ++K) Choose(Crucian);
-        const FVector2D First(Crucian->RoamTarget);
+        for (int32 K = 0; K < 50 && Crucian->TestFeedOn() != EFishFood::Benthos; ++K) Choose(Crucian);
+        const FVector2D First(Crucian->TestRoamTarget());
         const float Bottom = ALakeFish::BottomZ(First.X, First.Y);
-        TestTrue(TEXT("It feeds at the bottom"), Crucian->RoamTarget.Z < Bottom + 20);
+        TestTrue(TEXT("It feeds at the bottom"), Crucian->TestRoamTarget().Z < Bottom + 20);
         int32 Steps = 0;
         // Neighbouring 5 m cells can meet centimetres away. Verify arrival and feeding in richer
         // benthos, not an arbitrary distance to a target the fish may never reach.
@@ -2312,20 +2500,20 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
             // having settled at a food spot, not as being mid-root at the sampling instant. It may
             // stay on the silt fauna or switch to another natural food that is richer now — both
             // are a valid answer to a patch eaten down.
-            if (!bPatch || !Crucian->bAtSpot) return false;
-            if (Crucian->FeedOn == EFishFood::Benthos)
+            if (!bPatch || !Crucian->TestbAtSpot()) return false;
+            if (Crucian->TestFeedOn() == EFishFood::Benthos)
                 return Food.Left(EFishFood::Benthos, Patch) < 0.8f
                     && Food.Left(EFishFood::Benthos, Here) > Food.Left(EFishFood::Benthos, Patch) + 0.2f
                     && Food.Available(EFishFood::Benthos, Here, C) > Food.Available(EFishFood::Benthos, Patch, C);
-            return LakeFood::IsNatural(Crucian->FeedOn) && Food.Left(EFishFood::Benthos, Patch) < 0.8f
-                && Food.Available(Crucian->FeedOn, Here, C) > Food.Available(EFishFood::Benthos, Patch, C);
+            return LakeFood::IsNatural(Crucian->TestFeedOn()) && Food.Left(EFishFood::Benthos, Patch) < 0.8f
+                && Food.Available(Crucian->TestFeedOn(), Here, C) > Food.Available(EFishFood::Benthos, Patch, C);
         };
         for (; Steps < 8000 && !MovedOn(); ++Steps)
         {
-            Crucian->Hunger = 1;
+            Crucian->TestHunger() = 1;
             Life->Step(Dt);
             Crucian->Simulate(Dt);
-            if (!bPatch && Crucian->bRooting) { bPatch = true; Patch = FVector2D(Crucian->GetActorLocation()); }
+            if (!bPatch && Crucian->TestbRooting()) { bPatch = true; Patch = FVector2D(Crucian->GetActorLocation()); }
         }
         const float Left = Life->Food().Left(EFishFood::Benthos, Patch);
         AddInfo(FString::Printf(TEXT("Crucian seed %d: patch %.2f, feeding patch %.2f, %.0f cm off after %.0f s"), Seed,
@@ -2339,25 +2527,25 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
         Life->Food() = FLakeFoodField();
         Life->Step(0);
         ALakeFish* Crucian = Spawn(EFishSpecies::Crucian, 0.4f, Lily);
-        Crucian->Random.Initialize(Seed);
+        Crucian->TestRandom().Initialize(Seed);
         for (int32 K = 0; K < 50; ++K)
         {
             Choose(Crucian);
-            if (Crucian->FeedOn == EFishFood::Benthos) break;
+            if (Crucian->TestFeedOn() == EFishFood::Benthos) break;
         }
-        TestTrue(TEXT("A benthos feeding patch found"), Crucian->FeedOn == EFishFood::Benthos);
-        Crucian->SetActorLocation(Crucian->RoamTarget);
-        Crucian->bAtSpot = Crucian->bRooting = true;
-        Crucian->PhaseUntil = 10;
-        Crucian->NextFoodCheck = 0;
+        TestTrue(TEXT("A benthos feeding patch found"), Crucian->TestFeedOn() == EFishFood::Benthos);
+        Crucian->SetActorLocation(Crucian->TestRoamTarget());
+        Crucian->TestbAtSpot() = Crucian->TestbRooting() = true;
+        Crucian->TestPhaseUntil() = 10;
+        Crucian->TestNextFoodCheck() = 0;
         const FVector2D Patch(Crucian->GetActorLocation());
         Life->Food().Eat(EFishFood::Benthos, Patch, 100, Crucian->WeightKg);
         Crucian->Simulate(Dt);
-        const EFishFood Food = Crucian->FeedOn;
-        const float Found = Life->Food().Available(Food, FVector2D(Crucian->RoamTarget), Weather->FishConditions());
+        const EFishFood Food = Crucian->TestFeedOn();
+        const float Found = Life->Food().Available(Food, FVector2D(Crucian->TestRoamTarget()), Weather->FishConditions());
         // Switching to plants is also a valid response; continuing on empty benthos is not.
         TestTrue(FString::Printf(TEXT("An exhausted patch triggers a search for available natural food (seed %d)"), Seed),
-            LakeFood::IsNatural(Food) && Found > 0.08f && !Crucian->bAtSpot && !Crucian->bRooting);
+            LakeFood::IsNatural(Food) && Found > 0.08f && !Crucian->TestbAtSpot() && !Crucian->TestbRooting());
         AddInfo(FString::Printf(TEXT("Exhausted patch seed %d: food %s, target availability %.2f"), Seed, LakeFood::Name(Food), Found));
         Crucian->Destroy();
     }
@@ -2371,8 +2559,8 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
             for (int32 I = 0; I < 30; ++I)
             {
                 Choose(Roach);
-                Depth += (LakeFish::SurfaceZ - Roach->RoamTarget.Z) / 100 / 30;
-                OnInsects += Roach->FeedOn == EFishFood::Insects;
+                Depth += (LakeFish::SurfaceZ - Roach->TestRoamTarget().Z) / 100 / 30;
+                OnInsects += Roach->TestFeedOn() == EFishFood::Insects;
             }
             Roach->Destroy();
         };
@@ -2407,7 +2595,7 @@ bool FLakeFoodTest::RunTest(const FString& Parameters)
         {
             ALakeFish* Perch = Spawn(EFishSpecies::Perch, Weight, Reed);
             int32 N = 0;
-            for (int32 I = 0; I < 30; ++I) { Choose(Perch); N += Perch->FeedOn == EFishFood::Fry; }
+            for (int32 I = 0; I < 30; ++I) { Choose(Perch); N += Perch->TestFeedOn() == EFishFood::Fry; }
             Perch->Destroy();
             return N;
         };
@@ -2543,15 +2731,15 @@ bool FLakeGroundbaitTest::RunTest(const FString& Parameters)
         {
             const FVector2D P = Away + FVector2D(I * 40.0f, (I % 2) * 40.0f);
             ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.12f, FVector(P, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(P.X, P.Y) + 10, 0.5f)), 4242);
-            Roach->Random.Initialize(4242 + 17 * I);   // the same decisions whatever ran before
-            Roach->WanderSeed = 0;
-            Roach->Hunger = 1;
+            Roach->TestRandom().Initialize(4242 + 17 * I);   // the same decisions whatever ran before
+            Roach->TestWanderSeed() = 0;
+            Roach->TestHunger() = 1;
             Fish.Add(Roach);
         }
         Life->Step(0);
         Scent = 0;
         Life->Food().SmellGroundbait(Away, Scent);
-        for (ALakeFish* Roach : Fish) Roach->SetGoal(EFishGoal::Feed, 1000);
+        for (ALakeFish* Roach : Fish) Roach->TestSetGoal(EFishGoal::Feed, 1000);
         NearSeconds = 0;
         CameAfter = -1;
         FeedDepth = 0;
@@ -2560,7 +2748,7 @@ bool FLakeGroundbaitTest::RunTest(const FString& Parameters)
         for (int32 Steps = 0; Steps < 6000; ++Steps)   // 5 min
         {
             Life->Step(Dt);
-            for (ALakeFish* Roach : Fish) { Roach->Hunger = FMath::Max(Roach->Hunger, 0.6f); Roach->Simulate(Dt); }
+            for (ALakeFish* Roach : Fish) { Roach->TestHunger() = FMath::Max(Roach->TestHunger(), 0.6f); Roach->Simulate(Dt); }
             const ALakeFish* Lead = Life->SchoolLeader(4242);
             if (Lead && Lead->GetFeedOn() == EFishFood::Groundbait) GroundbaitSeconds += Dt;
             if (Lead && FVector2D::Distance(FVector2D(Lead->GetActorLocation()), Spot) < 250)
@@ -2605,18 +2793,18 @@ bool FLakeGroundbaitTest::RunTest(const FString& Parameters)
         const float Before = Life->Food().Groundbait()[0].Balls;
         const FVector2D P = Spot + Facing * 300;
         ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.4f, FVector(P, ALakeFish::BottomZ(P.X, P.Y) + 15));
-        Crucian->Hunger = 1;
-        Crucian->NextMoodCheck = 0;
+        Crucian->TestHunger() = 1;
+        Crucian->TestNextMoodCheck() = 0;
         int32 OnIt = 0;
-        for (int32 I = 0; I < 10; ++I) { Crucian->SetGoal(EFishGoal::Cruise, 1000); Crucian->SetGoal(EFishGoal::Feed, 1000); OnIt += Crucian->FeedOn == EFishFood::Groundbait; }
-        for (int32 K = 0; K < 30 && Crucian->FeedOn != EFishFood::Groundbait; ++K) { Crucian->SetGoal(EFishGoal::Cruise, 1000); Crucian->SetGoal(EFishGoal::Feed, 1000); }
+        for (int32 I = 0; I < 10; ++I) { Crucian->TestSetGoal(EFishGoal::Cruise, 1000); Crucian->TestSetGoal(EFishGoal::Feed, 1000); OnIt += Crucian->TestFeedOn() == EFishFood::Groundbait; }
+        for (int32 K = 0; K < 30 && Crucian->TestFeedOn() != EFishFood::Groundbait; ++K) { Crucian->TestSetGoal(EFishGoal::Cruise, 1000); Crucian->TestSetGoal(EFishGoal::Feed, 1000); }
         bool bRooted = false;
         for (int32 Steps = 0; Steps < 2400; ++Steps)   // 2 min
         {
-            Crucian->Hunger = FMath::Max(Crucian->Hunger, 0.6f);
+            Crucian->TestHunger() = FMath::Max(Crucian->TestHunger(), 0.6f);
             Life->Step(Dt);
             Crucian->Simulate(Dt);
-            bRooted |= Crucian->bRooting && Crucian->FeedOn == EFishFood::Groundbait;
+            bRooted |= Crucian->TestbRooting() && Crucian->TestFeedOn() == EFishFood::Groundbait;
         }
         const float After = Life->Food().Groundbait().Num() ? Life->Food().Groundbait()[0].Balls : 0.0f;
         const float Dissolved = Before * FMath::Exp(-120 * UE_LN2 / FLakeFoodField::DissolveSeconds);
@@ -2657,8 +2845,8 @@ bool FLakeLearningTest::RunTest(const FString& Parameters)
         Lost->Hook(Fisher);
         Lost->Release(10);
         ALakeFish* Pricked = SpawnFish(World, EFishSpecies::Roach, 0.15f, At(Open + Facing * 200));
-        Pricked->State = ALakeFish::EState::Holding;
-        Pricked->TargetAngler = Fisher;
+        Pricked->TestState() = ALakeFish::EState::Holding;
+        Pricked->TestTargetAngler() = Fisher;
         Pricked->Release(10);
         const float Maggot = Lost->Willingness(EBait::Maggot), Worm = Lost->Willingness(EBait::Worm), PrickedMaggot = Pricked->Willingness(EBait::Maggot);
         Forget({ Lost }, LakeFish::Info(EFishSpecies::Roach).Learning.ForgetHours);
@@ -2707,9 +2895,9 @@ bool FLakeLearningTest::RunTest(const FString& Parameters)
             int32 Near = 0;
             for (int32 I = 0; I < 60; ++I)
             {
-                Roach->SetGoal(EFishGoal::Feed, 1000);
-                Roach->SetGoal(EFishGoal::Cruise, 1000);
-                Near += FVector2D::Distance(FVector2D(Roach->RoamTarget), Far20) < 600;
+                Roach->TestSetGoal(EFishGoal::Feed, 1000);
+                Roach->TestSetGoal(EFishGoal::Cruise, 1000);
+                Near += FVector2D::Distance(FVector2D(Roach->TestRoamTarget()), Far20) < 600;
             }
             Roach->Destroy();
             return Near;
@@ -2806,7 +2994,7 @@ bool FLakeMixedSchoolsTest::RunTest(const FString& Parameters)
         for (int32 I = 0; I < 6; ++I)
         {
             ALakeFish* F = SpawnFish(World, Species, Weight * (1 + 0.03f * I), At(P + FVector2D((I % 3) * 40.0f, (I / 3) * 40.0f)), Id);
-            F->SetGoal(EFishGoal::Cruise, 1000);
+            F->TestSetGoal(EFishGoal::Cruise, 1000);
             Fish.Add(F);
         }
         return Fish;
@@ -2826,8 +3014,8 @@ bool FLakeMixedSchoolsTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("The biggest fish leads"), Lead && FMath::IsNearlyEqual(Lead->WeightKg, Biggest));
     // 2. Frightened, the mixed school scatters by kind.
     const int32 SplitsBefore = Life->Stats().Splits;
-    for (ALakeFish* F : Roach) F->Fear = 0.9f;
-    for (ALakeFish* F : Red) F->Fear = 0.9f;
+    for (ALakeFish* F : Roach) F->TestFear() = 0.9f;
+    for (ALakeFish* F : Red) F->TestFear() = 0.9f;
     Check();
     bool bByKind = true;
     for (ALakeFish* F : Roach) bByKind &= F->GetSchool() == Roach[0]->GetSchool();
@@ -2880,10 +3068,10 @@ bool FLakeBanksAndDepthTest::RunTest(const FString& Parameters)
                 Fish->Simulate(Dt);
                 const FVector P = Fish->GetActorLocation();
                 Closest = FMath::Min(Closest, LakeMap::ShoreDistance(P.X, P.Y));
-                if (!Fish->AtSurfaceMoment())
+                if (!Fish->TestAtSurfaceMoment())
                 {
                     ++Samples;
-                    Above += P.Z > Fish->CeilingZ() + 3;
+                    Above += P.Z > Fish->TestCeilingZ() + 3;
                 }
             }
         }
@@ -2907,12 +3095,12 @@ bool FLakeBanksAndDepthTest::RunTest(const FString& Parameters)
         {
             const FVector2D P = FVector2D(Keep.Location) + Out * (350 + I * 40) + FVector2D(-Out.Y, Out.X) * (I - 2) * 40.0f;
             ALakeFish* Perch = SpawnFish(World, EFishSpecies::Perch, 0.15f + 0.05f * I, FVector(P, FMath::Max(ALakeFish::BottomZ(P.X, P.Y) + 20, SurfaceZ - 60)), 20 + K);
-            Perch->Hunger = 1;
-            Perch->Energy = 1;
+            Perch->TestHunger() = 1;
+            Perch->TestEnergy() = 1;
             All.Add(Perch);
         }
         Life->Step(0);
-        if (ALakeFish* Lead = Life->SchoolLeader(20 + K)) Lead->SetGoal(EFishGoal::Feed, 600);
+        if (ALakeFish* Lead = Life->SchoolLeader(20 + K)) Lead->TestSetGoal(EFishGoal::Feed, 600);
         Run(90);
         Hunts += Life->Stats().FryAttacks - Attacks;
         AddInfo(FString::Printf(TEXT("Perch at fry %.0f cm from the bank: %d rushes, came within %.0f cm of the edge, %d times stopped by the bank, %.1f%% over their ceiling"),
@@ -2962,10 +3150,10 @@ bool FLakeBanksAndDepthTest::RunTest(const FString& Parameters)
         }
         const FVector Open(LakeMap::Centre, SurfaceZ - 5);
         ALakeFish* Top = SpawnFish(World, Species, FMath::Lerp(S.MinWeight, S.MaxWeight, 0.3f), Open);
-        Top->RoamTarget = FVector(LakeMap::Centre + FVector2D(1500, 0), SurfaceZ - 5);
+        Top->TestRoamTarget() = FVector(LakeMap::Centre + FVector2D(1500, 0), SurfaceZ - 5);
         All.Add(Top);
         Run(10);
-        const float TopOver = Top->GetActorLocation().Z - Top->CeilingZ();
+        const float TopOver = Top->GetActorLocation().Z - Top->TestCeilingZ();
         Run(80);
         const float Over = Samples ? 100.0f * Above / Samples : 0.0f;
         AddInfo(FString::Printf(TEXT("%s: clearance %.0f cm, ceiling in open water %.0f cm under; %.2f%% of the time over it; one put at the top is %.0f cm over it after 10 s"),
@@ -2981,15 +3169,15 @@ bool FLakeBanksAndDepthTest::RunTest(const FString& Parameters)
     {
         ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, FVector(LakeMap::Centre, SurfaceZ - 60));
         All.Add(Roach);
-        const float Usual = Roach->CeilingZ();
-        Roach->SetGoal(EFishGoal::Feed, 600);
-        Roach->FeedOn = EFishFood::Insects;
-        TestTrue(TEXT("A roach sipping insects may come up to the top"), Roach->AtSurfaceMoment() && Roach->CeilingZ() > Usual + 10);
-        Roach->FeedOn = EFishFood::Plankton;
-        Roach->SurfaceUntil = Roach->SimTime + 3;
-        TestTrue(TEXT("A fish gulping air may come up to the top"), Roach->AtSurfaceMoment());
-        Roach->SurfaceUntil = -1;
-        TestFalse(TEXT("Feeding on plankton is no surface moment"), Roach->AtSurfaceMoment());
+        const float Usual = Roach->TestCeilingZ();
+        Roach->TestSetGoal(EFishGoal::Feed, 600);
+        Roach->TestFeedOn() = EFishFood::Insects;
+        TestTrue(TEXT("A roach sipping insects may come up to the top"), Roach->TestAtSurfaceMoment() && Roach->TestCeilingZ() > Usual + 10);
+        Roach->TestFeedOn() = EFishFood::Plankton;
+        Roach->TestSurfaceUntil() = Roach->TestSimTime() + 3;
+        TestTrue(TEXT("A fish gulping air may come up to the top"), Roach->TestAtSurfaceMoment());
+        Roach->TestSurfaceUntil() = -1;
+        TestFalse(TEXT("Feeding on plankton is no surface moment"), Roach->TestAtSurfaceMoment());
         auto Named = [](const TCHAR* Id) { for (int32 I = 0; I < NumSpecies(); ++I) if (Info((EFishSpecies)I).Id == Id) return (EFishSpecies)I; return EFishSpecies::Roach; };
         const float Bleak = CeilingAt(Named(TEXT("bleak")), LakeMap::Centre.X, LakeMap::Centre.Y, 12), Bream = CeilingAt(Named(TEXT("bream")), LakeMap::Centre.X, LakeMap::Centre.Y, 40);
         TestTrue(TEXT("The bleak keeps to the top, the bream well under it"), Bleak > SurfaceZ - 6 && Bream < SurfaceZ - 40);
@@ -3140,12 +3328,12 @@ bool FLakeThreeRodsTest::RunTest(const FString& Parameters)
 
     // One bait taken, the others wait; a fish may try another one at the same time.
     ALakeFish* Taker = SpawnFish(World, EFishSpecies::Perch, 0.3f, A->BaitLocation(Light));
-    Taker->TargetRig = Light;
+    Taker->TestTargetRig() = Light;
     A->OnFishTake(Taker);
     TestTrue(TEXT("A take on one stand leaves the others waiting"),
         A->Rods[Light].State == EFishingState::Bite && A->Rods[Medium].State == EFishingState::Waiting && A->Rods[Heavy].State == EFishingState::Waiting);
     ALakeFish* Trier = SpawnFish(World, EFishSpecies::Roach, 0.2f, A->BaitLocation(Heavy));
-    Trier->TargetRig = Heavy;
+    Trier->TestTargetRig() = Heavy;
     TestTrue(TEXT("Another fish may try a bait on another stand"), A->ClaimBait(Trier) && A->Rods[Heavy].BaitFish.Get() == Trier);
     A->ReleaseBaitClaim(Trier);
     TestTrue(TEXT("and let it be"), !A->Rods[Heavy].BaitFish.IsValid());
@@ -3156,7 +3344,7 @@ bool FLakeThreeRodsTest::RunTest(const FString& Parameters)
 
     // RMB beside the stand with a take: that rod comes to the hands, its fish on the bait, and strikes.
     ALakeFish* Second = SpawnFish(World, EFishSpecies::Perch, 0.3f, A->BaitLocation(Light));
-    Second->TargetRig = Light;
+    Second->TestTargetRig() = Light;
     A->OnFishTake(Second);
     A->SetActorLocation(FVector(A->Rods[Light].Base) + FVector(0, 0, 95) - FRotator(0, Yaw, 0).Vector() * 60);
     A->NextActionTime = 0;
@@ -3203,6 +3391,45 @@ bool FLakeStartLoadoutTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("The case is on the back and shut"), A->CasePlace == ECasePlace::Back && !A->bCaseOpen);
     TestTrue(TEXT("No tackle in the water, nothing is cast"), A->FishingState == EFishingState::Idle && !A->bCharging && !A->bRigInHand);
     World->DestroyWorld(false);
+    return true;
+}
+// Wind waves on the lake (engine Water Gerstner waves): their energy matches the sea state a wind
+// raises over the lake's fetch, a calm leaves no waves, and the big waves run with the wind.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeWavesTest, "QuietLake.Fishing.Waves", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeWavesTest::RunTest(const FString& Parameters)
+{
+    auto Energy = [](const TArray<FGerstnerWave>& Waves)
+    {
+        float Sum = 0;
+        for (const FGerstnerWave& W : Waves) Sum += W.Amplitude * W.Amplitude;
+        return FMath::Sqrt(8 * Sum);   // the significant height these waves make
+    };
+    TArray<FGerstnerWave> Calm, Breeze, Strong;
+    ULakeWaveGenerator::MakeWaves(0.5f, 0, Calm);
+    ULakeWaveGenerator::MakeWaves(5.0f, 90, Breeze);
+    ULakeWaveGenerator::MakeWaves(12.0f, 90, Strong);
+    float CalmMax = 0;
+    for (const FGerstnerWave& W : Calm) CalmMax = FMath::Max(CalmMax, W.Amplitude);
+    TestTrue(TEXT("A calm raises no waves"), CalmMax < 0.01f);
+    TestTrue(FString::Printf(TEXT("A breeze: waves a few cm high (%.1f cm)"), Energy(Breeze)), Energy(Breeze) > 1.5f && Energy(Breeze) < 4.5f);
+    TestTrue(FString::Printf(TEXT("A strong wind on a sheltered pond: under a hand high (%.1f cm)"), Energy(Strong)), Energy(Strong) > 4.5f && Energy(Strong) < 10);
+    TestTrue(TEXT("The energy is the sea state's"), FMath::IsNearlyEqual(Energy(Strong), ULakeWaveGenerator::SignificantHeight(12), 0.1f));
+    TestTrue(TEXT("Stronger wind, longer waves"), ULakeWaveGenerator::PeakWavelength(12) > ULakeWaveGenerator::PeakWavelength(5));
+    // The heights only: the same wavelengths and directions whatever the wind, so it can change
+    // without the surface jumping.
+    bool bSameSet = Breeze.Num() == Strong.Num();
+    for (int32 I = 0; bSameSet && I < Breeze.Num(); ++I)
+        bSameSet = Breeze[I].WaveLength == Strong[I].WaveLength && Breeze[I].Direction.Equals(Strong[I].Direction);
+    TestTrue(TEXT("A change of wind only changes the heights"), bSameSet);
+    // Most of the energy runs with the wind (towards +Y here); none against it.
+    float With = 0, Against = 0;
+    for (const FGerstnerWave& W : Strong)
+        (W.Direction.Y > 0 ? With : Against) += W.Amplitude * W.Amplitude;
+    TestTrue(TEXT("The waves run with the wind"), With > 20 * Against);
+    for (const FGerstnerWave& W : Strong)
+        TestTrue(TEXT("Crests stay waves (no loops)"), W.Steepness <= 0.5f && W.Amplitude * 2 * PI / W.WaveLength < 0.4f);
+    // Without a Water lake (the procedural world) the surface is the still level.
+    TestEqual(TEXT("No Water lake: flat"), ULakeWaves::SurfaceAt(nullptr, FVector2D(0, 0)), LakeFish::SurfaceZ);
     return true;
 }
 #endif
