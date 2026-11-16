@@ -586,9 +586,9 @@ float ALakeCharacter::ServerNow() const
 }
 bool ALakeCharacter::HasBaitInWater(int32 Rig) const
 {
-    if (IsParkedRig(Rig)) return Rods[Rig].State == EFishingState::Waiting && ServerNow() >= Rods[Rig].BaitActiveTime;
+    if (IsParkedRig(Rig)) return Rods[Rig].bBaitPresent && Rods[Rig].State == EFishingState::Waiting && ServerNow() >= Rods[Rig].BaitActiveTime;
     if (!IsHandRig(Rig)) return false;
-    return FishingState == EFishingState::Waiting && !bRetrieving && !bRigFlying && ServerNow() >= BaitActiveTime;
+    return bBaitPresent && FishingState == EFishingState::Waiting && !bRetrieving && !bRigFlying && ServerNow() >= BaitActiveTime;
 }
 FVector ALakeCharacter::BaitLocation(int32 Rig) const
 {
@@ -670,6 +670,7 @@ void ALakeCharacter::DoCast(float Held)
     bRigInHand = false;
     bRigFlying = true;
     BaitActiveTime = CastServerTime + 1000;
+    bBaitPresent = true; // A fresh bait is put on the rig for each cast.
     ForceNetUpdate();
 }
 void ALakeCharacter::OnRigLanded(FVector Where)
@@ -1231,6 +1232,7 @@ void ALakeCharacter::UpdateVisuals(float DeltaSeconds)
     In.Hold = Hold;
     In.FishingState = FishingState;
     In.Bait = Bait;
+    In.bBaitPresent = bBaitPresent;
     In.FloatTarget = FloatPosition;
     In.HookDepth = HookDepth;
     In.Facing = FRotator(0, GetActorRotation().Yaw, 0).Vector();
@@ -1947,6 +1949,32 @@ void ALakeCharacter::OnFishLetGo(ALakeFish* Fish)
     if (IsParkedRig(Rig)) { if (Rods[Rig].BaitFish.Get() == Fish) EscapeParked(Rig); return; }
     if (BaitFish.Get() == Fish) Escape();
 }
+void ALakeCharacter::OnBaitStolen(ALakeFish* Fish)
+{
+    if (!Fish || !Fish->IsNibbling()) return;
+    const int32 Rig = RigOf(Fish);
+    if (!HasBaitInWater(Rig)) return;
+    if (IsParkedRig(Rig))
+    {
+        FLakeRodSlot& Slot = Rods[Rig];
+        if (Slot.BaitFish.Get() != Fish) return;
+        Fish->DropBait();
+        Slot.bBaitPresent = false;
+        Slot.BaitFish = nullptr;
+        Slot.BiteMotion = EBiteMotion::None;
+    }
+    else
+    {
+        if (BaitFish.Get() != Fish) return;
+        Fish->DropBait();
+        bBaitPresent = false;
+        BaitFish = nullptr;
+        BiteMotion = EBiteMotion::None;
+    }
+    Fish->Eat(0.02f);
+    Status = TEXT("Мелкая рыба объела наживку. Поднимите снасть и забросьте снова со свежей наживкой.");
+    ForceNetUpdate();
+}
 void ALakeCharacter::OnFishNibble(ALakeFish* Fish)
 {
     if (const int32 Rig = RigOf(Fish); IsParkedRig(Rig))
@@ -2092,6 +2120,7 @@ void ALakeCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
     DOREPLIFETIME(ALakeCharacter, FloatPosition);
     DOREPLIFETIME(ALakeCharacter, Tension);
     DOREPLIFETIME(ALakeCharacter, Bait);
+    DOREPLIFETIME(ALakeCharacter, bBaitPresent);
     DOREPLIFETIME(ALakeCharacter, NibbleCounter);
     DOREPLIFETIME(ALakeCharacter, BiteMotion);
     DOREPLIFETIME(ALakeCharacter, LandServerTime);

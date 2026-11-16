@@ -568,7 +568,17 @@ float ScoreHabitat(const FFishHabitat& H, EFishSpecies Species, float X, float Y
     }
     // Water it can live in: enough oxygen, not too hot, somewhere in the column (see LakeWater).
     const float Livable = Conditions ? 0.05f + 0.95f * LakeWater::Livable(Species, *Conditions, X, Y) : 1.0f;
-    return (0.03f + Like) * DepthFit * Downwind * (1 - Exposed) * Livable;
+    // Mature size groups prefer deeper water and more distance from the bank, rather than
+    // merely being allowed into deeper water. Keep a non-zero chance for shallow feeding.
+    float Mature = 1;
+    if (DeeperM > 0)
+    {
+        const float DepthComfort = FMath::SmoothStep(H.MinDepthM, H.MinDepthM + DeeperM, D);
+        const float BankComfort = FMath::SmoothStep(100.0f, 150.0f + 300.0f * DeeperM, LakeMap::ShoreDistance(X, Y));
+        const float Shelter = H.bAmbush ? 0.5f * Z.Cover : 0;
+        Mature = FMath::Lerp((0.2f + 0.8f * DepthComfort) * (0.25f + 0.75f * BankComfort), 1.0f, Shelter);
+    }
+    return (0.03f + Like) * DepthFit * Downwind * (1 - Exposed) * Livable * Mature;
 }
 }
 FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2D Near, float Range, const FFishConditions* Conditions, EFishGoal Goal,
@@ -592,7 +602,7 @@ FVector LakeFish::PickSpot(EFishSpecies Species, FRandomStream& Random, FVector2
         if (Depth < 25.0f) continue;
         const float MinDepth = FMath::Max(20.0f, Habitat.MinDepthM * 100.0f);
         float Comfort = FMath::Clamp(0.35f + 0.65f * Depth / MinDepth, 0.35f, 1.0f);
-        const float ShoreSpan = Info(Species).Feeding.bHuntsFry ? 260.0f : 150.0f;
+        const float ShoreSpan = (Info(Species).Feeding.bHuntsFry ? 260.0f : 150.0f) + 250.0f * DeeperM;
         Comfort *= FMath::Clamp(LakeMap::ShoreDistance(P.X, P.Y) / ShoreSpan, 0.3f, 1.0f);
         if (Habitat.bAmbush) Comfort = FMath::Max(Comfort, 0.8f);
         // A feeding fish will still go for a rich patch in the shallows — reluctantly, and only
@@ -776,6 +786,49 @@ void ALakeFish::ChooseRoamTarget(bool bLocal)
     if (!bSip) RoamTarget.Z = FMath::Min(RoamTarget.Z, LakeFish::CeilingAt(Species, RoamTarget.X, RoamTarget.Y, LakeFish::LengthCm(Species, WeightKg)));
 }
 
+FVector ALakeFish::FeedingDestination(const FGroundbaitSpot& Ground, const FLakeFoodField& Field)
+{
+    const FVector P = GetActorLocation();
+    const FVector2D Here(P);
+    const float Radius = FMath::Clamp(160.0f + 35.0f * FMath::Sqrt(Ground.Balls), 180.0f, 260.0f);
+    if (FVector2D::Distance(Here, Ground.Location) > Radius + 100)
+    {
+        // A faint scent supplies a direction to search, not the coordinates of the food.
+        FVector2D Best = Here;
+        float BestScent = Field.Scent(Ground, Here);
+        for (int32 I = 0; I < 8; ++I)
+        {
+            const float Angle = I * PI / 4 + Random.FRandRange(-0.12f, 0.12f);
+            const FVector2D Q = Here + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * 150;
+            if (!LakeMap::IsWater(Q.X, Q.Y) || LakeMap::Depth(Q.X, Q.Y) < 30) continue;
+            const float Scent = Field.Scent(Ground, Q);
+            if (Scent > BestScent) { Best = Q; BestScent = Scent; }
+        }
+        return FVector(Best, FMath::Clamp((float)P.Z, BottomZ(Best.X, Best.Y) + 10, LakeFish::SurfaceZ - 10));
+    }
+    // Each fish chooses its own piece of the feeding area, avoiding occupied destinations.
+    FVector2D Best = Here;
+    float BestSpace = -1;
+    for (int32 I = 0; I < 20; ++I)
+    {
+        const float Angle = Random.FRandRange(0, 2 * PI), R = Radius * FMath::Sqrt(Random.FRand());
+        const FVector2D Q = Ground.Location + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * R;
+        if (!LakeMap::IsWater(Q.X, Q.Y) || LakeMap::Depth(Q.X, Q.Y) < 30) continue;
+        float Space = Radius;
+        auto Visit = [&](ALakeFish* Other)
+        {
+            if (Other == this || Other->IsActorBeingDestroyed() || Other->FeedOn != EFishFood::Groundbait || !Other->IsFree()) return;
+            Space = FMath::Min(Space, (float)FVector2D::Distance(Q, FVector2D(Other->RoamTarget)));
+        };
+        if (const ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->ForEachFishNear(FVector(Ground.Location, P.Z), 700, Visit);
+        if (Space > BestSpace) { Best = Q; BestSpace = Space; }
+    }
+    if (BestSpace < 0) return P; // No wet feeding point: stay rather than target land.
+    FFishConditions C;
+    GetConditions(C);
+    return FVector(Best, LakeFood::FeedingZ(EFishFood::Groundbait, Best.X, Best.Y, C, Random));
+}
+
 void ALakeFish::PickRoamTarget(bool bLocal)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
@@ -788,6 +841,13 @@ void ALakeFish::PickRoamTarget(bool bLocal)
     {
         RoamTarget = Lead->RoamTarget;
         FeedOn = Lead->FeedOn;
+        if (Goal == EFishGoal::Feed && FeedOn == EFishFood::Groundbait)
+            if (const ALakeLife* Life = ALakeLife::Get(GetWorld()))
+            {
+                float Scent = 0;
+                const int32 G = Life->Food().SmellGroundbait(FVector2D(GetActorLocation()), Scent);
+                if (G >= 0 && Scent > 0.03f) RoamTarget = FeedingDestination(Life->Food().Groundbait()[G], Life->Food());
+            }
         return;
     }
     const bool bHomeBound = S.IsSchooling() || S.Habitat.bAmbush;
@@ -825,7 +885,7 @@ void ALakeFish::PickRoamTarget(bool bLocal)
         // the shallows (no higher than each keeps under the surface, see ChooseRoamTarget).
         if (bWeather && Conditions.WaterTempC > 17 && Conditions.SunElevation > 15 && Conditions.Wind < 0.3f && Conditions.Rain < 0.15f)
         {
-            const float Chance = S.Feeding.Bask;
+            const float Chance = S.Feeding.Bask * FMath::Lerp(1.0f, 0.15f, Size01);
             if (Random.FRand() < Chance)
                 RoamTarget.Z = FMath::Max(LakeFish::SurfaceZ - Random.FRandRange(9.0f, 20.0f), BottomZ(RoamTarget.X, RoamTarget.Y) + 10);
         }
@@ -868,14 +928,13 @@ void ALakeFish::PickRoamTarget(bool bLocal)
         const int32 GroundIndex = Field->SmellGroundbait(FVector2D(GetActorLocation()), Smell);
         const FGroundbaitSpot* Ground = GroundIndex >= 0 ? &Field->Groundbait()[GroundIndex] : nullptr;
         // Even a faint smell tells where rich food lies: it is worth half its value at least.
-        const float GroundValue = Ground && Smell > 0.03f ? LakeFood::GroundbaitAppeal(Diet, *Ground) * LakeFood::GroundbaitRichness(*Ground) * (0.5f + 0.5f * Smell) : 0.0f;
+        const float GroundValue = Ground && Smell > 0.03f ? LakeFood::GroundbaitAppeal(Diet, *Ground) * LakeFood::GroundbaitRichness(*Ground) * FMath::Min(1.0f, 0.15f + Smell) : 0.0f;
         auto ToGroundbait = [&]
         {
-            const FVector2D At = Ground->Location + FVector2D(Random.FRandRange(-90.0f, 90.0f), Random.FRandRange(-90.0f, 90.0f));
             if (FeedOn != EFishFood::Groundbait || !bLocal) FeedFound = GroundValue;
             FeedOn = EFishFood::Groundbait;
             NextFoodCheck = SimTime + 4;
-            RoamTarget = FVector(At, LakeFood::FeedingZ(EFishFood::Groundbait, At.X, At.Y, Conditions, Random));
+            RoamTarget = FeedingDestination(*Ground, *Field);
         };
         if (bLocal && FeedOn == EFishFood::Groundbait && Ground && Ground->Balls > 0.1f) { ToGroundbait(); return; }
         // Where its food is: each place weighed by the best food there for this fish (browsing on, it
@@ -1114,8 +1173,13 @@ FVector ALakeFish::SteerSchool(bool bFollow) const
         const FVector Offset = P - Other->GetActorLocation();
         const float Dist = Offset.Size();
         // Keep out of each other's way (any fish); school mates keep their spacing.
-        const float Keep = Other->School == School && School >= 0 ? Personal : FMath::Max(30.0f, Len * 0.9f);
-        if (Dist < Keep && Dist > 0.1f) Separation += Offset / Dist * (1 - Dist / Keep);
+        const float OtherLen = LakeFish::LengthCm(Other->Species, Other->WeightKg);
+        const float Keep = Other->School == School && School >= 0 ? FMath::Max(Personal, (Len + OtherLen) * 0.55f) : FMath::Max(30.0f, (Len + OtherLen) * 0.55f);
+        if (Dist < Keep)
+        {
+            const FVector Apart = Dist > 0.1f ? Offset / Dist : FVector(0, GetUniqueID() < Other->GetUniqueID() ? -1 : 1, 0);
+            Separation += Apart * (1 - Dist / Keep);
+        }
         if (School < 0 || Other->School != School || Dist > Look) return;
         Centre += Other->GetActorLocation();
         Heading += Other->Vel;
@@ -1138,6 +1202,29 @@ FVector ALakeFish::SteerSchool(bool bFollow) const
     return Out;
 }
 
+FVector ALakeFish::AvoidNeighbours() const
+{
+    FVector Push = FVector::ZeroVector;
+    const FVector P = GetActorLocation();
+    const float Len = LakeFish::LengthCm(Species, WeightKg);
+    auto Visit = [&](ALakeFish* Other)
+    {
+        if (Other == this || Other->IsActorBeingDestroyed() || Other->bLifted) return;
+        const float OtherLen = LakeFish::LengthCm(Other->Species, Other->WeightKg);
+        const float Keep = FMath::Max(25.0f, (Len + OtherLen) * 0.65f);
+        const FVector Delta = P - Other->GetActorLocation();
+        const float Dist = Delta.Size();
+        if (Dist >= Keep) return;
+        const FVector Away = Dist > 0.1f ? Delta / Dist : FVector(0, GetUniqueID() < Other->GetUniqueID() ? -1 : 1, 0);
+        // A nibbler holds its place; the newcomer and the less dominant neighbour give more room.
+        const float Yield = Other->IsHoldingBait() || Other->IsNibbling() ? 1.5f : FMath::Clamp(Other->Clout() / FMath::Max(Clout(), 0.01f), 0.5f, 1.5f);
+        Push += Away * (1 - Dist / Keep) * LakeFish::Info(Species).CruiseSpeed * 2.5f * Yield;
+    };
+    if (const ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->ForEachFishNear(P, 250, Visit);
+    else for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It) Visit(*It);
+    return Push;
+}
+
 FVector ALakeFish::SteerBounds() const
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
@@ -1158,9 +1245,10 @@ FVector ALakeFish::SteerBounds() const
         // while feeding (a rich patch just off the reeds still draws a fish in for a while), and an
         // ambush predator has its lie at the weed edge. The fry shoals are a separate thing and keep
         // to the shallows by design. Only the very edge is a hard turn: a fish does not dry out.
-        const float MinDepth = FMath::Max(25.0f, S.Habitat.MinDepthM * 100.0f);
+        const float MinDepth = FMath::Max(25.0f, S.Habitat.MinDepthM * 100.0f + Deeper * 65.0f);
         const float Shallow = FMath::Clamp((MinDepth - Depth) / FMath::Max(40.0f, MinDepth), 0.0f, 1.0f);
-        const float Edge = FMath::Clamp((50.0f - Shore) / 50.0f, 0.0f, 1.0f);
+        const float BankRoom = 50.0f + Deeper * 300.0f;
+        const float Edge = FMath::Clamp((BankRoom - Shore) / BankRoom, 0.0f, 1.0f);
         float Reluctance = FMath::Max(0.8f * Shallow, Edge);
         if (Goal == EFishGoal::Feed) Reluctance *= 0.5f;
         if (S.Habitat.bAmbush) Reluctance *= 0.35f;
@@ -1176,7 +1264,7 @@ FVector ALakeFish::SteerBounds() const
                 Reluctance = FMath::Max(Reluctance, Bank);
             }
         }
-        if (TargetAngler.IsValid() && (State == EState::Investigate || State == EState::Nibble)) Reluctance *= 0.25f;
+        if (TargetAngler.IsValid() && (State == EState::Investigate || State == EState::Nibble)) Reluctance *= FMath::Lerp(0.25f, 0.65f, Size01);
         if (Reluctance > 0.0f)
             Push += FVector(LakeMap::DeeperDirection(P.X, P.Y), 0) * 70.0f * Reluctance;
     }
@@ -1222,7 +1310,7 @@ FVector ALakeFish::AvoidBank(const FVector& Desired) const
     const bool bBait = State != EState::Roam && State != EState::Flee;
     // The designed bed shelves out gently, so the shallow water reaches farther from the edge than the
     // old brush bowl did: keep a little more room from the bank and off the shoals.
-    const float Edge = bBait ? 25.0f : 92.0f, Shoal = bBait ? 12.0f : 40.0f;
+    const float Edge = (bBait ? 25.0f : 92.0f) + Deeper * (bBait ? 60.0f : 160.0f), Shoal = (bBait ? 12.0f : 40.0f) + Deeper * 25.0f;
     const float Danger = FMath::Max(FMath::Clamp((Edge - Shore) / (0.75f * Edge), 0.0f, 1.0f), FMath::Clamp((Shoal - Depth) / (0.6f * Shoal), 0.0f, 1.0f));
     if (Danger <= 0) return Desired;
     const FVector2D Out = -LakeMap::NearestShore(FVector2D(P)).Outward;   // into the lake
@@ -1309,13 +1397,21 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         if (Lead != this)
         {
             // School members share their leader's destination and arrive with it.
-            RoamTarget = Lead->RoamTarget;
-            bAtSpot = Lead->bAtSpot;
+            if (Goal == EFishGoal::Feed && Lead->FeedOn == EFishFood::Groundbait)
+            {
+                if (FeedOn != EFishFood::Groundbait || SimTime >= NextFoodCheck)
+                {
+                    ChooseRoamTarget(true);
+                    NextFoodCheck = SimTime + Random.FRandRange(3.0f, 6.0f);
+                    bAtSpot = false;
+                }
+            }
+            else { RoamTarget = Lead->RoamTarget; bAtSpot = Lead->bAtSpot; }
             FeedOn = Lead->FeedOn;
         }
     }
     const float Dist = FVector::Dist(GetActorLocation(), RoamTarget);
-    if (!bAtSpot && Dist < 150)
+    if (!bAtSpot && Dist < (FeedOn == EFishFood::Groundbait ? 30.0f : 150.0f))
     {
         bAtSpot = true;
         if (S.Habitat.bAmbush && Goal == EFishGoal::Feed) LieUntil = SimTime + Random.FRandRange(50.0f, 140.0f);
@@ -1358,7 +1454,9 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
             const FVector2D Here(GetActorLocation());
             float Smell = 0;
             const int32 G = Field->SmellGroundbait(Here, Smell);
-            const bool bOnIt = G >= 0 && FVector2D::Distance(Here, Field->Groundbait()[G].Location) < 200;
+            const float PatchRadius = G >= 0 ? FMath::Clamp(160.0f + 35.0f * FMath::Sqrt(Field->Groundbait()[G].Balls), 180.0f, 260.0f) : 0;
+            const bool bOnIt = G >= 0 && FVector2D::Distance(Here, Field->Groundbait()[G].Location) < PatchRadius + 30
+                && GetActorLocation().Z < BottomZ(Here.X, Here.Y) + 45;
             if (bOnIt)
             {
                 // Crumbs: picked up a little at a time, so it fills about as on a good natural patch and stays a while.
@@ -1388,7 +1486,20 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
     PitchBias = 0;
     FaceDir = FVector::ZeroVector;
     // Rooting in the silt for the bottom fauna (on weed or plankton it does not dig).
-    const bool bRoot = Goal == EFishGoal::Feed && bAtSpot && S.Feeding.bRootsInSilt && (FeedOn == EFishFood::Benthos || !LakeFood::IsNatural(FeedOn));
+    bool bAtGroundMeal = FeedOn != EFishFood::Groundbait;
+    if (!bAtGroundMeal && Life)
+    {
+        float Smell = 0;
+        const int32 G = Life->Food().SmellGroundbait(FVector2D(GetActorLocation()), Smell);
+        if (G >= 0)
+        {
+            const FGroundbaitSpot& Ground = Life->Food().Groundbait()[G];
+            const float Radius = FMath::Clamp(160.0f + 35.0f * FMath::Sqrt(Ground.Balls), 180.0f, 260.0f);
+            bAtGroundMeal = FVector2D::Distance(FVector2D(GetActorLocation()), Ground.Location) < Radius + 30
+                && GetActorLocation().Z < BottomZ(GetActorLocation().X, GetActorLocation().Y) + 45;
+        }
+    }
+    const bool bRoot = Goal == EFishGoal::Feed && bAtSpot && bAtGroundMeal && S.Feeding.bRootsInSilt && (FeedOn == EFishFood::Benthos || !LakeFood::IsNatural(FeedOn));
     if (!bRoot) bRooting = false;
     const bool bLie = Goal == EFishGoal::Feed && S.Habitat.bAmbush && bAtSpot;
 
@@ -1435,7 +1546,7 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         FaceDir = LieFacing;
         MaxSpeed = FMath::Max(6.0f, (float)Desired.Size());
     }
-    else if (bFollower)
+    else if (bFollower && FeedOn != EFishFood::Groundbait)
     {
         // The fright of the leader runs through the school at once: all close up and keep up with it.
         Fear = FMath::Max(Fear, Lead->Fear * 0.9f);
@@ -1661,9 +1772,20 @@ float ALakeFish::Clout() const
 void ALakeFish::PushedOff(ALakeFish* By)
 {
     // A bigger fish took the bait it was only trying: it gives way, and may come back when that one has gone.
-    if (State != EState::Nibble) return;
-    if (ALakeCharacter* Angler = TargetAngler.Get()) Angler->OnBiteMotion(this, FBiteStep());
-    DropBait();
+    if (State != EState::Nibble && State != EState::Investigate) return;
+    ALakeCharacter* Previous = TargetAngler.Get();
+    const int32 PreviousRig = TargetRig >= 0 ? TargetRig : Previous ? (int32)Previous->RodKind : -1;
+    if (State == EState::Nibble && Previous) Previous->OnBiteMotion(this, FBiteStep());
+    if (State == EState::Investigate)
+    {
+        TargetAngler = nullptr;
+        State = EState::Roam;
+        StateTime = 0;
+        ChooseRoamTarget();
+    }
+    else DropBait();
+    AtBait.ReturnTo = nullptr;
+    if (Previous) IgnoreBaitUntil.FindOrAdd(Previous).Add(PreviousRig, SimTime + Random.FRandRange(8.0f, 18.0f));
     if (By) Startle(By->GetActorLocation(), 0.35f);
 }
 
@@ -1713,6 +1835,51 @@ void ALakeFish::UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& Ma
 
 // --- reaction to bait ----------------------------------------------------------------------
 
+float ALakeFish::NoticeBait(const FVector& Bait) const
+{
+    const FVector P = MouthLocation(), To = Bait - P;
+    const float Dist = To.Size();
+    // A single morsel is a local sight, unlike the spreading smell of a groundbait patch.
+    // These distances tune gameplay; SenseRadius still describes the wider habitat survey.
+    const float Light = bSeen ? FMath::Lerp(0.55f, 1.0f, FMath::Clamp((Seen.SunElevation + 6) / 25, 0.0f, 1.0f)) : 1.0f;
+    float Weed = 0;
+    for (int32 I = 1; I <= 3; ++I)
+    {
+        const FVector Q = FMath::Lerp(P, Bait, I / 4.0f);
+        if (!LakeMap::IsWater(Q.X, Q.Y) || Q.Z < BottomZ(Q.X, Q.Y) || Q.Z > LakeFish::SurfaceZ) return 0;
+        Weed = FMath::Max(Weed, LakeWater::WeedAt(Q.X, Q.Y));
+    }
+    const float Radius = FMath::Clamp(LakeFish::Info(Species).SenseRadius * 0.2f, 70.0f, 160.0f) * Light * (1 - 0.55f * Weed);
+    if (Dist >= Radius || FMath::Abs(To.Z) > 55) return 0;
+    const float Facing = Dist > 1 ? FVector::DotProduct(GetActorForwardVector(), To / Dist) : 1;
+    if (Dist > 25 && Facing < -0.2f) return 0;
+    const float Near = 1 - Dist / Radius;
+    return Near * Near * (Dist < 25 ? 1 : 0.4f + 0.6f * FMath::Max(0.0f, Facing));
+}
+
+bool ALakeFish::TakeApproach(ALakeCharacter* Angler, int32 Rig)
+{
+    TArray<ALakeFish*, TInlineAllocator<2>> GiveWay;
+    bool bBlocked = false;
+    const FVector Bait = Angler->BaitLocation(Rig);
+    auto Visit = [&](ALakeFish* Other)
+    {
+        const int32 OtherRig = Other->TargetRig >= 0 ? Other->TargetRig : (int32)Angler->RodKind;
+        if (Other == this || Other->IsActorBeingDestroyed() || Other->TargetAngler.Get() != Angler || OtherRig != Rig || !Other->IsBusy()) return;
+        // A mouth already holding it is never evicted. A clearly dominant fish can replace a
+        // nearby investigator or nibbler, but cannot reserve a distant bait through the crowd.
+        if ((Other->State != EState::Investigate && Other->State != EState::Nibble) || Clout() <= Other->Clout() * 1.4f
+            || FVector::Dist(GetActorLocation(), Bait) > 100 || FVector::Dist(GetActorLocation(), Other->GetActorLocation()) > 160)
+            bBlocked = true;
+        else GiveWay.Add(Other);
+    };
+    if (const ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->ForEachFishNear(Bait, 500, Visit);
+    else for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It) Visit(*It);
+    if (bBlocked) return false;
+    for (ALakeFish* Other : GiveWay) Other->PushedOff(this);
+    return true;
+}
+
 void ALakeFish::UpdateBait(float DeltaSeconds)
 {
     const FFishSpeciesInfo& S = LakeFish::Info(Species);
@@ -1732,7 +1899,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
     }
     if (State == EState::Roam && SimTime >= NextThink && StrikeEnd < 0)
     {
-        NextThink = SimTime + Random.FRandRange(0.6f, 1.4f);
+        NextThink = SimTime + Random.FRandRange(0.8f, 1.6f) * FMath::Lerp(0.8f, 2.2f, Size01);
         // A feeding fish is quick to find bait, a resting one rarely bothers.
         const float Mind = Goal == EFishGoal::Feed ? 1.4f : Goal == EFishGoal::Rest ? 0.3f : 0.85f;
         // Every rig in the water: an angler may have up to three rods out on their stands.
@@ -1741,13 +1908,16 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
         {
             ALakeCharacter* Candidate = *It;
             if (!Candidate->HasBaitInWater(Rig)) continue;
-            const float* Until = IgnoreBaitUntil.Find(Candidate);
+            const TMap<int32, float>* RigCooldowns = IgnoreBaitUntil.Find(Candidate);
+            const float* Until = RigCooldowns ? RigCooldowns->Find(Rig) : nullptr;
             if (Until && *Until > SimTime) continue;
             const FVector Bait = Candidate->BaitLocation(Rig);
-            const float Dist = FVector::Dist(Bait, GetActorLocation());
-            // Back for another try at a bait it let go of a moment ago.
-            const bool bBack = AtBait.ReturnTo.Get() == Candidate && AtBait.ReturnRig == Rig && Until && SimTime < *Until + 30 && Dist < S.SenseRadius * 1.5f;
-            if (!bBack && Dist > S.SenseRadius) continue;
+            // Remembering a bait does not reveal it from across the lake or override competitors.
+            const int32 ReturnRig = AtBait.ReturnRig >= 0 ? AtBait.ReturnRig : (int32)Candidate->RodKind;
+            const bool bBack = AtBait.ReturnTo.Get() == Candidate && ReturnRig == Rig && Until && SimTime < *Until + 30
+                && FVector::Dist(GetActorLocation(), Bait) < 250;
+            const float Notice = NoticeBait(Bait);
+            if ((Notice <= 0 && !bBack) || SimTime < AvoidUntil) continue;
             // Feeding, it finds a bait in the layer it feeds in, likes one that goes with its food and
             // is choosy amid plenty (a big hatch).
             // On groundbait: the hook bait it was mixed with goes down best, and the more was thrown,
@@ -1771,13 +1941,13 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
                 else if (bSeen) Plenty = FMath::Clamp(Field.Available(FeedOn, FVector2D(GetActorLocation()), Seen), 0.0f, 1.0f);
             }
             float Interest = LakeFish::BaitInterest(Species, Candidate->BaitOf(Rig), Depth01(Bait.Z, Bait.X, Bait.Y), FeedColumn) * Match
-                * Hunger * Activity * Mind * FMath::Sqrt(FMath::Max(0.0f, 1 - Dist / S.SenseRadius)) * (1 - Fear);
+                * Hunger * Activity * Mind * Notice * (1 - Fear) * FMath::Lerp(1.15f, 0.65f, Size01);
             if (bOnFood) Interest *= 1.15f - 0.35f * Plenty;
             // What it has learnt: the hook, the bait that pricked it, a much-fished spot.
             Interest *= Willingness(Candidate->BaitOf(Rig));
             if (const ALakeLife* PressureLife = ALakeLife::Get(GetWorld()))
                 Interest *= 1 - FMath::Min(0.6f, 0.15f * S.Learning.Fright * PressureLife->PressureAt(Bait));
-            if (bBack || Random.FRand() < Interest * 0.7f)
+            if ((bBack || Random.FRand() < Interest * 0.7f) && TakeApproach(Candidate, Rig))
             {
                 State = EState::Investigate;
                 StateTime = 0;
@@ -1792,9 +1962,9 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
     if (State == EState::Investigate)
     {
         // Lose interest if it takes too long to get there.
-        if (StateTime > 25)
+        if (StateTime > 25 || FVector::Dist(GetActorLocation(), Angler->BaitLocation(TargetRig)) > 250)
         {
-            IgnoreBaitUntil.Add(Angler, SimTime + 20);
+            IgnoreBaitUntil.FindOrAdd(Angler).Add(TargetRig >= 0 ? TargetRig : (int32)Angler->RodKind, SimTime + 20);
             State = EState::Roam;
             return;
         }
@@ -1848,6 +2018,18 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
     const bool bOnBottom = BaitAt.Z <= BottomZ(BaitAt.X, BaitAt.Y) + 8;
     // A fish that has learnt the hook tests longer, takes less readily and feels more.
     const float Shy = BaitShy[FMath::Clamp((int32)Angler->BaitOf(TargetRig), 0, 2)];
+    // Small fish may pick a soft bait apart while testing it. No stealing from a mouth that
+    // already holds it, and no remote theft before the fish has physically reached the hook.
+    if (State == EState::Nibble && Size01 < 0.3f && AtBait.Bite.Phase == 0 && AtBait.Bite.Tries >= 1 && !AtBait.Bite.bTried
+        && Hunger > 0.2f && FVector::Dist(MouthLocation(), Angler->BaitLocation(TargetRig)) < ContactRadius() * 2)
+    {
+        const float Soft = Angler->BaitOf(TargetRig) == EBait::Worm ? 0.35f : 1.0f;
+        if (Random.FRand() < 0.08f * (1 - Size01) * Soft)
+        {
+            Angler->OnBaitStolen(this);
+            return;
+        }
+    }
     const FBiteState Before = AtBait.Bite;
     const FBiteStep Step = LakeFish::NextBiteStep(Species, AtBait.Bite, Size01, Activity, bOnBottom, bBright || Caution > 0.4f, BaitLike(Angler) * (1 - 0.7f * Shy),
         Angler->RigDisturbance(TargetRig) + 0.3f * Caution, Random);
@@ -1975,7 +2157,7 @@ void ALakeFish::DropBait()
         if (AtBait.Bite.Felt > 0.5f) Frighten(0.15f * Style.Comeback * LakeFish::Info(Species).Learning.Fright, (int32)Angler->BaitOf(TargetRig));
         bBack = AtBait.Visits < Style.MaxVisits && Random.FRand() < Again;
         const float Delay = bBack ? Random.FRandRange(Style.ReturnMin, FMath::Max(Style.ReturnMin, Style.ReturnMax)) : 60.0f;
-        IgnoreBaitUntil.Add(Angler, SimTime + Delay);
+        IgnoreBaitUntil.FindOrAdd(Angler).Add(TargetRig >= 0 ? TargetRig : (int32)Angler->RodKind, SimTime + Delay);
         AtBait.ReturnTo = bBack ? Angler : nullptr;
         AtBait.ReturnRig = TargetRig;
         if (!bBack) AtBait.Visits = 0;
@@ -2013,7 +2195,7 @@ void ALakeFish::Release(float SpookSeconds)
     Wish = Vel;
     WishSpeedNow = Vel.Size();
     const FVector From = TargetAngler.IsValid() ? TargetAngler->GetActorLocation() : GetActorLocation();
-    if (TargetAngler.IsValid()) IgnoreBaitUntil.Add(TargetAngler, SimTime + 60);
+    if (ALakeCharacter* Angler = TargetAngler.Get()) IgnoreBaitUntil.FindOrAdd(Angler).Add(TargetRig >= 0 ? TargetRig : (int32)Angler->RodKind, SimTime + 60);
     // It learns: off the hook - fully, pricked by a strike as it held or tried the bait - six tenths;
     // the place grows warier.
     if (State == EState::Hooked || State == EState::Holding || State == EState::Nibble)
@@ -2047,7 +2229,8 @@ void ALakeFish::Move(FVector Desired, float MaxSpeed, float DeltaSeconds)
         const float Step = Angle > 0.001f ? FMath::Min(1.0f, S.TurnRate * Agility * DeltaSeconds / Angle) : 1.0f;
         const FQuat Pose = FQuat::Slerp(From, To, Step);
         const FVector DockPoint = Bait - Pose.RotateVector(MouthOffset());
-        const FVector WantVelocity = ((DockPoint - P) * 3).GetClampedToMaxSize(S.CruiseSpeed * 0.8f);
+        const FVector Avoid = State == EState::Investigate ? AvoidNeighbours() : FVector::ZeroVector;
+        const FVector WantVelocity = (((DockPoint - P) * 3) + Avoid).GetClampedToMaxSize(S.CruiseSpeed * 0.8f);
         const FVector Acceleration = ((WantVelocity - Vel) * 7).GetClampedToMaxSize(S.Acceleration * Agility);
         Vel += Acceleration * DeltaSeconds;
         FVector Next = P + Vel * DeltaSeconds;
@@ -2222,6 +2405,7 @@ void ALakeFish::Simulate(float DeltaSeconds)
     if (State == EState::Flee) MaxSpeed = FMath::Max(MaxSpeed, S.CruiseSpeed);
     if (BurstTime > 0 && State != EState::Hooked) MaxSpeed = S.BurstSpeed;
     Desired += SteerBounds();
+    if (State == EState::Investigate || (State == EState::Roam && bRooting)) Desired += AvoidNeighbours();
     if (State != EState::Hooked && !bLifted && !bPrecise)
     {
         Desired = AvoidBank(Desired);

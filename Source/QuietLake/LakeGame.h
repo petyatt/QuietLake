@@ -37,6 +37,7 @@ struct FLakeRodSlot
     UPROPERTY() float HookDepth = 100;
     UPROPERTY() float FloatDepth = 100;
     UPROPERTY() EBait Bait = EBait::Worm;
+    UPROPERTY() bool bBaitPresent = true;
     UPROPERTY() uint8 Nibbles = 0;
     UPROPERTY() EBiteMotion BiteMotion = EBiteMotion::None;
     UPROPERTY() float BiteStart = 0;
@@ -71,6 +72,7 @@ public:
     UPROPERTY(Replicated) float Tension = 0;
     UPROPERTY(Replicated) float FishDistance = 850;
     UPROPERTY(Replicated) EBait Bait = EBait::Worm;
+    UPROPERTY(Replicated) bool bBaitPresent = true;
     /** Incremented on every nibble so clients can twitch the bobber. */
     UPROPERTY(Replicated) uint8 NibbleCounter = 0;
     /** What the float is doing now (a fish at the bait), replicated so every machine animates it. */
@@ -369,6 +371,8 @@ public:
     void OnBiteMotion(ALakeFish* Fish, const FBiteStep& Step);
     /** The fish holding the bait lets go of it without being struck (as when the time to strike runs out). */
     void OnFishLetGo(ALakeFish* Fish);
+    /** A small fish nibbled the bait off; the empty hook stays until the next cast. */
+    void OnBaitStolen(ALakeFish* Fish);
 private:
     friend class FLakeFishingTest;
     friend struct FLakeFishingFixture;

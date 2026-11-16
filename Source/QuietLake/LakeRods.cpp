@@ -101,6 +101,7 @@ void ALakeCharacter::ParkHandRod(ERodPlace Place, FVector Base, float Yaw, float
     Slot.HookDepth = HookDepth;
     Slot.FloatDepth = FloatDepth;
     Slot.Bait = Bait;
+    Slot.bBaitPresent = bBaitPresent;
     Slot.Nibbles = NibbleCounter;
     Slot.BiteMotion = bFishing ? BiteMotion : EBiteMotion::None;
     Slot.BiteStart = BiteStart;
@@ -151,6 +152,7 @@ void ALakeCharacter::TakeRodInHands(int32 Rod)
         HookDepth = Slot.HookDepth;
         FloatDepth = Slot.FloatDepth;
         Bait = Slot.Bait;
+        bBaitPresent = Slot.bBaitPresent;
         NibbleCounter = Slot.Nibbles;
         BiteMotion = Slot.BiteMotion;
         BiteStart = Slot.BiteStart;
@@ -170,7 +172,8 @@ void ALakeCharacter::TakeRodInHands(int32 Rod)
         // From the case it is rigged with the bait and depth chosen now; from a stand or the ground it
         // keeps its own. On the ground its hook was caught on the handle: the free hand takes the rig.
         FishingState = EFishingState::Idle;
-        if (From != ERodPlace::Case) { Bait = Slot.Bait; FloatDepth = Slot.FloatDepth; }
+        if (From != ERodPlace::Case) { Bait = Slot.Bait; FloatDepth = Slot.FloatDepth; bBaitPresent = Slot.bBaitPresent; }
+        else bBaitPresent = true;
         HookDepth = FloatDepth;
         BaitFish = nullptr;
         LineFish = nullptr;
@@ -478,6 +481,7 @@ void ALakeCharacter::UpdateRodVisuals(float DeltaSeconds)
         In.Hold = Hold;
         In.FishingState = Slot.State;
         In.Bait = Slot.Bait;
+        In.bBaitPresent = Slot.bBaitPresent;
         In.FloatTarget = Slot.FloatPosition;
         In.HookDepth = Slot.HookDepth;
         In.Facing = FRotator(0, Slot.Yaw, 0).Vector();

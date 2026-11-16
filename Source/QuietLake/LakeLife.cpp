@@ -735,6 +735,7 @@ void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor,
         float Weight = LikeWeight > 0 ? LakeFish::DrawWeight(Species, StockRandom, LikeWeight) : -1.0f;
         if (const ALakeFish* Mate = School >= 0 ? SchoolLeader(School) : nullptr)
             Weight = FMath::Clamp(Mate->WeightKg * StockRandom.FRandRange(0.8f, 1.2f), LakeFish::Info(Species).MinWeight, LakeFish::Info(Species).MaxWeight);
+        if (Weight < 0) Weight = LakeFish::DrawWeight(Species, StockRandom);
         if (School >= 0)
             if (const ALakeFish* Lead = SchoolLeader(School); Lead && !IsNearPlayer(Lead->GetActorLocation(), Unseen))
             {
@@ -749,7 +750,7 @@ void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor,
         {
             if (StockPlaces.IsEmpty()) BuildStockPlaces();
             FVector2D Elsewhere;
-            if (DrawStockPlace(Species, {}, {}, 0, Unseen, Elsewhere)) { At = Elsewhere; bMoved = true; }
+            if (DrawStockPlace(Species, {}, {}, 0, Unseen, Elsewhere, LakeFish::DeeperM(Species, Weight))) { At = Elsewhere; bMoved = true; }
         }
         // A fish put elsewhere out of a school makes its home there.
         SpawnStocked(Species, At, bMoved && School < 0 ? FVector::ZeroVector : Anchor, School, Drift, Weight);

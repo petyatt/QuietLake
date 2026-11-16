@@ -5,6 +5,8 @@
 #include "LakeFish.generated.h"
 
 class ALakeCharacter;
+class FLakeFoodField;
+struct FGroundbaitSpot;
 
 /**
  * A species of fish: its number in the species files (Content/LiveFish/Species/*.json, "order").
@@ -788,9 +790,16 @@ public:
     bool TestAtSurfaceMoment() const { return AtSurfaceMoment(); }
     float TestCeilingZ() const { return CeilingZ(); }
     void TestMove(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds) { Move(DesiredVelocity, MaxSpeed, DeltaSeconds); }
+    void TestUpdateBait() { NextThink = SimTime; UpdateBait(0); }
+    void TestChooseRoamTarget(bool bLocal = false) { ChooseRoamTarget(bLocal); }
+    float TestNextThink() const { return NextThink; }
 #endif
 
 private:
+    float NoticeBait(const FVector& Bait) const;
+    bool TakeApproach(ALakeCharacter* Angler, int32 Rig);
+    FVector FeedingDestination(const FGroundbaitSpot& Ground, const FLakeFoodField& Field);
+    FVector AvoidNeighbours() const;
     void ChooseRoamTarget(bool bLocal = false);
     void PickRoamTarget(bool bLocal);
     /** Pick what to do next from hunger, tiredness, the daily rhythm and the weather. */
@@ -859,7 +868,7 @@ private:
     float Stamina = 1, MaxStamina = 1, BurstTime = 0, Phase = 0;
     TWeakObjectPtr<ALakeCharacter> TargetAngler;
     int32 TargetRig = -1;             // which of the angler's rods (ERodKind); -1: the one in his hands
-    TMap<TWeakObjectPtr<ALakeCharacter>, float> IgnoreBaitUntil;
+    TMap<TWeakObjectPtr<ALakeCharacter>, TMap<int32, float>> IgnoreBaitUntil;
     float SimTime = 0;
     float Activity = 1;               // see LakeFish::Activity
     float NextMoodCheck = 0;
