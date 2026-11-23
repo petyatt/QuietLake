@@ -367,6 +367,16 @@ void ALakeHUD::DrawLifePanel(float S)
     }
     TArray<TPair<FString, FLinearColor>> Lines;
     Lines.Add({ TEXT("Live Fish  (F3)"), FLinearColor(0.95f, 0.94f, 0.9f) });
+    if (Life && Life->IsEcosystemPrototype())
+    {
+        for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
+        {
+            if (It->Species != EFishSpecies::Pike || !It->PrototypeId) continue;
+            const float FoodLeft = Life->Food().Left(EFishFood::Benthos, FVector2D(It->GetActorLocation()));
+            Lines.Add({ FString::Printf(TEXT("%s | Pike #%d | prey #%d | energy %.0f%% | hunger %.0f%% | benthos %.0f%%"),
+                It->PrototypePolicyStatus(), It->PrototypeId, It->PrototypeTarget(), It->GetEnergy()*100, It->GetHunger()*100, FoodLeft*100), FLinearColor::White });
+        }
+    }
     auto Of = [&](int32 Sp, EFishGoal G) { return Count[Sp * (int32)EFishGoal::Count + (int32)G]; };
     for (int32 Sp = 0; Sp < Kinds; ++Sp)
     {

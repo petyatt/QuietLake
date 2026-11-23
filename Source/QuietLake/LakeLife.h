@@ -79,6 +79,8 @@ public:
      * How many of each: StockCount. Fry shoals come with the fish (none in an empty pond).
      */
     void StockPond();
+    void StockEcosystemPrototype();
+    bool IsEcosystemPrototype() const { return bEcosystemPrototype; }
     /** How many of a species the pond is stocked with: StockOverride if it names the species, otherwise its passport (stock.count). */
     int32 StockCount(EFishSpecies Species) const;
     /** Counts by species id replacing the passports' stock.count: tests, and -Stock=roach:40,perch:12 on the command line. */
@@ -225,6 +227,7 @@ private:
     float Time = 0, NextDetail = 0, NextEvent = 0, NextLog = 0, NextSample = 0, NextSpotSample = 0;
     bool bStockLogged = false;
     FStats Counters;
+    bool bEcosystemPrototype = false;
     FLakeFoodField FoodField;
     struct FPressurePlace { FVector2D Location = FVector2D::ZeroVector; float Amount = 0; };
     TArray<FPressurePlace> Pressure;

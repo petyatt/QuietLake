@@ -1,4 +1,7 @@
 #include "LakeFish.h"
+#include "PikeWeights.h"
+#include "FishDecisionWeights.h"
+#include <cmath>
 #include "LakeFood.h"
 #include "LakeWater.h"
 #include "LakeGame.h"
@@ -1033,8 +1036,60 @@ void ALakeFish::SetGoal(EFishGoal NewGoal, float Seconds)
     ChooseRoamTarget();
 }
 
+bool ALakeFish::DecidePrototypeGoal()
+{
+    if (!PrototypeId || FParse::Param(FCommandLine::Get(), TEXT("PikeRules"))) return false;
+    ALakeLife* Life = ALakeLife::Get(GetWorld());
+    if (!Life || !Life->Food().IsReady()) return false;
+    using namespace FishDecisions;
+    const double (*Hidden)[7] = nullptr;
+    const double (*Output)[13] = nullptr;
+    switch (Species)
+    {
+    case EFishSpecies::Perch: Hidden = PerchHidden; Output = PerchOutput; break;
+    case EFishSpecies::Roach: Hidden = RoachHidden; Output = RoachOutput; break;
+    case EFishSpecies::Crucian: Hidden = CrucianHidden; Output = CrucianOutput; break;
+    case EFishSpecies::Pike: Hidden = PikeHidden; Output = PikeOutput; break;
+    default: return false;
+    }
+    const FVector P = GetActorLocation();
+    const FFishDiet Diet = LakeFish::DietOf(Species, Size01);
+    float Food = 0;
+    for (EFishFood F : {EFishFood::Plankton, EFishFood::Insects, EFishFood::Benthos, EFishFood::Plants})
+        Food = FMath::Max(Food, Diet.Of(F) * Life->Food().Available(F, FVector2D(P), Seen));
+    const float MaxPrey = WeightKg * LakeFish::Info(Species).Feeding.PreyMaxWeight;
+    if (MaxPrey > 0)
+        Life->ForEachFishNear(P, 800, [&](ALakeFish* Other)
+        {
+            if (Other != this && Other->IsFree() && Other->WeightKg <= MaxPrey) Food = 1;
+        });
+    if (Diet.Fry > 0 && Life->NearestFry(P, 800) >= 0) Food = FMath::Max(Food, Diet.Fry);
+    const double X[] = {Hunger, Energy, Activity, Fear, LakeMap::ZonesAt(P.X, P.Y).Cover, Food};
+    double Activation[12];
+    for (int I = 0; I < 12; ++I)
+    {
+        double Sum = Hidden[I][6];
+        for (int J = 0; J < 6; ++J) Sum += Hidden[I][J] * FMath::Clamp(X[J], 0., 1.);
+        Activation[I] = std::tanh(Sum);
+    }
+    int Best = 0;
+    double BestScore = -DBL_MAX;
+    for (int A = 0; A < 3; ++A)
+    {
+        double Score = Output[A][12];
+        for (int I = 0; I < 12; ++I) Score += Output[A][I] * Activation[I];
+        if (Score > BestScore) { BestScore = Score; Best = A; }
+    }
+    if (Species == EFishSpecies::Pike && SimTime < HandlePreyUntil && Best == static_cast<int>(EFishGoal::Feed))
+        Best = static_cast<int>(EFishGoal::Rest);
+    const EFishGoal Pick = static_cast<EFishGoal>(Best);
+    SetGoal(Pick, Random.FRandRange(6, 12));
+    return true;
+}
+
 void ALakeFish::Decide()
 {
+    if (DecidePrototypeGoal()) return;
     // School members follow their leader's choice.
     const ALakeFish* Lead = Leader();
     if (Lead != this)
@@ -1600,10 +1655,14 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         MaxSpeed = S.BurstSpeed;
     }
     // Predators: a strike under way; an ambusher waits in its lie, a pursuit hunter looks about it.
+    const bool bLearned = PrototypeId && Species == EFishSpecies::Pike && Life && Life->IsEcosystemPrototype()
+        && !FParse::Param(FCommandLine::Get(), TEXT("PikeRules"));
+    if (Goal != EFishGoal::Feed) PolicyAction = -1;
     if (StrikeEnd > 0) UpdateStrike(Desired, MaxSpeed);
     else if (Goal == EFishGoal::Feed && S.Feeding.PreyMaxWeight > 0)
     {
-        if (S.Habitat.bAmbush) UpdatePikeAmbush(DeltaSeconds, Desired, MaxSpeed);
+        if (bLearned) UpdateLearnedHunt(Desired, MaxSpeed);
+        else if (S.Habitat.bAmbush) UpdatePikeAmbush(DeltaSeconds, Desired, MaxSpeed);
         else LookForPrey();
     }
     if (!Life) return;
@@ -1667,6 +1726,13 @@ void ALakeFish::UpdateStrike(FVector& Desired, float& MaxSpeed)
         if (bCaught)
         {
             Eat(FMath::Clamp(Target->WeightKg / FMath::Max(0.01f, WeightKg * S.Feeding.PreyMaxWeight), 0.3f, 0.9f));
+            if (PrototypeId && Species == EFishSpecies::Pike)
+            {
+                // A larger meal postpones the next hunt. Tunable game hours, converted
+                // using the same calendar as weather and the rest of the lake.
+                const float MealHours = FMath::Clamp(1.f + 32.f * Target->WeightKg / WeightKg, 1.f, 8.f);
+                HandlePreyUntil = SimTime + MealHours * ALakeWeather::DayMinutes * 60.f / 24.f;
+            }
             Life->Devour(Target, this);
         }
         else
@@ -1787,6 +1853,84 @@ void ALakeFish::PushedOff(ALakeFish* By)
     AtBait.ReturnTo = nullptr;
     if (Previous) IgnoreBaitUntil.FindOrAdd(Previous).Add(PreviousRig, SimTime + Random.FRandRange(8.0f, 18.0f));
     if (By) Startle(By->GetActorLocation(), 0.35f);
+}
+
+const TCHAR* ALakeFish::PrototypePolicyStatus() const
+{
+    if (FParse::Param(FCommandLine::Get(), TEXT("PikeRules"))) return TEXT("Rules");
+    if (SimTime < HandlePreyUntil) return TEXT("ML: digesting");
+    static const TCHAR* Labels[] = { TEXT("ML: wait"), TEXT("ML: approach"), TEXT("ML: strike"), TEXT("ML: retreat") };
+    return PolicyAction >= 0 && PolicyAction < 4 ? Labels[PolicyAction] : TEXT("ML: no encounter");
+}
+
+void ALakeFish::UpdateLearnedHunt(FVector& Desired, float& MaxSpeed)
+{
+    ALakeLife* Life = ALakeLife::Get(GetWorld());
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    const FVector Mouth = MouthLocation();
+    if (SimTime < HandlePreyUntil)
+    {
+        Prey.Reset();
+        PolicyAction = -1;
+        Desired = FVector::ZeroVector;
+        return;
+    }
+    if (SimTime >= NextPolicyDecision)
+    {
+        NextPolicyDecision = SimTime + 0.4f;
+        float Range = 800;
+        ALakeFish* Target = Prey.Get();
+        if (Target && Target->IsFree() && FVector::Dist(Mouth, Target->GetActorLocation()) <= Range)
+            Range = FVector::Dist(Mouth, Target->GetActorLocation());
+        else
+        {
+            Target = nullptr;
+            Life->ForEachFishNear(Mouth, Range, [&](ALakeFish* Other)
+        {
+            if (Other == this || !Other->IsFree() || Other->WeightKg > WeightKg * S.Feeding.PreyMaxWeight) return;
+            const float Distance = FVector::Dist(Mouth, Other->GetActorLocation());
+            if (Distance < Range) { Range = Distance; Target = Other; }
+            });
+        }
+        Prey = Target;
+        PolicyAction = -1;
+        if (Target)
+        {
+            const double X[] = { Range / 800., LakeMap::ZonesAt(Mouth.X, Mouth.Y).Cover, Fear, Energy, Hunger };
+            double Hidden[12];
+            for (int I = 0; I < 12; ++I)
+            {
+                double Sum = PikeWeights::Hidden[I][5];
+                for (int J = 0; J < 5; ++J) Sum += PikeWeights::Hidden[I][J] * FMath::Clamp(X[J], 0., 1.);
+                Hidden[I] = std::tanh(Sum);
+            }
+            double Best = -DBL_MAX;
+            for (int A = 0; A < 4; ++A)
+            {
+                double Score = PikeWeights::Output[A][12];
+                for (int I = 0; I < 12; ++I) Score += PikeWeights::Output[A][I] * Hidden[I];
+                if (Score > Best) { Best = Score; PolicyAction = A; }
+            }
+            if (PolicyAction == 2 && Range <= 260)
+            {
+                PreyFry = -1;
+                StrikeEnd = SimTime + 0.8f;
+                BurstTime = 0.8f;
+                Life->CountPikeStrike();
+            }
+        }
+    }
+    const ALakeFish* Target = Prey.Get();
+    if (!Target || PolicyAction < 0) return;
+    const FVector Direction = (Target->GetActorLocation() - Mouth).GetSafeNormal();
+    FaceDir = Direction.GetSafeNormal2D();
+    if (StrikeEnd > 0) { UpdateStrike(Desired, MaxSpeed); return; }
+    // Leave acceleration and turning to Move. Match a moving target and reserve
+    // burst speed for the strike itself.
+    const float Distance = FVector::Dist(Mouth, Target->GetActorLocation());
+    const float ClosingSpeed = FMath::Clamp(Distance * 0.55f, 35.0f, S.BurstSpeed * 0.55f);
+    MaxSpeed = FMath::Clamp(Target->SpeedNow() + ClosingSpeed, S.CruiseSpeed, S.BurstSpeed * 0.78f);
+    Desired = PolicyAction == 0 ? FVector::ZeroVector : Direction * (PolicyAction == 3 ? -MaxSpeed : MaxSpeed);
 }
 
 void ALakeFish::UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
@@ -2507,6 +2651,8 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
             0.0f);
         Beat = 2 * PI * Hz;
         Amp = 0.022f + 0.07f * E + 0.015f * FMath::Clamp(ShownSpeed / S.CruiseSpeed, 0.0f, 1.0f);
+        if (Species == EFishSpecies::Pike && !bNetHooked && State != EState::Hooked)
+            Amp *= FMath::Lerp(0.40f, 0.82f, FMath::Clamp(ShownSpeed / S.BurstSpeed, 0.0f, 1.0f));
     }
     // Keep the wave running on smoothly when the rate changes: shift the phase so the tail stays
     // where it was at this moment (the material bends by sin(u - Time * Rate + Phase)).
@@ -2562,6 +2708,12 @@ void ALakeFish::UpdateVisual(float DeltaSeconds)
             Paddle = FMath::Clamp(0.2f + 0.6f * Slow + 0.3f * FMath::Abs(ShownTurn) / 90.0f, 0.0f, 1.0f);
             Spread = FMath::Lerp(0.6f, -0.8f, Fast);
             Rate = 6;
+            if (Species == EFishSpecies::Pike)
+            {
+                Paddle *= 0.32f;
+                Spread = FMath::Lerp(0.08f, -0.55f, Fast);
+                Rate = 3.5f;
+            }
         }
         const float Fin[4] = { FMath::RoundToFloat(Paddle * 20) / 20, FMath::RoundToFloat(Spread * 20) / 20, Rate, bFinCheck ? 1.0f : 0.0f };
         for (int32 K = 0; K < 4; ++K)

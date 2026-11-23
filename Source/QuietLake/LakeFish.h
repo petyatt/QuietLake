@@ -722,6 +722,11 @@ public:
     FVector GetHomeAnchor() const { return HomeAnchor; }
     float GetHomeDrift() const { return HomeDrift; }
     void SetHomeDrift(float Drift) { HomeDrift = Drift; }
+    // Stable within the fixed prototype cohort. Zero denotes a regular lake fish.
+    int32 PrototypeId = 0;
+    const TCHAR* PrototypePolicyStatus() const;
+    int32 PolicyAction = -1;
+    int32 PrototypeTarget() const { return Prey.IsValid() ? Prey->PrototypeId : 0; }
     float GetHunger() const { return Hunger; }
     float GetEnergy() const { return Energy; }
     /** Free to live its life: not testing, holding or hooked on anyone's bait, not fleeing. */
@@ -812,6 +817,10 @@ private:
     void UpdateStrike(FVector& Desired, float& MaxSpeed);
     /** A pursuit hunter (a big perch) looks for a small fish right in front of it to dash at. */
     void LookForPrey();
+    void UpdateLearnedHunt(FVector& Desired, float& MaxSpeed);
+    float NextPolicyDecision = 0;
+    float HandlePreyUntil = 0;
+    bool DecidePrototypeGoal();
     /** Notices a fish close by that could eat it: fear, and which one (Threat). */
     void SenseThreats(float DeltaSeconds);
     /** The fish this one follows: the school leader, or itself. */

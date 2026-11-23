@@ -37,7 +37,7 @@ public:
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     /** Real minutes per game day. */
-    static constexpr float DayMinutes = 48.0f;
+    static constexpr float DayMinutes = 120.0f;
     static ALakeWeather* Get(const UWorld* World);
 
     /** Hours since midnight, 0..24. */

@@ -78,7 +78,11 @@ void ALakeLife::BeginPlay()
     {
         FoodField.Init();
         // A game (not a test world): Live Fish stocks the pond (and the fry with it).
-        if (GetWorld()->GetAuthGameMode<ALakeGameMode>()) StockPond();
+        if (GetWorld()->GetAuthGameMode<ALakeGameMode>())
+        {
+            if (FParse::Param(FCommandLine::Get(), TEXT("FishEcosystemPrototype"))) StockEcosystemPrototype();
+            else StockPond();
+        }
     }
 #if !UE_BUILD_SHIPPING
     if (HasAuthority() && FParse::Param(FCommandLine::Get(), TEXT("LifePreview"))) RunPreview();
@@ -532,6 +536,30 @@ int32 ALakeLife::StockCount(EFishSpecies Species) const
     return FMath::Max(0, Override ? *Override : S.Stock.Count);
 }
 
+void ALakeLife::StockEcosystemPrototype()
+{
+    if (!HasAuthority() || bEcosystemPrototype) return;
+    bEcosystemPrototype = true;
+    StockRandom.Initialize(20261027);
+    const LakeMap::FSpot& Shore = LakeMap::Spots()[0];
+    const FVector2D Along(-Shore.Outward.Y, Shore.Outward.X);
+    // The predator starts closer to the bank. The shoal feeds further offshore.
+    for (int32 Id = 1; Id <= 10; ++Id)
+    {
+        const bool bShoal = Id >= 3 && Id <= 8;
+        const EFishSpecies Species = Id > 8 ? EFishSpecies::Crucian : bShoal ? EFishSpecies::Roach : Id == 1 ? EFishSpecies::Pike : EFishSpecies::Perch;
+        const float Offshore = Id == 1 ? 560 : 820;
+        const FVector2D At = Shore.Location - Shore.Outward * Offshore + Along * ((Id - 4) * 32);
+        if (!ensure(LakeMap::IsWater(At.X, At.Y))) continue;
+        const float Kg = bShoal ? 0.09f : Id == 1 ? 2.4f : 0.24f;
+        if (ALakeFish* Fish = SpawnStocked(Species, At, FVector(At, LakeFish::SurfaceZ - 85), bShoal ? 1 : -1, 350, Kg))
+        {
+            Fish->PrototypeId = Id;
+            if (Species == EFishSpecies::Pike) Fish->Hunger = 0.75f;
+        }
+    }
+}
+
 void ALakeLife::StockPond()
 {
     const double Begin = FPlatformTime::Seconds();
@@ -696,7 +724,7 @@ void ALakeLife::StockPond()
 
 void ALakeLife::Restock(const ALakeFish* Gone)
 {
-    if (!Gone || !HasAuthority()) return;
+    if (!Gone || !HasAuthority() || bEcosystemPrototype) return;
     // Fish from elsewhere in the lake fill the gap over a few game hours, the longer at a much-fished place.
     const float GameHour = ALakeWeather::DayMinutes * 60.0f / 24.0f;
     const float Delay = RestockHours * GameHour * (1 + 0.5f * FMath::Min(4.0f, PressureAt(Gone->GetActorLocation())));

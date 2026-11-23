@@ -1536,6 +1536,34 @@ bool FLakeRipplesTest::RunTest(const FString& Parameters)
 
 // Live Fish stocks the pond: every species in its numbers, a school in reach of every fishing spot,
 // and a fish taken from a school comes back into the same school.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeEcosystemPrototypeTest, "QuietLake.Ecosystem.Prototype", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeEcosystemPrototypeTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    Life->StockEcosystemPrototype();
+    Life->StockEcosystemPrototype();
+    TSet<int32> Ids;
+    int32 Pike = 0, Perch = 0, Roach = 0, Crucian = 0;
+    for (TActorIterator<ALakeFish> It(World); It; ++It)
+    {
+        Ids.Add(It->PrototypeId);
+        Crucian += It->Species == EFishSpecies::Crucian;
+        Pike += It->Species == EFishSpecies::Pike;
+        Perch += It->Species == EFishSpecies::Perch;
+        Roach += It->Species == EFishSpecies::Roach;
+        TestTrue(TEXT("Fish starts in water"), LakeMap::IsWater(It->GetActorLocation().X, It->GetActorLocation().Y));
+    }
+    TestEqual(TEXT("Distinct fish IDs"), Ids.Num(), 10);
+    TestEqual(TEXT("Pike"), Pike, 1);
+    TestEqual(TEXT("Perch"), Perch, 1);
+    TestEqual(TEXT("Roach"), Roach, 6);
+    TestEqual(TEXT("Crucian"), Crucian, 2);
+    TestEqual(TEXT("Real minutes per day"), ALakeWeather::DayMinutes, 120.f);
+    World->DestroyWorld(false);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeStockingTest, "QuietLake.Fishing.Stocking", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeStockingTest::RunTest(const FString& Parameters)
 {
