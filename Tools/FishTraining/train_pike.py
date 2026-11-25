@@ -15,14 +15,14 @@ def forward(model, obs):
     return hidden, [w / sum(weights) for w in weights]
 
 
-def train(episodes, seed):
+def train(episodes, seed, encounter=Encounter):
     rng = random.Random(seed)
     def matrix(rows, cols):
         return [[rng.uniform(-0.35, 0.35) for _ in range(cols)] for _ in range(rows)]
     model = dict(version=1, features=FEATURES, actions=ACTIONS, hidden=matrix(12, 6), output=matrix(4, 13))
     baseline = 0.0
     for n in range(episodes):
-        env = Encounter(rng.getrandbits(60))
+        env = encounter(rng.getrandbits(60))
         history = []
         while True:
             x = env.observe()
@@ -48,11 +48,11 @@ def train(episodes, seed):
     return model
 
 
-def evaluate(policy, trials):
+def evaluate(policy, trials, encounter=Encounter):
     catches = strikes = 0
     expenditure = 0
     for seed in range(trials):
-        env = Encounter(900000 + seed)
+        env = encounter(900000 + seed)
         while True:
             action = policy(env.observe())
             _, done, caught, cost = env.step(action)

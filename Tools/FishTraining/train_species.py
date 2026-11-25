@@ -8,7 +8,8 @@ from pathlib import Path
 
 # Exposure, shelter benefit and mobility while foraging.
 PROFILES = {"Perch": (.6,.4,.65), "Roach": (.95,.35,.8),
-            "Crucian": (.85,.85,.3), "Pike": (.45,.8,.25)}
+            "Crucian": (.85,.85,.3), "Pike": (.45,.8,.25),
+            "Bream": (.75,.45,.45), "Bleak": (1,.25,.95), "Rudd": (.85,.75,.6)}
 
 
 def bout(x, action, profile, rng):
@@ -41,13 +42,14 @@ def infer(x, hidden, output):
     return h,y
 
 
-def fit(profile, seed):
+def fit(profile, seed, inputs=6, simulator=None):
+    simulate = simulator or (lambda x, a, rng: bout(x, a, profile, rng))
     rng=random.Random(seed)
-    hidden=[[rng.uniform(-.6,.6) for _ in range(7)] for _ in range(12)]
+    hidden=[[rng.uniform(-.6,.6) for _ in range(inputs+1)] for _ in range(12)]
     output=[[rng.uniform(-.2,.2) for _ in range(13)] for _ in range(3)]
     for i in range(14000):
-        x=[rng.random() for _ in range(6)]
-        target=[bout(x,a,profile,rng) for a in range(3)]
+        x=[rng.random() for _ in range(inputs)]
+        target=[simulate(x,a,rng) for a in range(3)]
         h,y=infer(x,hidden,output)
         errors=[(.022/(1+i/10000))*(t-v) for t,v in zip(target,y)]
         for j,row in enumerate(hidden):
@@ -58,12 +60,13 @@ def fit(profile, seed):
     return hidden,output
 
 
-def validate(profile, weights):
+def validate(profile, weights, inputs=6, simulator=None):
+    simulate = simulator or (lambda x, a, rng: bout(x, a, profile, rng))
     rng=random.Random(71238)
     hits=0
     for i in range(250):
-        x=[rng.random() for _ in range(6)]
-        reference=[sum(bout(x,a,profile,rng) for _ in range(50)) for a in range(3)]
+        x=[rng.random() for _ in range(inputs)]
+        reference=[sum(simulate(x,a,rng) for _ in range(50)) for a in range(3)]
         _,prediction=infer(x,*weights)
         hits+=max(range(3),key=reference.__getitem__)==max(range(3),key=prediction.__getitem__)
     return hits

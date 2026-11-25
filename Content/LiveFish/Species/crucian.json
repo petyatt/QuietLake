@@ -27,7 +27,7 @@
   "gait": { "hoverTurn": 30, "turnRadius": 0.5, "turnAccel": 200, "response": 0.6, "wanderDeg": 30, "wanderHz": 0.07, "kick": 1.0, "kickPeriod": 1.0, "spacing": 2.0 },
 
   "senseRadius": 350,
-  "baits": { "worm": 0.55, "maggot": 0.7, "bread": 1.0 },
+  "baits": { "worm": 0.98, "maggot": 0.89, "bread": 1.0 },
   "bite": {
     "minTries": 1, "smallExtraTries": 2, "maxTries": 10,
     "takeChance": 0.32, "takeSmall": 0.5, "takeBig": 1.2,

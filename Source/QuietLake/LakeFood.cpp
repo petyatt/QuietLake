@@ -164,6 +164,9 @@ float FLakeFoodField::Available(EFishFood Food, const FVector2D& P, const FFishC
     // The wind blows insects onto the bank it blows towards.
     if (Food == EFishFood::Insects && Pl.NearBank > 0 && C.Wind > 0.15f)
         A *= 1 + 0.8f * C.Wind * FMath::Max(0.0f, FVector2D::DotProduct(Pl.Outward, C.WindDir)) * Pl.NearBank;
+#if WITH_DEV_AUTOMATION_TESTS
+    if (Food == EFishFood::Plankton) A *= TestPlanktonScale;
+#endif
     return A;
 }
 

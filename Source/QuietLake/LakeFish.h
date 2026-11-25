@@ -590,7 +590,7 @@ namespace LakeFish
      * Activity as LakeFish::Activity, bWary: bright calm water.
      */
     QUIETLAKE_API FBiteStep NextBiteStep(EFishSpecies Species, FBiteState& State, float Size01, float Activity, bool bBaitOnBottom, bool bWary,
-                                         float Like, float Disturb, FRandomStream& Random);
+                                         float Like, float Disturb, FRandomStream& Random, const float* ContactValue = nullptr);
     /** A whole bite left undisturbed on a favourite bait, until the fish lets go (for tests and previews). */
     QUIETLAKE_API TArray<FBiteStep> MakeBite(EFishSpecies Species, float Size01, float Activity, bool bBaitOnBottom, bool bWary, FRandomStream& Random);
     /** What the angler sees, for the status line. */
@@ -738,7 +738,7 @@ public:
     /** A predator struck at the fry next to it, or a hunting school mate dashes: a short burst towards Target. */
     void Dash(FVector Target, float Seconds);
     /** Eat: a mouthful of fry or a whole fish (0..1 of a full meal). */
-    void Eat(float Meal);
+    void Eat(float Meal, EBait Familiar = EBait::Count);
     /**
      * Something disturbed the water at From (a rig landing, steps on the bank, a fish thrashing):
      * Strength 0..1 at the fish. Weak: it turns and swims calmly away for a few seconds; strong
@@ -789,6 +789,19 @@ public:
     FRandomStream& TestRandom() { return Random; }
     FFishAtBait& TestAtBait() { return AtBait; }
     class UStaticMeshComponent* TestBody() const { return Body; }
+    int32 TestLastSensedPredatorId = 0;
+    double TestPatchScore = -DBL_MAX, TestNaturalScore = -DBL_MAX, TestWinningScore = -DBL_MAX;
+    EFishFood TestNaturalKind = EFishFood::None;
+    float TestGroundScent = 0, TestGroundValue = 0;
+    float TestObservedBait = -1; // Negative when the policy did not sample a rig this frame.
+    TWeakObjectPtr<ALakeCharacter> TestSeenAngler;
+    double TestPatchBonus = 0;
+    float TestBaitValue = -1;
+    bool TestTraceCandidates = false;
+    bool TestExplainBait = false;
+    FString TestBaitInputs;
+    double TestHookScore = -DBL_MAX;
+    bool TestTargetsFry() const { return PreyFry >= 0; }
     void TestDecide() { Decide(); }
     void TestSetGoal(EFishGoal NewGoal, float Seconds) { SetGoal(NewGoal, Seconds); }
     void TestSenseThreats(float DeltaSeconds) { SenseThreats(DeltaSeconds); }
@@ -818,9 +831,19 @@ private:
     /** A pursuit hunter (a big perch) looks for a small fish right in front of it to dash at. */
     void LookForPrey();
     void UpdateLearnedHunt(FVector& Desired, float& MaxSpeed);
+    void ObservePrototypeThreat(FVector From, float Strength);
+    void DecideThreatResponse();
+    FVector PerceivedDanger = FVector::ZeroVector, EscapePoint = FVector::ZeroVector;
+    bool bFreezeUnderThreat = false;
+    float DangerSignal = 0, NextEscapeDecision = 0, EscapeSpeed = 0;
     float NextPolicyDecision = 0;
     float HandlePreyUntil = 0;
-    bool DecidePrototypeGoal();
+    bool UsesPrototypePolicy() const;
+    void DecidePrototypeGoal();
+    void SwimPrototype(float DeltaSeconds, FVector& Desired, float& MaxSpeed);
+    TWeakObjectPtr<ALakeCharacter> PolicyBaitOwner;
+    int32 PolicyRig = -1;
+    int32 PolicyMate = 0;
     /** Notices a fish close by that could eat it: fear, and which one (Threat). */
     void SenseThreats(float DeltaSeconds);
     /** The fish this one follows: the school leader, or itself. */
@@ -941,6 +964,9 @@ private:
     float BurstSeenAt = -100;   // when this machine last saw it bursting
     void NextBiteStep(class ALakeCharacter* Angler);
     /** How much it likes the angler's bait where it hangs, 0..1. */
+    float LastGroundMeal = -1000;
+    FVector RecentBaitFood = FVector::ZeroVector; // worm, maggot, bread analogues
+    float LocalBaitAppeal(EBait Bait, FVector At) const;
     float BaitLike(const class ALakeCharacter* Angler) const;
     friend class ALakeCharacter; // live rig preview seeds approach only
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly

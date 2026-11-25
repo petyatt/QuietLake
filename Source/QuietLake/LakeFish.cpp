@@ -1,6 +1,17 @@
 #include "LakeFish.h"
 #include "PikeWeights.h"
+#include "FishingPolicyWeights.h"
+#include "InspectionWeights.h"
+#include "GroundPatchWeights.h"
+#include "PatchMorselWeights.h"
+#include "ThreatPolicyWeights.h"
+#include "CrucianThreatWeights.h"
+#include "CrucianBedThreatWeights.h"
+#include "PikeAmbushWeights.h"
+#include "PerchHuntWeights.h"
 #include "FishDecisionWeights.h"
+#include "RoachShoalWeights.h"
+#include "CrucianPatchWeights.h"
 #include <cmath>
 #include "LakeFood.h"
 #include "LakeWater.h"
@@ -333,7 +344,20 @@ float LakeFish::BaitInterest(EFishSpecies Species, EBait Bait, float DepthFracti
     }
     return S.BaitLike(Bait) * DepthMatch;
 }
-FBiteStep LakeFish::NextBiteStep(EFishSpecies Species, FBiteState& B, float Size01, float A, bool bOnBottom, bool bWary, float Like, float Disturb, FRandomStream& R)
+static float FishingValue(float Cue, float Appeal, float Hunger, float Risk, float Memory, float Samples)
+{
+    const float Inputs[] = {Cue, Appeal, Hunger, Risk, Memory, Samples};
+    double Value = FishingPolicy::Output[16];
+    for (int I = 0; I < 16; ++I)
+    {
+        double Sum = FishingPolicy::Hidden[I][6];
+        for (int J = 0; J < 6; ++J) Sum += FishingPolicy::Hidden[I][J] * FMath::Clamp(Inputs[J], 0.f, 1.f);
+        Value += FishingPolicy::Output[I] * std::tanh(Sum);
+    }
+    return Value;
+}
+
+FBiteStep LakeFish::NextBiteStep(EFishSpecies Species, FBiteState& B, float Size01, float A, bool bOnBottom, bool bWary, float Like, float Disturb, FRandomStream& R, const float* ContactValue)
 {
     const FFishBiteStyle& Style = Info(Species).Bite;
     // Sluggish (poor appetite, bright calm water): more testing, shorter takes, sooner let go.
@@ -366,7 +390,13 @@ FBiteStep LakeFish::NextBiteStep(EFishSpecies Species, FBiteState& B, float Size
             return Still(R.FRandRange(Style.PauseMin, FMath::Max(Style.PauseMin, Style.PauseMax)));
         }
         const int32 MinTries = Style.MinTries + (Size01 < 0.3f ? Style.SmallExtraTries : 0) + (Lazy > 0.4f ? 1 : 0);
-        if (B.Tries >= MinTries)
+        if (ContactValue)
+        {
+            if (*ContactValue <= 0) return LetGo(Still(.1f));
+            if (B.Tries > 0 && *ContactValue > .14f) B.Phase = 1;
+            else if (B.Tries >= Style.MaxTries) return LetGo(Still(.1f));
+        }
+        else if (B.Tries >= MinTries)
         {
             const float Take = Style.TakeChance * FMath::Lerp(Style.TakeSmall, Style.TakeBig, Size01) * (0.5f + 0.5f * Like)
                 * FMath::Lerp(0.6f, 1.1f, FMath::Clamp(A, 0.0f, 1.2f) / 1.2f) * (1 + 0.25f * B.Tries) * FMath::Max(0.0f, 1 - B.Felt);
@@ -1036,11 +1066,16 @@ void ALakeFish::SetGoal(EFishGoal NewGoal, float Seconds)
     ChooseRoamTarget();
 }
 
-bool ALakeFish::DecidePrototypeGoal()
+bool ALakeFish::UsesPrototypePolicy() const
 {
-    if (!PrototypeId || FParse::Param(FCommandLine::Get(), TEXT("PikeRules"))) return false;
+    static const bool bUseRules = FParse::Param(FCommandLine::Get(), TEXT("PikeRules"));
+    return PrototypeId > 0 && !bUseRules;
+}
+
+void ALakeFish::DecidePrototypeGoal()
+{
     ALakeLife* Life = ALakeLife::Get(GetWorld());
-    if (!Life || !Life->Food().IsReady()) return false;
+    if (!Life) return;
     using namespace FishDecisions;
     const double (*Hidden)[7] = nullptr;
     const double (*Output)[13] = nullptr;
@@ -1050,46 +1085,321 @@ bool ALakeFish::DecidePrototypeGoal()
     case EFishSpecies::Roach: Hidden = RoachHidden; Output = RoachOutput; break;
     case EFishSpecies::Crucian: Hidden = CrucianHidden; Output = CrucianOutput; break;
     case EFishSpecies::Pike: Hidden = PikeHidden; Output = PikeOutput; break;
-    default: return false;
-    }
-    const FVector P = GetActorLocation();
-    const FFishDiet Diet = LakeFish::DietOf(Species, Size01);
-    float Food = 0;
-    for (EFishFood F : {EFishFood::Plankton, EFishFood::Insects, EFishFood::Benthos, EFishFood::Plants})
-        Food = FMath::Max(Food, Diet.Of(F) * Life->Food().Available(F, FVector2D(P), Seen));
-    const float MaxPrey = WeightKg * LakeFish::Info(Species).Feeding.PreyMaxWeight;
-    if (MaxPrey > 0)
-        Life->ForEachFishNear(P, 800, [&](ALakeFish* Other)
+    default:
         {
-            if (Other != this && Other->IsFree() && Other->WeightKg <= MaxPrey) Food = 1;
+            const FString& Id = LakeFish::Info(Species).Id;
+            if (Id == TEXT("bream")) { Hidden = BreamHidden; Output = BreamOutput; }
+            else if (Id == TEXT("bleak")) { Hidden = BleakHidden; Output = BleakOutput; }
+            else if (Id == TEXT("rudd")) { Hidden = RuddHidden; Output = RuddOutput; }
+            else return;
+        }
+    }
+    const FVector Here = GetActorLocation();
+    const FFishDiet Diet = LakeFish::DietOf(Species, Size01);
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    static const bool bBaseline = FParse::Param(FCommandLine::Get(), TEXT("RoachBaseline"));
+    static const bool bOldCrucian = FParse::Param(FCommandLine::Get(), TEXT("CrucianBaseline"));
+    const bool bCrucian = Species == EFishSpecies::Crucian && !bOldCrucian;
+    const bool bSocial = Species == EFishSpecies::Roach && !bBaseline;
+    TArray<ALakeFish*, TInlineAllocator<8>> Mates;
+    if (bSocial && School >= 0)
+        Life->ForEachFishNear(Here, 800, [&](ALakeFish* Other)
+        {
+            if (Other != this && Other->School == School && Other->Species == Species && Other->IsFree()) Mates.Add(Other);
         });
-    if (Diet.Fry > 0 && Life->NearestFry(P, 800) >= 0) Food = FMath::Max(Food, Diet.Fry);
-    const double X[] = {Hunger, Energy, Activity, Fear, LakeMap::ZonesAt(P.X, P.Y).Cover, Food};
-    double Activation[12];
-    for (int I = 0; I < 12; ++I)
+    ALakeFish* PreviousPrey = Prey.Get();
+    double PatchBonus = 0, PatchScore = -DBL_MAX;
+    const FGroundbaitSpot* NearbyPatch = nullptr;
+    const bool RecentlyFed = (bCrucian || bSocial) && SimTime - LastGroundMeal < 1.f;
+    float SubstrateFood = 0;
+    double Best = -DBL_MAX;
+    // Evaluate each feasible (intent, target) using the same observation units as training.
+    auto Consider = [&](EFishGoal Intent, FVector At, float Food, EFishFood Kind,
+                        ALakeFish* Animal = nullptr, ALakeCharacter* BaitOwner = nullptr, int Rig = -1, int Fry = -1, double LocalMargin = -DBL_MAX)
     {
-        double Sum = Hidden[I][6];
-        for (int J = 0; J < 6; ++J) Sum += Hidden[I][J] * FMath::Clamp(X[J], 0., 1.);
-        Activation[I] = std::tanh(Sum);
-    }
-    int Best = 0;
-    double BestScore = -DBL_MAX;
-    for (int A = 0; A < 3; ++A)
+        if (!LakeMap::IsWater(At.X, At.Y)) return;
+        const float Bottom = BottomZ(At.X, At.Y) + 8;
+        if (Bottom > LakeFish::SurfaceZ - 8) return;
+        At.Z = FMath::Clamp(double(At.Z), double(Bottom), double(LakeFish::SurfaceZ - 8));
+        const float Distance = FVector::Distance(Here, At);
+        float Risk = Threat.IsValid() ? Fear * FMath::Clamp(1.5f - float(FVector::Distance(At, Threat->GetActorLocation())) / 500.f, 0.f, 1.f) : Fear;
+        if (!bSocial && Animal && School >= 0 && Animal->School == School) Risk *= 0.65f;
+        double X[] = {Hunger, Energy, Activity, Risk, Life->CoverAt(At), Food, 0., 0., 0.};
+        if (bSocial)
+        {
+            const FVector Travel = (At - Here).GetSafeNormal();
+            float Nearest = 800.f;
+            double Density = 0, Heading = 0, Moving = 0;
+            for (const ALakeFish* Mate : Mates)
+            {
+                const float D = FVector::Distance(At, Mate->GetActorLocation());
+                Nearest = FMath::Min(Nearest, D);
+                const float Near = FMath::Clamp(1.f - D / 250.f, 0.f, 1.f);
+                Density += Near;
+                if (Mate->Vel.SizeSquared() > 4 && !Travel.IsNearlyZero())
+                {
+                    Heading += Near * FVector::DotProduct(Travel, Mate->Vel.GetSafeNormal());
+                    Moving += Near;
+                }
+            }
+            // A nearby fish provides safety at a loose spacing; coincident bodies do not.
+            X[6] = FMath::SmoothStep(8.f, 35.f, Nearest) * (1 - FMath::SmoothStep(65.f, 300.f, Nearest));
+            X[7] = FMath::Min(1., Density / 4.);
+            X[8] = Moving > 0 ? 0.5 + 0.5 * Heading / Moving : 0.5;
+        }
+        if (bCrucian)
+        {
+            X[6] = 1.f - FMath::SmoothStep(15.f, 70.f, float(At.Z - Bottom + 8));
+            X[7] = Kind == EFishFood::Benthos ? 1. : Kind == EFishFood::Groundbait ? SubstrateFood : 0.;
+        }
+        const int A = static_cast<int>(Intent);
+        const double* Out = bCrucian ? CrucianPatch::Output[A] : bSocial ? RoachShoal::Output[A] : Output[A];
+        double Score = Out[12];
+        for (int I = 0; I < 12; ++I)
+        {
+            const int Count = bCrucian ? 8 : bSocial ? 9 : 6;
+            const double* Row = bCrucian ? CrucianPatch::Hidden[I] : bSocial ? RoachShoal::Hidden[I] : Hidden[I];
+            double Sum = Row[Count];
+            for (int J = 0; J < Count; ++J) Sum += Row[J] * FMath::Clamp(X[J], 0., 1.);
+            Score += Out[I] * std::tanh(Sum);
+        }
+        // Estimate travel expenditure before comparing the predicted bout returns.
+        Score -= 0.04 * Distance / 800.;
+        if (Kind == EFishFood::Groundbait)
+        {
+            Score += PatchBonus;
+            PatchScore = Score;
+        }
+        if (LocalMargin != -DBL_MAX) Score = PatchScore + LocalMargin;
+        if (Animal && Animal == PreviousPrey && Kind == EFishFood::Fish) Score += 0.04;
+#if WITH_DEV_AUTOMATION_TESTS
+        if (TestTraceCandidates)
+            UE_LOG(LogTemp, Display, TEXT("PatchCandidate intent=%d food=%d x=%.9f y=%.9f z=%.9f dx=%.5f dy=%.5f foodinput=%.9f score=%.17g"),
+                int(Intent), int(Kind), At.X, At.Y, At.Z, At.X-Here.X, At.Y-Here.Y, Food, Score);
+        if (BaitOwner) TestHookScore = Score;
+        if (Kind == EFishFood::Groundbait) TestPatchScore = Score;
+        if (Intent == EFishGoal::Feed && LakeFood::IsNatural(Kind) && Score > TestNaturalScore)
+        {
+            TestNaturalScore = Score;
+            TestNaturalKind = Kind;
+        }
+        TestWinningScore = FMath::Max(TestWinningScore, Score);
+#endif
+        if (Score <= Best) return;
+        Best = Score;
+        Goal = Intent;
+        RoamTarget = At;
+        FeedOn = Kind;
+        Prey = Kind == EFishFood::Fish ? Animal : nullptr;
+        PolicyMate = Animal && Kind == EFishFood::None ? Animal->PrototypeId : 0;
+        PolicyBaitOwner = BaitOwner;
+        PolicyRig = Rig;
+        PreyFry = Fry;
+    };
+    const bool CanFeed = SimTime >= HandlePreyUntil;
+    auto Sample = [&](FVector At)
     {
-        double Score = Output[A][12];
-        for (int I = 0; I < 12; ++I) Score += Output[A][I] * Activation[I];
-        if (Score > BestScore) { BestScore = Score; Best = A; }
+        if (!LakeMap::IsWater(At.X, At.Y)) return;
+        float Richness = 0;
+        for (EFishFood F : {EFishFood::Plankton, EFishFood::Insects, EFishFood::Benthos, EFishFood::Plants})
+        {
+            const float Food = Diet.Of(F) * Life->Food().Available(F, FVector2D(At), Seen);
+            Richness = FMath::Max(Richness, Food);
+            if (CanFeed && Food > 0)
+                Consider(EFishGoal::Feed, FVector(At.X, At.Y, LakeFood::FeedingZ(F, At.X, At.Y, Seen, Random)), Food, F);
+        }
+        Consider(EFishGoal::Rest, At, Richness, EFishFood::None);
+        if (FVector::DistSquared(At, Here) > 25) Consider(EFishGoal::Cruise, At, Richness, EFishFood::None);
+    };
+    const FVector PreviousTarget = RoamTarget;
+    Sample(Here);
+    Sample(PreviousTarget);
+    for (const ALakeFish* Mate : Mates)
+        Sample(Mate->GetActorLocation() + SlotOffset);
+    for (int I = 0; I < 6; ++I)
+        Sample(Here + GetActorForwardVector().RotateAngleAxis(I * 60.f, FVector::UpVector) * 240);
+    Life->ForEachFishNear(Here, 800, [&](ALakeFish* Other)
+    {
+        if (Other == this || !Other->IsFree()) return;
+        if (School >= 0 && Other->School == School)
+            Consider(EFishGoal::Cruise, Other->GetActorLocation() + SlotOffset, 0, EFishFood::None, Other);
+        if (CanFeed && Other->WeightKg <= WeightKg * S.Feeding.PreyMaxWeight)
+            Consider(EFishGoal::Feed, Other->GetActorLocation(), 1, EFishFood::Fish, Other);
+    });
+    if (CanFeed)
+    {
+        if (Diet.Fry > 0)
+        {
+            const int Fry = Life->NearestFry(Here, 800);
+            if (Fry >= 0) Consider(EFishGoal::Feed, Life->FryLocation(Fry), Diet.Fry, EFishFood::Fry, nullptr, nullptr, -1, Fry);
+        }
+        float Scent = 0;
+        const int Spot = Life->Food().SmellGroundbait(FVector2D(Here), Scent);
+        if (Spot >= 0 && Scent > 0)
+        {
+            const auto& Ground = Life->Food().Groundbait()[Spot];
+            if (RecentlyFed && FVector2D::Distance(FVector2D(Here), Ground.Location) <= 60) NearbyPatch = &Ground;
+            const float Appeal = LakeFood::GroundbaitAppeal(Diet, Ground) * LakeFood::GroundbaitRichness(Ground);
+            float Value = FishingValue(Scent, Appeal, Hunger, Fear, Caution, 0);
+            if (bCrucian || bSocial)
+            {
+                const auto& Field = Life->Food();
+                const EFishFood Alternative = bCrucian ? EFishFood::Benthos : EFishFood::Plankton;
+                const double Inputs[] = {Scent, Ground.Balls, Hunger, FMath::Max(Fear, Caution),
+                    Diet.Of(Alternative) * Field.Available(Alternative, FVector2D(Here), Seen), Appeal};
+                PatchBonus = GroundPatch::Output[16];
+                for (int I = 0; I < 16; ++I)
+                {
+                    double Sum = GroundPatch::Hidden[I][6];
+                    for (int J = 0; J < 6; ++J) Sum += GroundPatch::Hidden[I][J] * FMath::Clamp(Inputs[J], 0., 1.);
+                    PatchBonus += GroundPatch::Output[I] * std::tanh(Sum);
+                }
+                SubstrateFood = Ground.Added[0] / FMath::Max(.01f, Ground.Added[0] + Ground.Added[1] + Ground.Added[2]);
+                Value = FMath::Max(0.f, Appeal * FMath::Min(1.f, Ground.Balls));
+            }
+#if WITH_DEV_AUTOMATION_TESTS
+            TestPatchBonus = PatchBonus;
+            TestGroundScent = Scent;
+            TestGroundValue = Value;
+#endif
+            if (Ground.Balls > 0 && Appeal > 0 && Value > 0)
+                Consider(EFishGoal::Feed, FVector(Ground.Location, BottomZ(Ground.Location.X, Ground.Location.Y) + 12),
+                     Value, EFishFood::Groundbait);
+        }
     }
-    if (Species == EFishSpecies::Pike && SimTime < HandlePreyUntil && Best == static_cast<int>(EFishGoal::Feed))
-        Best = static_cast<int>(EFishGoal::Rest);
-    const EFishGoal Pick = static_cast<EFishGoal>(Best);
-    SetGoal(Pick, Random.FRandRange(6, 12));
-    return true;
+    if (CanFeed)
+        for (TActorIterator<ALakeCharacter> It(GetWorld()); It; ++It)
+            for (int Rig = 0; Rig < ALakeCharacter::NumRods; ++Rig)
+            {
+                if (!It->HasBaitInWater(Rig)) continue;
+                if (const auto* Rigs = IgnoreBaitUntil.Find(*It))
+                    if (const float* Until = Rigs->Find(Rig); Until && *Until > SimTime) continue;
+                const FVector At = It->BaitLocation(Rig);
+                const float Notice = NoticeBait(At);
+#if WITH_DEV_AUTOMATION_TESTS
+                TestObservedBait = Notice;
+                if (Notice > 0) TestSeenAngler = *It;
+#endif
+                if (Notice <= 0) continue;
+                const EBait Bait = It->BaitOf(Rig);
+                const float Appeal = LocalBaitAppeal(Bait, At);
+                if (Appeal <= 0) continue;
+                float Food = FishingValue(Notice, Appeal, Hunger, FMath::Max(Fear, It->RigDisturbance(Rig)), 1 - Willingness(Bait), 0);
+                if (bSocial && !NearbyPatch)
+                {
+                    const double Inputs[] = {Notice, S.BaitLike(Bait), Hunger, FMath::Max(Fear, It->RigDisturbance(Rig)),
+                        1 - Willingness(Bait), 1 - FVector::Dist(MouthLocation(), At) / 120.};
+                    double Inspect = Inspection::Output[16];
+                    for (int I = 0; I < 16; ++I)
+                    {
+                        double Sum = Inspection::Hidden[I][6];
+                        for (int J = 0; J < 6; ++J) Sum += Inspection::Hidden[I][J] * FMath::Clamp(Inputs[J], 0., 1.);
+                        Inspect += Inspection::Output[I] * std::tanh(Sum);
+                    }
+                    Food = FMath::Max(Food, float(Inspect));
+                }
+#if WITH_DEV_AUTOMATION_TESTS
+                TestBaitValue = Food;
+                if (TestExplainBait)
+                {
+                    const float Risk = FMath::Max(Fear, It->RigDisturbance(Rig));
+                    const float Memory = 1 - Willingness(Bait);
+                    TestBaitInputs = FString::Printf(TEXT("cue=%f appeal=%f hunger=%f fear=%f rig=%f memory=%f base=%f hungry=%f visible=%f calm=%f idealAppeal=%f"),
+                        Notice, Appeal, Hunger, Fear, It->RigDisturbance(Rig), Memory, Food,
+                        FishingValue(Notice, Appeal, 1, Risk, Memory, 0),
+                        FishingValue(1, Appeal, Hunger, Risk, Memory, 0),
+                        FishingValue(Notice, Appeal, Hunger, 0, 0, 0),
+                        FishingValue(Notice, 1, Hunger, Risk, Memory, 0));
+                }
+#endif
+                double Margin = -DBL_MAX;
+                if (NearbyPatch && PatchScore != -DBL_MAX && FVector::Dist(MouthLocation(), At) <= 60 &&
+                    FVector2D::Distance(FVector2D(At), NearbyPatch->Location) <= 60)
+                {
+                    const double Inputs[] = {Notice, Appeal, Hunger, FMath::Max3(Fear, It->RigDisturbance(Rig), 1 - Willingness(Bait)),
+                        NearbyPatch->Balls, RecentBaitFood[int32(Bait)]};
+                    Margin = PatchMorsel::Output[16];
+                    for (int I = 0; I < 16; ++I)
+                    {
+                        double Sum = PatchMorsel::Hidden[I][6];
+                        for (int J = 0; J < 6; ++J) Sum += PatchMorsel::Hidden[I][J] * FMath::Clamp(Inputs[J], 0., 1.);
+                        Margin += PatchMorsel::Output[I] * std::tanh(Sum);
+                    }
+                }
+                if (Food > 0 || Margin != -DBL_MAX)
+                    Consider(EFishGoal::Feed, At, Food, EFishFood::None, nullptr, *It, Rig, -1, Margin);
+            }
+    GoalUntil = SimTime + 0.8f;
+}
+
+void ALakeFish::SwimPrototype(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
+{
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    Energy = FMath::Clamp(Energy + DeltaSeconds * ((Goal == EFishGoal::Rest ? 0.014f : 0.f) - 0.0012f - 0.004f * Effort), 0.f, 1.f);
+    Hunger = FMath::Min(1.f, Hunger + DeltaSeconds * 0.0035f * Activity * S.Feeding.HungerRate);
+    if (bFreezeUnderThreat) { Desired = FVector::ZeroVector; return; }
+    if (EscapeSpeed > 0)
+    {
+        MaxSpeed = EscapeSpeed;
+        const FVector To = EscapePoint - GetActorLocation();
+        Desired = To.GetClampedToMaxSize(EscapeSpeed);
+        FaceDir = To.GetSafeNormal2D();
+        BurstTime = FMath::Max(BurstTime, .1f);
+        return;
+    }
+    if (StrikeEnd > 0 && (Prey.IsValid() || PreyFry >= 0)) { UpdateStrike(Desired, MaxSpeed); return; }
+    StrikeEnd = -1;
+    if (SimTime >= GoalUntil) DecidePrototypeGoal();
+    if (ALakeCharacter* BaitOwner = PolicyBaitOwner.Get(); BaitOwner && BaitOwner->HasBaitInWater(PolicyRig) && TakeApproach(BaitOwner, PolicyRig))
+    {
+        TargetAngler = BaitOwner;
+        TargetRig = PolicyRig;
+        PolicyBaitOwner.Reset();
+        State = EState::Investigate;
+        StateTime = 0;
+        return;
+    }
+    if (Prey.IsValid() || PreyFry >= 0) { UpdateLearnedHunt(Desired, MaxSpeed); return; }
+    PolicyAction = -1;
+    const FVector To = RoamTarget - GetActorLocation();
+    MaxSpeed = S.CruiseSpeed * (1 + Fear);
+    Desired = (To * 0.65f).GetClampedToMaxSize(MaxSpeed);
+    if (Goal == EFishGoal::Feed && FeedOn == EFishFood::Groundbait && To.SizeSquared() < FMath::Square(60.f))
+    {
+        if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
+        {
+            float Scent = 0;
+            const int Spot = Life->Food().SmellGroundbait(FVector2D(GetActorLocation()), Scent);
+            if (Spot >= 0 && FVector2D::Distance(FVector2D(GetActorLocation()), Life->Food().Groundbait()[Spot].Location) <= 60)
+            {
+                const float Meal = FMath::Min3(Hunger, DeltaSeconds * S.Feeding.FillRate, Life->Food().Groundbait()[Spot].Balls);
+                Life->Food().EatGroundbait(Spot, Meal, WeightKg);
+                if (Meal > 0) LastGroundMeal = SimTime;
+                Eat(Meal, LakeFood::GroundbaitMix(Life->Food().Groundbait()[Spot]));
+            }
+        }
+    }
+    const bool bBottomMeal = Species == EFishSpecies::Crucian && FeedOn == EFishFood::Benthos;
+    const FVector Mouth = MouthLocation();
+    const bool bInReach = !bBottomMeal || Mouth.Z - BottomZ(Mouth.X, Mouth.Y) <= 25.f;
+    if (Goal == EFishGoal::Feed && LakeFood::IsNatural(FeedOn) && bInReach && To.SizeSquared() < FMath::Square(60.f))
+    {
+        if (ALakeLife* Life = ALakeLife::Get(GetWorld()))
+        {
+            const FVector2D P(GetActorLocation());
+            const float Meal = FMath::Min(Hunger, DeltaSeconds * S.Feeding.FillRate * Life->Food().Available(FeedOn, P, Seen));
+            if (bBottomMeal) Life->CrucianBenthosMeals += Meal;
+            Life->Food().Eat(FeedOn, P, Meal, WeightKg);
+            const EBait Familiar = FeedOn == EFishFood::Benthos ? EBait::Worm :
+                FeedOn == EFishFood::Insects ? EBait::Maggot : FeedOn == EFishFood::Plants ? EBait::Bread : EBait::Count;
+            Eat(Meal, Familiar);
+        }
+    }
 }
 
 void ALakeFish::Decide()
 {
-    if (DecidePrototypeGoal()) return;
+    if (UsesPrototypePolicy()) { DecidePrototypeGoal(); return; }
     // School members follow their leader's choice.
     const ALakeFish* Lead = Leader();
     if (Lead != this)
@@ -1153,8 +1463,17 @@ void ALakeFish::Dash(FVector Target, float Seconds)
     DashUntil = SimTime + Seconds;
 }
 
-void ALakeFish::Eat(float Meal)
+void ALakeFish::Eat(float Meal, EBait Familiar)
 {
+    if (Familiar != EBait::Count && (Species == EFishSpecies::Crucian || Species == EFishSpecies::Roach))
+    {
+        const float Portion = FMath::Clamp(FMath::Min(Hunger, Meal), 0.f, 1.f);
+        FVector Profile = FVector::ZeroVector;
+        Profile[int32(Familiar)] = 1;
+        RecentBaitFood = FMath::Lerp(RecentBaitFood, Profile, 1. - FMath::Exp(-6. * Portion));
+    }
+    if (PrototypeId && Species == EFishSpecies::Roach)
+        if (ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->RoachMeals += FMath::Min(Hunger, Meal);
     Hunger = FMath::Max(0.0f, Hunger - Meal);
 }
 
@@ -1163,6 +1482,11 @@ void ALakeFish::Startle(FVector From, float Strength)
     if (State == EState::Hooked || bLifted || Strength < 0.08f) return;
     // A pike in its lie lets small disturbances pass; a fish at the bait ignores a mild one.
     if (Strength < LakeFish::Info(Species).Feeding.Unflappable || (IsBusy() && Strength < 0.7f)) return;
+    if (UsesPrototypePolicy() && (IsFree() || State == EState::Investigate || State == EState::Nibble))
+    {
+        ObservePrototypeThreat(From, Strength);
+        return;
+    }
     if (Strength >= 0.65f) { Spook(From, 1.0f + 2.5f * Strength); return; }
     if (State != EState::Roam) return;
     // Shy: turn and swim calmly away for a few seconds; the school follows it round.
@@ -1655,14 +1979,11 @@ void ALakeFish::Live(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
         MaxSpeed = S.BurstSpeed;
     }
     // Predators: a strike under way; an ambusher waits in its lie, a pursuit hunter looks about it.
-    const bool bLearned = PrototypeId && Species == EFishSpecies::Pike && Life && Life->IsEcosystemPrototype()
-        && !FParse::Param(FCommandLine::Get(), TEXT("PikeRules"));
     if (Goal != EFishGoal::Feed) PolicyAction = -1;
     if (StrikeEnd > 0) UpdateStrike(Desired, MaxSpeed);
     else if (Goal == EFishGoal::Feed && S.Feeding.PreyMaxWeight > 0)
     {
-        if (bLearned) UpdateLearnedHunt(Desired, MaxSpeed);
-        else if (S.Habitat.bAmbush) UpdatePikeAmbush(DeltaSeconds, Desired, MaxSpeed);
+        if (S.Habitat.bAmbush) UpdatePikeAmbush(DeltaSeconds, Desired, MaxSpeed);
         else LookForPrey();
     }
     if (!Life) return;
@@ -1733,6 +2054,8 @@ void ALakeFish::UpdateStrike(FVector& Desired, float& MaxSpeed)
                 const float MealHours = FMath::Clamp(1.f + 32.f * Target->WeightKg / WeightKg, 1.f, 8.f);
                 HandlePreyUntil = SimTime + MealHours * ALakeWeather::DayMinutes * 60.f / 24.f;
             }
+            if (PrototypeId && Species == EFishSpecies::Pike && FParse::Param(FCommandLine::Get(), TEXT("PikeHuntMetrics")))
+                UE_LOG(LogTemp, Display, TEXT("PIKE_MEAL time=%.2f digest_until=%.2f"), SimTime, HandlePreyUntil);
             Life->Devour(Target, this);
         }
         else
@@ -1747,13 +2070,13 @@ void ALakeFish::UpdateStrike(FVector& Desired, float& MaxSpeed)
             }
         }
     }
-    else if (PreyFry >= 0) Life->AttackFry(PreyFry, this);
+    else if (PreyFry >= 0 && (!UsesPrototypePolicy() || To.Size() < 60)) Life->AttackFry(PreyFry, this);
     StrikeEnd = -1;
     Prey = nullptr;
     PreyFry = -1;
     NextLook = SimTime + Random.FRandRange(4.0f, 10.0f);
     // The dash carried it out of cover: it goes back to a new lie, not stay in the open water.
-    if (S.Habitat.bAmbush) ChooseLie();
+    if (S.Habitat.bAmbush && !UsesPrototypePolicy()) ChooseLie();
 }
 
 void ALakeFish::LookForPrey()
@@ -1781,6 +2104,82 @@ void ALakeFish::LookForPrey()
     StrikeEnd = SimTime + 0.6f;
     BurstTime = 0.6f;
     Life->CountPikeStrike();
+}
+
+void ALakeFish::ObservePrototypeThreat(FVector From, float Strength)
+{
+    if (Strength < DangerSignal) return;
+    PerceivedDanger = From;
+    if (Strength > DangerSignal + .15f) NextEscapeDecision = SimTime;
+    DangerSignal = FMath::Clamp(Strength, 0.f, 1.f);
+}
+
+void ALakeFish::DecideThreatResponse()
+{
+    if (SimTime < NextEscapeDecision) return;
+    NextEscapeDecision = SimTime + .35f;
+    EscapeSpeed = 0;
+    bFreezeUnderThreat = false;
+    if (DangerSignal <= .01f) return;
+    const ALakeLife* Life = ALakeLife::Get(GetWorld());
+    if (!Life) return;
+    const FVector P = GetActorLocation();
+    const FFishSpeciesInfo& S = LakeFish::Info(Species);
+    FVector Away = (P - PerceivedDanger).GetSafeNormal2D();
+    if (Away.IsNearlyZero()) Away = GetActorForwardVector().GetSafeNormal2D();
+    const float Before = FMath::Clamp(float(FVector::Dist(P, PerceivedDanger))/600.f, 0.f, 1.f);
+    double Best = -DBL_MAX;
+    const bool Crucian = Species == EFishSpecies::Crucian;
+    static const bool Legacy = FParse::Param(FCommandLine::Get(), TEXT("CrucianThreatBaseline"));
+    const bool UseBed = Crucian && !Legacy;
+    const auto* Hidden = UseBed ? CrucianBedThreat::Hidden : Crucian ? CrucianThreat::Hidden : ThreatPolicy::Hidden;
+    const auto* Output = UseBed ? CrucianBedThreat::Output : Crucian ? CrucianThreat::Output : ThreatPolicy::Output;
+    // Score holding position and reachable escape routes using projected exposure.
+    auto Score = [&](FVector At, float Speed)
+    {
+        const double X[] = {DangerSignal, Before, FMath::Clamp(FVector::Dist(At, PerceivedDanger)/600.,0.,1.),
+            (UseBed ? Life->PlantedBedCover(At) : Life->CoverAt(At)), Speed / S.BurstSpeed, Energy};
+        double Value = Output[16];
+        for (int I = 0; I < 16; ++I)
+        {
+            double Sum = Hidden[I][6];
+            for (int J = 0; J < 6; ++J) Sum += X[J] * Hidden[I][J];
+            Value += Output[I] * std::tanh(Sum);
+        }
+        if (Value > Best) { Best = Value; EscapePoint = At; EscapeSpeed = Speed; }
+    };
+    Score(P, 0);
+    for (float Fraction : {.45f, .9f})
+        for (int I = 0; I < 8; ++I)
+        {
+            const float Speed = S.BurstSpeed * Fraction;
+            const FVector Offset = Away.RotateAngleAxis(45.f * I, FVector::UpVector) * Speed * 2;
+            FVector At = P + Offset;
+            if (!LakeMap::IsWater(At.X, At.Y) || !LakeMap::IsWater(P.X + Offset.X*.5, P.Y + Offset.Y*.5)) continue;
+            const float Floor = BottomZ(At.X, At.Y) + 10;
+            if (Floor > LakeFish::SurfaceZ - 10) continue;
+            At.Z = FMath::Clamp(At.Z, double(Floor), double(LakeFish::SurfaceZ - 10));
+            Score(At, Speed);
+            if (UseBed)
+            {
+                At.Z = Floor + 4;
+                if (At.Z < LakeFish::SurfaceZ - 10 && FVector::Dist(P, At) <= Speed * 2.5f) Score(At, Speed);
+            }
+        }
+    bFreezeUnderThreat = Crucian && EscapeSpeed <= 0;
+    if (EscapeSpeed <= 0 && !bFreezeUnderThreat) return;
+    if (ALakeCharacter* Angler = TargetAngler.Get()) Angler->ReleaseBaitClaim(this);
+    TargetAngler.Reset();
+    PolicyBaitOwner.Reset();
+    StrikeEnd = -1;
+    Prey.Reset();
+    PreyFry = -1;
+    PolicyAction = -1;
+    PolicyMate = 0;
+    State = EState::Roam;
+    Goal = EFishGoal::Cruise;
+    FeedOn = EFishFood::None;
+    GoalUntil = SimTime;
 }
 
 void ALakeFish::SenseThreats(float DeltaSeconds)
@@ -1815,6 +2214,10 @@ void ALakeFish::SenseThreats(float DeltaSeconds)
     };
     if (const ALakeLife* Life = ALakeLife::Get(GetWorld())) Life->ForEachFishNear(P, 500, Visit);
     else for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It) Visit(*It);
+#if WITH_DEV_AUTOMATION_TESTS
+    TestLastSensedPredatorId = Worst ? Worst->PrototypeId : 0;
+#endif
+    if (Worst && UsesPrototypePolicy()) ObservePrototypeThreat(Worst->GetActorLocation(), Level);
     if (Worst && Level >= Fear) Threat = Worst;
     Fear = FMath::Clamp(FMath::Max(Fear, Level), 0.0f, 1.0f);
 }
@@ -1858,9 +2261,15 @@ void ALakeFish::PushedOff(ALakeFish* By)
 const TCHAR* ALakeFish::PrototypePolicyStatus() const
 {
     if (FParse::Param(FCommandLine::Get(), TEXT("PikeRules"))) return TEXT("Rules");
+    if (bFreezeUnderThreat) return TEXT("ML: freeze");
+    if (EscapeSpeed > 0) return TEXT("ML: evade");
     if (SimTime < HandlePreyUntil) return TEXT("ML: digesting");
     static const TCHAR* Labels[] = { TEXT("ML: wait"), TEXT("ML: approach"), TEXT("ML: strike"), TEXT("ML: retreat") };
-    return PolicyAction >= 0 && PolicyAction < 4 ? Labels[PolicyAction] : TEXT("ML: no encounter");
+    if (State == EState::Investigate || State == EState::Nibble) return TEXT("bait");
+    if (PolicyAction >= 0 && PolicyAction < 4) return Labels[PolicyAction];
+    if (PolicyMate) return TEXT("ML: shoal");
+    if (Goal == EFishGoal::Feed) return TEXT("ML: forage");
+    return Goal == EFishGoal::Rest ? TEXT("ML: rest") : TEXT("ML: cruise");
 }
 
 void ALakeFish::UpdateLearnedHunt(FVector& Desired, float& MaxSpeed)
@@ -1878,59 +2287,75 @@ void ALakeFish::UpdateLearnedHunt(FVector& Desired, float& MaxSpeed)
     if (SimTime >= NextPolicyDecision)
     {
         NextPolicyDecision = SimTime + 0.4f;
-        float Range = 800;
         ALakeFish* Target = Prey.Get();
-        if (Target && Target->IsFree() && FVector::Dist(Mouth, Target->GetActorLocation()) <= Range)
-            Range = FVector::Dist(Mouth, Target->GetActorLocation());
-        else
-        {
-            Target = nullptr;
-            Life->ForEachFishNear(Mouth, Range, [&](ALakeFish* Other)
-        {
-            if (Other == this || !Other->IsFree() || Other->WeightKg > WeightKg * S.Feeding.PreyMaxWeight) return;
-            const float Distance = FVector::Dist(Mouth, Other->GetActorLocation());
-            if (Distance < Range) { Range = Distance; Target = Other; }
-            });
-        }
-        Prey = Target;
         PolicyAction = -1;
-        if (Target)
+        if ((Target && Target->IsFree()) || PreyFry >= 0)
         {
-            const double X[] = { Range / 800., LakeMap::ZonesAt(Mouth.X, Mouth.Y).Cover, Fear, Energy, Hunger };
+            const FVector At = Target ? Target->GetActorLocation() : Life->FryLocation(PreyFry);
+            const float Range = FVector::Distance(Mouth, At);
+            const FVector Ray = (At - Mouth).GetSafeNormal();
+            FVector PreyVelocity = FVector::ZeroVector;
+            if (Target) PreyVelocity = Target->Velocity();
+            else if (Life->FryShoals().IsValidIndex(PreyFry))
+            {
+                const FFryShoal& Shoal = Life->FryShoals()[PreyFry];
+                const FVector To = Shoal.Target - At;
+                if (To.Size2D() > 5) PreyVelocity = To.GetSafeNormal2D() * Shoal.Speed;
+            }
+            static const bool bPrevious = FParse::Param(FCommandLine::Get(), TEXT("PerchBaseline"));
+            static const bool bOldPike = FParse::Param(FCommandLine::Get(), TEXT("PikeHuntBaseline"));
+            const bool bPerch = Species == EFishSpecies::Perch && !bPrevious;
+            const bool bAmbush = Species == EFishSpecies::Pike && !bOldPike;
+            const auto& Actions = bAmbush ? PikeAmbush::Output : bPerch ? PerchHunt::Output : PikeWeights::Output;
+            const double X[] = { Range / 800., (bAmbush || bPerch) ? Life->CoverAt(Mouth) : LakeMap::ZonesAt(Mouth.X, Mouth.Y).Cover,
+                Fear, Energy, Hunger, .5 + FVector::DotProduct(PreyVelocity, Ray) / 200.,
+                .5 + .5 * FVector::DotProduct(GetActorForwardVector(), Ray) };
             double Hidden[12];
             for (int I = 0; I < 12; ++I)
             {
-                double Sum = PikeWeights::Hidden[I][5];
-                for (int J = 0; J < 5; ++J) Sum += PikeWeights::Hidden[I][J] * FMath::Clamp(X[J], 0., 1.);
+                const int Inputs = bAmbush ? 7 : 5;
+                const double* Row = bAmbush ? PikeAmbush::Hidden[I] : bPerch ? PerchHunt::Hidden[I] : PikeWeights::Hidden[I];
+                double Sum = Row[Inputs];
+                for (int J = 0; J < Inputs; ++J) Sum += Row[J] * FMath::Clamp(X[J], 0., 1.);
                 Hidden[I] = std::tanh(Sum);
             }
             double Best = -DBL_MAX;
             for (int A = 0; A < 4; ++A)
             {
-                double Score = PikeWeights::Output[A][12];
-                for (int I = 0; I < 12; ++I) Score += PikeWeights::Output[A][I] * Hidden[I];
+                double Score = Actions[A][12];
+                for (int I = 0; I < 12; ++I) Score += Actions[A][I] * Hidden[I];
                 if (Score > Best) { Best = Score; PolicyAction = A; }
             }
             if (PolicyAction == 2 && Range <= 260)
             {
-                PreyFry = -1;
                 StrikeEnd = SimTime + 0.8f;
                 BurstTime = 0.8f;
-                Life->CountPikeStrike();
+                if (Species == EFishSpecies::Pike)
+                {
+                    Life->CountPikeStrike();
+                    static const bool bMeasure = FParse::Param(FCommandLine::Get(), TEXT("PikeHuntMetrics"));
+                    if (bMeasure) UE_LOG(LogTemp, Display, TEXT("PIKE_LAUNCH time=%.2f range_cm=%.1f"), SimTime, Range);
+                }
             }
         }
     }
     const ALakeFish* Target = Prey.Get();
-    if (!Target || PolicyAction < 0) return;
-    const FVector Direction = (Target->GetActorLocation() - Mouth).GetSafeNormal();
+    if ((!Target && PreyFry < 0) || PolicyAction < 0) return;
+    const FVector At = Target ? Target->GetActorLocation() : Life->FryLocation(PreyFry);
+    const FVector Direction = (At - Mouth).GetSafeNormal();
     FaceDir = Direction.GetSafeNormal2D();
     if (StrikeEnd > 0) { UpdateStrike(Desired, MaxSpeed); return; }
     // Leave acceleration and turning to Move. Match a moving target and reserve
     // burst speed for the strike itself.
-    const float Distance = FVector::Dist(Mouth, Target->GetActorLocation());
+    const float Distance = FVector::Dist(Mouth, At);
     const float ClosingSpeed = FMath::Clamp(Distance * 0.55f, 35.0f, S.BurstSpeed * 0.55f);
-    MaxSpeed = FMath::Clamp(Target->SpeedNow() + ClosingSpeed, S.CruiseSpeed, S.BurstSpeed * 0.78f);
+    MaxSpeed = FMath::Clamp((Target ? Target->SpeedNow() : 0.f) + ClosingSpeed, S.CruiseSpeed, S.BurstSpeed * 0.78f);
     Desired = PolicyAction == 0 ? FVector::ZeroVector : Direction * (PolicyAction == 3 ? -MaxSpeed : MaxSpeed);
+    if (Species == EFishSpecies::Perch && PolicyAction == 3 && Threat.IsValid())
+    {
+        FaceDir = (Mouth - Threat->GetActorLocation()).GetSafeNormal2D();
+        Desired = FaceDir * MaxSpeed;
+    }
 }
 
 void ALakeFish::UpdatePikeAmbush(float DeltaSeconds, FVector& Desired, float& MaxSpeed)
@@ -2041,7 +2466,7 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
         bSeen = GetConditions(Seen);
         Activity = bSeen ? LakeFish::Activity(Species, Seen) : 1.0f;
     }
-    if (State == EState::Roam && SimTime >= NextThink && StrikeEnd < 0)
+    if (State == EState::Roam && !UsesPrototypePolicy() && SimTime >= NextThink && StrikeEnd < 0)
     {
         NextThink = SimTime + Random.FRandRange(0.8f, 1.6f) * FMath::Lerp(0.8f, 2.2f, Size01);
         // A feeding fish is quick to find bait, a resting one rarely bothers.
@@ -2138,10 +2563,27 @@ void ALakeFish::UpdateBait(float DeltaSeconds)
     }
 }
 
+float ALakeFish::LocalBaitAppeal(EBait Bait, FVector At) const
+{
+    if (Bait >= EBait::Count) return 0;
+    float FeedColumn = -1;
+    if (Species == EFishSpecies::Roach && UsesPrototypePolicy())
+    {
+        const FVector Mouth = MouthLocation();
+        // A roach already feeding here has reached this layer, including during a taste.
+        if ((SimTime - LastGroundMeal < 1.f || State == EState::Nibble || State == EState::Holding)
+            && FVector::DistSquared(Mouth, At) <= FMath::Square(60.f))
+            FeedColumn = Depth01(Mouth.Z, Mouth.X, Mouth.Y);
+    }
+    const float Base = LakeFish::BaitInterest(Species, Bait, Depth01(At.Z, At.X, At.Y), FeedColumn);
+    const double Mean = (RecentBaitFood.X + RecentBaitFood.Y + RecentBaitFood.Z) / 3.;
+    return FMath::Clamp(float(Base * (1 + RecentBaitFood[int32(Bait)] - Mean)), 0.f, 1.f);
+}
+
 float ALakeFish::BaitLike(const ALakeCharacter* Angler) const
 {
     const FVector Bait = Angler->BaitLocation(TargetRig);
-    return FMath::Clamp(LakeFish::BaitInterest(Species, Angler->BaitOf(TargetRig), Depth01(Bait.Z, Bait.X, Bait.Y)), 0.0f, 1.0f);
+    return LocalBaitAppeal(Angler->BaitOf(TargetRig), Bait);
 }
 
 void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
@@ -2174,9 +2616,12 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
             return;
         }
     }
+    const float ContactValue = UsesPrototypePolicy() ? FishingValue(1, BaitLike(Angler), Hunger,
+        FMath::Max(Fear, Angler->RigDisturbance(TargetRig) + AtBait.Bite.Felt), 1 - Willingness(Angler->BaitOf(TargetRig)),
+        FMath::Min(1.f, AtBait.Bite.Tries * .5f)) : 0.f;
     const FBiteState Before = AtBait.Bite;
     const FBiteStep Step = LakeFish::NextBiteStep(Species, AtBait.Bite, Size01, Activity, bOnBottom, bBright || Caution > 0.4f, BaitLike(Angler) * (1 - 0.7f * Shy),
-        Angler->RigDisturbance(TargetRig) + 0.3f * Caution, Random);
+        Angler->RigDisturbance(TargetRig) + 0.3f * Caution, Random, UsesPrototypePolicy() ? &ContactValue : nullptr);
     if (Step.bTake && State == EState::Nibble && FVector::Dist(MouthLocation(), Angler->BaitLocation(TargetRig)) > ContactRadius())
     {
         AtBait.Bite = Before; AtBait.StepEnd = SimTime + 0.1f;
@@ -2238,6 +2683,11 @@ void ALakeFish::NextBiteStep(ALakeCharacter* Angler)
 void ALakeFish::Spook(FVector From, float Seconds)
 {
     if (State == EState::Hooked) return;
+    if (UsesPrototypePolicy() && !bLifted && IsFree())
+    {
+        ObservePrototypeThreat(From, FMath::Clamp(Seconds * .4f, .15f, 1.f));
+        return;
+    }
     if (ALakeCharacter* Angler = TargetAngler.Get()) Angler->ReleaseBaitClaim(this);
     TargetAngler = nullptr;
     AtBait.ReturnTo = nullptr;
@@ -2489,8 +2939,13 @@ void ALakeFish::Simulate(float DeltaSeconds)
     SimTime += DeltaSeconds;
     StateTime += DeltaSeconds;
     BurstTime = FMath::Max(0.0f, BurstTime - DeltaSeconds);
+    RecentBaitFood *= FMath::Exp(-DeltaSeconds / 300.f);
+    DangerSignal = FMath::Max(0.f, DangerSignal - DeltaSeconds * .24f);
     if (State != EState::Hooked && !bLifted) SenseThreats(DeltaSeconds);
-    UpdateBait(DeltaSeconds);
+    if (UsesPrototypePolicy() && !bLifted && (IsFree() || State == EState::Investigate || State == EState::Nibble))
+        DecideThreatResponse();
+    else { EscapeSpeed = 0; bFreezeUnderThreat = false; }
+    if (EscapeSpeed <= 0 && !bFreezeUnderThreat) UpdateBait(DeltaSeconds);
 
     FVector Desired = FVector::ZeroVector;
     float MaxSpeed = S.CruiseSpeed;
@@ -2500,7 +2955,8 @@ void ALakeFish::Simulate(float DeltaSeconds)
     switch (State)
     {
     case EState::Roam:
-        Live(DeltaSeconds, Desired, MaxSpeed);
+        if (UsesPrototypePolicy()) SwimPrototype(DeltaSeconds, Desired, MaxSpeed);
+        else Live(DeltaSeconds, Desired, MaxSpeed);
         break;
     case EState::Investigate:
     {

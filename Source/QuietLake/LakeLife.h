@@ -78,8 +78,13 @@ public:
      * spots), then the rest of each species spread over the lake as well as its water suits it.
      * How many of each: StockCount. Fry shoals come with the fish (none in an empty pond).
      */
-    void StockPond();
-    void StockEcosystemPrototype();
+    void StockPond(int32 Seed = 20261027);
+    void StockFullPrototype(int32 Seed = 20261027);
+    void StockEcosystemPrototype(bool bCampFixture = false);
+    float PlantedBedCover(const FVector& Position) const;
+    float CoverAt(const FVector& Position) const;
+    double CrucianBenthosMeals = 0;
+    double RoachMeals = 0; // prototype benchmark: sum of meals, in units of individual hunger
     bool IsEcosystemPrototype() const { return bEcosystemPrototype; }
     /** How many of a species the pond is stocked with: StockOverride if it names the species, otherwise its passport (stock.count). */
     int32 StockCount(EFishSpecies Species) const;
@@ -227,7 +232,9 @@ private:
     float Time = 0, NextDetail = 0, NextEvent = 0, NextLog = 0, NextSample = 0, NextSpotSample = 0;
     bool bStockLogged = false;
     FStats Counters;
-    bool bEcosystemPrototype = false;
+    UPROPERTY(Replicated) bool bEcosystemPrototype = false;
+    bool bPlantedPrototypeBed = false;
+    void PlantPrototypeBed();
     FLakeFoodField FoodField;
     struct FPressurePlace { FVector2D Location = FVector2D::ZeroVector; float Amount = 0; };
     TArray<FPressurePlace> Pressure;

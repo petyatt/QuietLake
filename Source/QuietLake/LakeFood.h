@@ -57,6 +57,9 @@ class QUIETLAKE_API FLakeFoodField
 {
 public:
     static constexpr float Cell = 500;
+#if WITH_DEV_AUTOMATION_TESTS
+    float TestPlanktonScale = 1;
+#endif
     bool IsReady() const { return NX > 0; }
     /** Lay the grid over the lake and work out what each place holds (once, a fraction of a second). */
     void Init();

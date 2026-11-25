@@ -31,6 +31,26 @@
 
 namespace
 {
+    // The bed runs along the shore beside the crucian release points. Distances in cm.
+    struct FCrucianBed
+    {
+        FVector2D Centre, Along, Out;
+        FCrucianBed()
+        {
+            const LakeMap::FSpot& Spot = LakeMap::Spots()[0];
+            Out = Spot.Outward.GetSafeNormal();
+            Along = FVector2D(-Out.Y, Out.X);
+            Centre = Spot.Location - 820 * Out + 370 * Along;
+        }
+        float Density(FVector2D P) const
+        {
+            const FVector2D Delta = P - Centre;
+            const double R2 = FMath::Square(FVector2D::DotProduct(Delta, Along) / 310.)
+                            + FMath::Square(FVector2D::DotProduct(Delta, Out) / 170.);
+            return 1.f - FMath::SmoothStep(.32f, 1.f, float(R2));
+        }
+    };
+    const FCrucianBed& CrucianBed() { static const FCrucianBed Bed; return Bed; }
     constexpr float GridCell = 400;
     constexpr int32 RingPool = 96;
     constexpr int32 SprayPool = 48;          // three crossed planes per splash
@@ -69,6 +89,7 @@ void ALakeLife::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetim
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(ALakeLife, Fry);
+    DOREPLIFETIME(ALakeLife, bEcosystemPrototype);
 }
 
 void ALakeLife::BeginPlay()
@@ -80,7 +101,7 @@ void ALakeLife::BeginPlay()
         // A game (not a test world): Live Fish stocks the pond (and the fry with it).
         if (GetWorld()->GetAuthGameMode<ALakeGameMode>())
         {
-            if (FParse::Param(FCommandLine::Get(), TEXT("FishEcosystemPrototype"))) StockEcosystemPrototype();
+            if (FParse::Param(FCommandLine::Get(), TEXT("FishEcosystemPrototype"))) StockFullPrototype();
             else StockPond();
         }
     }
@@ -112,6 +133,7 @@ void ALakeLife::Tick(float DeltaSeconds)
     }
 #endif
     if (!bVisualsReady) SetupVisuals();
+    if (bEcosystemPrototype && !bPlantedPrototypeBed) PlantPrototypeBed();
     if (Underwater)
     {
         // (-FishPreview films the swimming from a few metres under water: there the murk stays off.)
@@ -536,31 +558,163 @@ int32 ALakeLife::StockCount(EFishSpecies Species) const
     return FMath::Max(0, Override ? *Override : S.Stock.Count);
 }
 
-void ALakeLife::StockEcosystemPrototype()
+float ALakeLife::CoverAt(const FVector& Position) const
+{
+    const float OtherCover = LakeMap::ZonesAt(Position.X, Position.Y).Cover;
+    return FMath::Max(OtherCover, PlantedBedCover(Position));
+}
+
+float ALakeLife::PlantedBedCover(const FVector& Position) const
+{
+    if (!bEcosystemPrototype) return 0;
+    const float Density = CrucianBed().Density(FVector2D(Position));
+    if (Density <= 0 || !LakeMap::IsWater(Position.X, Position.Y)) return 0;
+    const float Floor = ALakeFish::BottomZ(Position.X, Position.Y);
+    const float Height = FMath::Min(85.f, LakeFish::SurfaceZ - Floor - 14.f);
+    if (Height < 24 || Position.Z < Floor) return 0;
+    const float Canopy = 1.f - FMath::SmoothStep(Height * .45f, Height, float(Position.Z - Floor));
+    return Density * Canopy;
+}
+
+void ALakeLife::PlantPrototypeBed()
+{
+    bPlantedPrototypeBed = true;
+    const FCrucianBed& Bed = CrucianBed();
+    FRandomStream Plants(45812);
+    int32 Total = 0;
+    for (const TCHAR* Kind : {TEXT("Ribbon"), TEXT("Elodea")})
+    {
+        const FString Name = FString::Printf(TEXT("SM_Weed_%s"), Kind);
+        UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Plants/Weeds/%s.%s"), *Name, *Name));
+        if (!ensure(Mesh)) continue;
+        auto* Group = NewObject<UInstancedStaticMeshComponent>(this);
+        Group->SetupAttachment(RootComponent);
+        Group->SetStaticMesh(Mesh);
+        Group->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        Group->SetCanEverAffectNavigation(false);
+        Group->SetCastShadow(false);
+        AddInstanceComponent(Group);
+        Group->RegisterComponent();
+        const float MeshHeight = FMath::Max(1.f, float(Mesh->GetBoundingBox().GetSize().Z));
+        for (int I = 0; I < 180; ++I)
+        {
+            const FVector2D P = Bed.Centre + Bed.Along * Plants.FRandRange(-310, 310) + Bed.Out * Plants.FRandRange(-170, 170);
+            if (Plants.FRand() >= Bed.Density(P) || !LakeMap::IsWater(P.X, P.Y)) continue;
+            const float Floor = ALakeFish::BottomZ(P.X, P.Y);
+            const float Height = FMath::Min(85.f, LakeFish::SurfaceZ - Floor - 14.f);
+            if (Height < 24) continue;
+            const float Scale = Height * Plants.FRandRange(.58f, 1.f) / MeshHeight;
+            const float Z = Floor - 2 - Mesh->GetBoundingBox().Min.Z * Scale;
+            Group->AddInstance(FTransform(FRotator(0, Plants.FRandRange(0,360), 0), FVector(P, Z), FVector(Scale)), true);
+            ++Total;
+        }
+    }
+    UE_LOG(LogTemp, Display, TEXT("CRUCIAN_BED plants=%d"), Total);
+}
+
+void ALakeLife::StockEcosystemPrototype(bool bCampFixture)
 {
     if (!HasAuthority() || bEcosystemPrototype) return;
     bEcosystemPrototype = true;
     StockRandom.Initialize(20261027);
     const LakeMap::FSpot& Shore = LakeMap::Spots()[0];
     const FVector2D Along(-Shore.Outward.Y, Shore.Outward.X);
-    // The predator starts closer to the bank. The shoal feeds further offshore.
+    // Keep one crucian at the planted bed. Select other homes from the same habitat
+    // scores used elsewhere in the lake; the perch also needs water suitable for fry.
+    FVector2D Homes[5] = {};
+    TSet<int32> Occupied = {0};
+    if (!bCampFixture)
+    {
+        Homes[0] = CrucianBed().Centre;
+        const EFishSpecies Kinds[] = {EFishSpecies::Crucian, EFishSpecies::Roach, EFishSpecies::Roach, EFishSpecies::Perch};
+        for (int Group = 0; Group < 4; ++Group)
+        {
+            float Best = -1;
+            int Selected = INDEX_NONE;
+            const auto Spots = LakeMap::Spots();
+            for (int I = 0; I < Spots.Num(); ++I)
+            {
+                if (Occupied.Contains(I)) continue;
+                FVector2D A, B;
+                FishingWater(Spots[I], A, B);
+                for (float T : {.25f, .5f, .75f, 1.f})
+                {
+                    const FVector2D At = FMath::Lerp(A, B, T);
+                    if (!LakeMap::IsWater(At.X, At.Y) || LakeMap::Depth(At.X, At.Y) < 45) continue;
+                    if (Kinds[Group] == EFishSpecies::Perch && !FryCanBe(At)) continue;
+                    float Score = LakeFish::HabitatScore(Kinds[Group], At.X, At.Y);
+                    // One roach shoal shares a hunting ground with the prototype pike.
+                    if (Group == 1) Score += LakeFish::HabitatScore(EFishSpecies::Pike, At.X, At.Y);
+                    if (Score > Best) { Best = Score; Selected = I; Homes[Group + 1] = At; }
+                }
+            }
+            if (!ensure(Selected != INDEX_NONE)) { Homes[Group + 1] = Homes[0]; continue; }
+            Occupied.Add(Selected);
+            UE_LOG(LogTemp, Display, TEXT("Prototype home group=%d spot=%s"), Group + 1, Spots[Selected].Name);
+        }
+    }
     for (int32 Id = 1; Id <= 10; ++Id)
     {
         const bool bShoal = Id >= 3 && Id <= 8;
         const EFishSpecies Species = Id > 8 ? EFishSpecies::Crucian : bShoal ? EFishSpecies::Roach : Id == 1 ? EFishSpecies::Pike : EFishSpecies::Perch;
         const float Offshore = Id == 1 ? 560 : 820;
-        const FVector2D At = Shore.Location - Shore.Outward * Offshore + Along * ((Id - 4) * 32);
+        FVector2D At = Shore.Location - Shore.Outward * Offshore + Along * ((Id - 4) * 32);
+        int School = bShoal ? 1 : -1;
+        if (!bCampFixture)
+        {
+            const int Group = Id == 9 ? 0 : Id == 10 ? 1 : Id == 2 ? 4 : Id >= 6 ? 3 : 2;
+            At = Homes[Group];
+            const FVector2D Normal = LakeMap::NearestShore(At).Outward;
+            const FVector2D Tangent(-Normal.Y, Normal.X);
+            const FVector2D Offset = Id == 1 ? Tangent * 340 : bShoal ? Tangent * (((Id - 3) % 3 - 1) * 32) : FVector2D::ZeroVector;
+            const FVector2D Candidate = At + Offset;
+            if (LakeMap::IsWater(Candidate.X, Candidate.Y) && LakeMap::Depth(Candidate.X, Candidate.Y) > 40) At = Candidate;
+            if (bShoal) School = Group - 1;
+        }
         if (!ensure(LakeMap::IsWater(At.X, At.Y))) continue;
         const float Kg = bShoal ? 0.09f : Id == 1 ? 2.4f : 0.24f;
-        if (ALakeFish* Fish = SpawnStocked(Species, At, FVector(At, LakeFish::SurfaceZ - 85), bShoal ? 1 : -1, 350, Kg))
+        if (ALakeFish* Fish = SpawnStocked(Species, At, FVector(At, LakeFish::SurfaceZ - 85), School, 350, Kg))
         {
             Fish->PrototypeId = Id;
             if (Species == EFishSpecies::Pike) Fish->Hunger = 0.75f;
         }
     }
+    // One local shoal gives the perch a measurable alternative to bottom food.
+    for (int Offshore = 650; Offshore >= 200; Offshore -= 50)
+    {
+        const FVector2D P = bCampFixture ? Shore.Location - Shore.Outward * Offshore + Along * 80 : Homes[4];
+        if (!FryCanBe(P)) continue;
+        FFryShoal Shoal;
+        Shoal.Location = FVector(P, LakeFish::SurfaceZ - FryDepth);
+        Shoal.Target = Shoal.Location;
+        Fry.Add(Shoal);
+        break;
+    }
 }
 
-void ALakeLife::StockPond()
+void ALakeLife::StockFullPrototype(int32 Seed)
+{
+    if (!HasAuthority() || bEcosystemPrototype) return;
+    bEcosystemPrototype = true;
+    // Dense trial: about 135 kg/ha at the registered size distribution.
+    // Keep the number of pike territories; add mostly forage fish.
+    for (int32 I = 0; I < LakeFish::NumSpecies(); ++I)
+    {
+        const auto Species = EFishSpecies(I);
+        const auto& Info = LakeFish::Info(Species);
+        const int32 Multiplier = Species == EFishSpecies::Pike ? 1 : Species == EFishSpecies::Perch ? 2 : 4;
+        StockOverride.Add(Info.Id, Info.Stock.Count * Multiplier);
+    }
+    StockPond(Seed);
+    int32 Id = 0;
+    for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
+    {
+        It->PrototypeId = ++Id;
+        if (It->Species == EFishSpecies::Pike) It->Hunger = .75f;
+    }
+}
+
+void ALakeLife::StockPond(int32 Seed)
 {
     const double Begin = FPlatformTime::Seconds();
     // -Stock=roach:40,perch:12 stocks those counts instead of the passports' (trying a stage out).
@@ -575,7 +729,7 @@ void ALakeLife::StockPond()
             if (Item.Split(TEXT(":"), &Id, &Count)) StockOverride.Add(Id.TrimStartAndEnd().ToLower(), FCString::Atoi(*Count));
         }
     }
-    StockRandom.Initialize(20261027);
+    StockRandom.Initialize(Seed);
     BuildStockPlaces();
     // How many of each species, from the passports (stock.count, in schools of stock.schoolSize).
     const int32 Kinds = LakeFish::NumSpecies();
@@ -1360,6 +1514,36 @@ void ALakeLife::UpdateBallVisuals(float Now)
 
 void ALakeLife::SamplePrey()
 {
+    static const bool bPerchMetrics = FParse::Param(FCommandLine::Get(), TEXT("PerchMetrics"));
+    if (bPerchMetrics && bEcosystemPrototype)
+        for (const auto& Ref : AllFish)
+            if (Ref.IsValid() && Ref->Species == EFishSpecies::Perch)
+                UE_LOG(LogTemp, Display, TEXT("PERCH_SAMPLE t=%.1f food=%d goal=%d fear=%.3f action=%d"), Time,
+                       int(Ref->GetFeedOn()), int(Ref->GetGoal()), Ref->FearNow(), Ref->PolicyAction);
+    static const bool bCrucianMetrics = FParse::Param(FCommandLine::Get(), TEXT("CrucianMetrics"));
+    if (bCrucianMetrics && bEcosystemPrototype)
+        for (const auto& Ref : AllFish)
+            if (Ref.IsValid() && Ref->Species == EFishSpecies::Crucian)
+            {
+                const FVector P = Ref->GetActorLocation();
+                UE_LOG(LogTemp, Display, TEXT("CRUCIAN_PATCH t=%.1f fear=%.3f cover=%.3f benthos=%.5f"),
+                       Time, Ref->FearNow(), CoverAt(P), CrucianBenthosMeals);
+            }
+    static const bool bMeasure = FParse::Param(FCommandLine::Get(), TEXT("RoachMetrics"));
+    if (bMeasure && bEcosystemPrototype)
+    {
+        for (const auto& Ref : AllFish)
+        {
+            const ALakeFish* R = Ref.Get();
+            if (!R || R->Species != EFishSpecies::Roach) continue;
+            float Nearest = TNumericLimits<float>::Max();
+            for (const auto& Other : AllFish)
+                if (Other.IsValid() && Other.Get() != R && Other->Species == EFishSpecies::Roach)
+                    Nearest = FMath::Min(Nearest, float(FVector::Distance(R->GetActorLocation(), Other->GetActorLocation())));
+            UE_LOG(LogTemp, Display, TEXT("ROACH_SAMPLE t=%.1f nearest=%.2f alone=%d fear=%.3f meals=%.5f"),
+                Time, Nearest == TNumericLimits<float>::Max() ? -1.f : Nearest, int(Nearest > 200.f), R->FearNow(), RoachMeals);
+        }
+    }
     const int32 Kinds = LakeFish::NumSpecies();
     if (PreyWatch.Num() < Kinds) PreyWatch.SetNum(Kinds);
     for (const TWeakObjectPtr<ALakeFish>& Weak : AllFish)
@@ -1539,6 +1723,7 @@ void ALakeLife::AttackFry(int32 Index, ALakeFish* Hunter)
     const LakeMap::FZones Zones = LakeMap::ZonesAt(F.Location.X, F.Location.Y);
     const float Cover = FMath::Max(LakeMap::LilyAmount(F.Location.X, F.Location.Y), 0.6f * Zones.ReedEdge);
     const float Catch = (1 - 0.6f * Cover) * (1 - 0.4f * F.Alert);
+    const int32 Before = F.Count;
     if (F.Count > 6 && Random.FRand() < Catch) { const int32 Lost = Random.RandRange(1, 3); F.Count -= (uint8)Lost; Counters.FryEaten += Lost; }
     const FVector Surface(F.Location.X, F.Location.Y, LakeFish::SurfaceZ);
     const EFishSpecies Species = Hunter ? Hunter->Species : EFishSpecies::Perch;
@@ -1546,6 +1731,12 @@ void ALakeLife::AttackFry(int32 Index, ALakeFish* Hunter)
     EmitSign(ELakeSign::Scatter, Surface, FMath::Clamp(0.6f + F.Count / 60.0f, 0.6f, 1.3f), Species, Weight);
     if (LakeFish::Info(Species).Habitat.bAmbush || Random.FRand() < 0.3f)
         EmitSign(ELakeSign::Splash, Surface + FVector(Random.FRandRange(-50, 50), Random.FRandRange(-50, 50), 0), FMath::Min(0.35f + 0.3f * Weight, 1.4f), Species, Weight);
+    if (bEcosystemPrototype)
+    {
+        if (Hunter && F.Count < Before)
+            Hunter->Eat(.045f * (Before - F.Count));
+        return;
+    }
     // Every hungry perch close by rushes in and snatches a mouthful (a full one only keeps with the school).
     ForEachFishNear(F.Location, 700, [&](ALakeFish* Fish)
     {
