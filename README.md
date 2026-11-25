@@ -45,14 +45,20 @@ F12 — скриншот, 8 — свободная камера. Полный с
 ## Сборка и проверки
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1             # мир: сборка → уровень → вода → биомы → проверки
+powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1 -CheckOnly  # только проверки текущей карты
 Tools/Build.ps1
-UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -ExecCmds="Automation RunTests QuietLake.Fishing;Quit" -unattended -nopause -nosplash -NullRHI
+UnrealEditor-Cmd.exe C:/Fish/QuietLake.uproject -ExecCmds="Automation RunTests QuietLake;Quit" -unattended -nopause -nosplash -NullRHI
 Tools/PreviewScene.ps1 -View Shore   # кадр кромки у лагеря
 Tools/TestNetwork.ps1                # сервер и два клиента
 ```
 
-Автотесты — 48 в четырёх файлах (`LakeFishingTest`, `LakeSwimmerTest`, `LakeHeavyLandingTest`,
-`LakeFishLandingTest`); часть случайна, поэтому прогоняйте дважды. Результат — строки
+`WorldBuild.ps1` ведёт логи шагов в `Saved/Logs/WorldBuild_<дата-время>/` и падает, если шаг не оставил ожидаемых строк в логе; `-SkipBuild`, `-NoBiomes`, `-RebuildWater` — для быстрых итераций.
+
+Автотесты — 49 в семи файлах (52 запуска: комплексный `RoachDepthTrial` идёт четырьмя вариантами):
+`LakeFishingTest`, `LakeFishTest`, `LakeWorldTest`, `LakeEcosystemTest`, `LakeSwimmerTest`,
+`LakeHeavyLandingTest`, `LakeFishLandingTest`; часть случайна, поэтому прогоняйте дважды. Общие
+фикстуры и детерминированный `SpawnFish` — `Source/QuietLake/LakeTestCommon.h`. Результат — строки
 `Test Completed` в `Saved/Logs/QuietLake.log`.
 
 ## Что реализовано
@@ -68,7 +74,7 @@ Tools/TestNetwork.ps1                # сервер и два клиента
 
 ## Последние проверки
 
-Полная история — [docs/CHECKS.md](docs/CHECKS.md) (127 записей с 25 октября 2026). Новые проверки
+Полная история — [docs/CHECKS.md](docs/CHECKS.md) (128 записей с 25 октября 2026). Новые проверки
 добавляйте туда, а здесь держите последние.
 
 ## Проверено 16 ноября 2026 — поиск наживки и кормление без скопления у крючка

@@ -8,7 +8,7 @@
 
 - [README.md](README.md) — короткое руководство: запуск, управление, сборка, последние проверки.
 - [WORLD.md](WORLD.md) — мир и механики, единственный источник истины.
-- [docs/CHECKS.md](docs/CHECKS.md) — журнал проверок (127 записей); новые проверки — туда, в README только последние.
+- [docs/CHECKS.md](docs/CHECKS.md) — журнал проверок (128 записей); новые проверки — туда, в README только последние.
 - [docs/FishEcosystem_Architecture.md](docs/FishEcosystem_Architecture.md) — дизайн экосистемы рыб и обученных политик.
 - [Tools/FishTraining/README.md](Tools/FishTraining/README.md) — обучение и экспорт весов.
 - [CLAUDE.md](CLAUDE.md) — операции для агента (этот файл).
@@ -44,11 +44,23 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты — 48 в четырёх файлах: `Source/QuietLake/LakeFishingTest.cpp` (41: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, CastHold, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods, StartLoadout, Waves, FightProfiles, ContactPhysics, EcosystemPrototype, ThreatResponse, PikeShoalTrial, EncounterCycle, BedTrial, LearnedBait, RoachInspect, SpeciesBites, CastAtPlants, UnfedShoreTrial, FullPondTrial, LocalBait, FeedingSpace, SizeHabitat, BaitTheft), `LakeSwimmerTest.cpp` (2: Swimmer, SwimmerLine), `LakeHeavyLandingTest.cpp` (2: HeavyLanding.HeldLift, HeavyLanding.PhysicalLift), `LakeFishLandingTest.cpp` (3: Landing.DrawnHead, Landing.SurfaceRest, Landing.Airborne);
+Мир целиком — один сценарий (сборка → уровень → вода → биомы → проверки; логи в `Saved/Logs/WorldBuild_<дата-время>/`, шаг без ожидаемых строк в логе валит сборку):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1
+powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1 -CheckOnly    # только проверки
+powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1 -SkipBuild -NoBiomes   # быстрая итерация
+```
+
+После правки рельефа, воды или биомов запускать именно его: он сам проверит `QUIET_LAKE_LEVEL`, `QUIET_LAKE_BIOMES`, воду и выравнивание (`QUIET_LAKE_ALIGN`, порог среднего 10 см).
+
+Автотесты — 49 в семи файлах (52 запуска: комплексный `RoachDepthTrial` идёт четырьмя вариантами):
+`LakeFishingTest.cpp` (13), `LakeFishTest.cpp` (11), `LakeWorldTest.cpp` (6), `LakeEcosystemTest.cpp` (11 + один комплексный), `LakeSwimmerTest.cpp` (2), `LakeHeavyLandingTest.cpp` (2), `LakeFishLandingTest.cpp` (3).
+Общие фикстуры и детерминированный `SpawnFish` — `Source/QuietLake/LakeTestCommon.h`: seed считается из вида, веса, места и школы, а не из `GetUniqueID`, поэтому результат не зависит от порядка тестов.
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
-"/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" C:/Fish/QuietLake.uproject -ExecCmds="Automation RunTests QuietLake.Fishing;Quit" -unattended -nopause -nosplash -NullRHI
+"/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" C:/Fish/QuietLake.uproject -ExecCmds="Automation RunTests QuietLake;Quit" -unattended -nopause -nosplash -NullRHI
 ```
 
 Сетевой тест (сервер и два клиента) — через инструмент PowerShell, без `-ExecutionPolicy Bypass`:
