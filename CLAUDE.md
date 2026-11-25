@@ -1,8 +1,17 @@
-﻿# «Тихое озеро» (QuietLake) — памятка для Claude
+# «Тихое озеро» (QuietLake) — памятка для Claude
 
 Сетевая игра про рыбалку с поплавочной удочкой на UE 5.8. Почти всё мира создаётся из C++ при запуске
 (рельеф, растения, предметы, рыбы), ассеты генерируются скриптами из `Tools/`.
 Как играть и что проверено — [README.md](README.md); как устроен мир и механики — [WORLD.md](WORLD.md).
+
+## Документация
+
+- [README.md](README.md) — короткое руководство: запуск, управление, сборка, последние проверки.
+- [WORLD.md](WORLD.md) — мир и механики, единственный источник истины.
+- [docs/CHECKS.md](docs/CHECKS.md) — журнал проверок (127 записей); новые проверки — туда, в README только последние.
+- [docs/FishEcosystem_Architecture.md](docs/FishEcosystem_Architecture.md) — дизайн экосистемы рыб и обученных политик.
+- [Tools/FishTraining/README.md](Tools/FishTraining/README.md) — обучение и экспорт весов.
+- [CLAUDE.md](CLAUDE.md) — операции для агента (этот файл).
 
 ## Правила работы
 
@@ -14,7 +23,7 @@
   (они в `.gitignore`; восстанавливаются через Fab в редакторе, `Tools/CopyMannequin.ps1` и `Tools/CreateFisherMetaHuman.py`;
   Megaplant в ветке `experiment/landscape-water` больше не используется).
 - Fab: только бесплатные лицензии; не входить в аккаунты и не вводить пароли за пользователя.
-- После изменения механики обновлять [WORLD.md](WORLD.md), а после проверки — раздел «Проверено …» в [README.md](README.md).
+- После изменения механики обновлять [WORLD.md](WORLD.md), а после проверки — запись в [docs/CHECKS.md](docs/CHECKS.md) (в README держать только последние три-четыре).
 
 ## Художественный характер
 
@@ -35,7 +44,7 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods, StartLoadout, CastHold, Waves);
+Автотесты — 48 в четырёх файлах: `Source/QuietLake/LakeFishingTest.cpp` (41: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, CastHold, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods, StartLoadout, Waves, FightProfiles, ContactPhysics, EcosystemPrototype, ThreatResponse, PikeShoalTrial, EncounterCycle, BedTrial, LearnedBait, RoachInspect, SpeciesBites, CastAtPlants, UnfedShoreTrial, FullPondTrial, LocalBait, FeedingSpace, SizeHabitat, BaitTheft), `LakeSwimmerTest.cpp` (2: Swimmer, SwimmerLine), `LakeHeavyLandingTest.cpp` (2: HeavyLanding.HeldLift, HeavyLanding.PhysicalLift), `LakeFishLandingTest.cpp` (3: Landing.DrawnHead, Landing.SurfaceRest, Landing.Airborne);
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
