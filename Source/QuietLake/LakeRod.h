@@ -213,4 +213,6 @@ private:
     FVector CatchStart = FVector::ZeroVector;     // where the shot was when the free hand began to bring it in                          // lifting a fish out: tip-to-hook reach, easing to the line's length
     bool bInitialised = false;
     float Heft = 1;                               // the rod's weight (see FRodInput::RodHeft)
+    EFishingState LastRodState = EFishingState::Idle;
+    float BiteDipStart = -1;                      // when the take began: the float's nod is timed from it
 };

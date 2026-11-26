@@ -4,6 +4,9 @@
 //   -BenchCases=roach:0.15,crucian:0.8,cast:1.2   (cast:<seconds LMB held> only casts; a fish case holds 1.2 s)
 // The hand plays as any player does: LMB held from the strike until the fish is in the hand.
 // -BenchDirect hooks the fish without waiting for its bite.
+// -BenchRead logs the float as the angler's eye sees it ten times a second (BENCH read lines: the
+// antenna tip in screen pixels, the distance, its height above the water); -BenchHold=<s> sets the
+// cast hold of fish cases (further out), -BenchWind=<0..1> the wind the bite is read in.
 #include "LakeGame.h"
 #include "LakeFish.h"
 #include "LakeMap.h"
@@ -47,6 +50,7 @@ namespace
         FTimerHandle Timer;
         int32 Frames = 0;
         float ReleaseOut = 0, ReleaseHeight = 0, ReleasedAt = 0, NextPath = 0, NextCastShot = 0;
+        float NextRead = 0;
         int32 CastShots = 0;
         bool bByItself = false;
         float RateFrom = 0;
@@ -95,6 +99,17 @@ void ALakeCharacter::RunFishingBench()
     // -BenchSide: a camera beside the fish films the fight (under the water, ClearWater shows it) and
     // the lift out (from the side, above the water): Saved/BenchSide_<case>_<n>.png.
     const bool bSide = FParse::Param(FCommandLine::Get(), TEXT("BenchSide"));
+    // -BenchRead: the bite as it is seen from the angler's real cast distance (BENCH read lines).
+    const bool bRead = FParse::Param(FCommandLine::Get(), TEXT("BenchRead"));
+    // -BenchHold=<s>: LMB held for the cast of a fish case (1.2 s by default: about 6 m out);
+    // -BenchWind=<0..1>: the wind the reading is taken in (calm by default).
+    float ReadHold = 1.2f, ReadWind = 0.03f;
+    FParse::Value(FCommandLine::Get(), TEXT("BenchHold="), ReadHold);
+    FParse::Value(FCommandLine::Get(), TEXT("BenchWind="), ReadWind);
+    // -BenchStrike=<s>: how long after the bite began the scripted hand strikes (a human's reflex
+    // is about 0.35 s; longer shows what a player who waits sees of the take before striking).
+    float StrikeDelay = 0.35f;
+    FParse::Value(FCommandLine::Get(), TEXT("BenchStrike="), StrikeDelay);
     float Depth = 110;
     FParse::Value(FCommandLine::Get(), TEXT("BenchDepth="), Depth);
 
@@ -131,11 +146,28 @@ void ALakeCharacter::RunFishingBench()
             Now - B.StageStart, RodElevation, bCharging ? 1 : 0, FVector::DotProduct(Shot, GetActorForwardVector()), FVector::DotProduct(Shot, GetActorRightVector()),
             RodVisual->ShotLocation().Z - LakeFish::SurfaceZ, RodVisual->ShotVelocity().Size(), FVector::DotProduct(Tip, GetActorForwardVector()), RodVisual->Tip().Z - LakeFish::SurfaceZ);
     };
-    GetWorldTimerManager().SetTimer(Bench->Timer, FTimerDelegate::CreateWeakLambda(this, [this, Bench, bDirect, bShots, bSide, Depth, LogRigPath]
+    // -BenchRead: what the angler's eye gets of the float at the real cast distance, ten times a
+    // second: the antenna tip on the screen (px, 0,0 when off it), the distance to the camera, and
+    // how high the tip and the keel stand above the water (cm) - the size the bite is seen at.
+    auto LogRead = [this](FBench& B, float In)
+    {
+        if (In < B.NextRead || !RodVisual) return;
+        APlayerController* PC = Cast<APlayerController>(GetController());
+        if (!PC) return;
+        B.NextRead = In + 0.1f;
+        const FVector Tip = RodVisual->FloatTip();
+        const FVector Cam = PC->PlayerCameraManager ? PC->PlayerCameraManager->GetCameraLocation() : GetActorLocation();
+        FVector2D Px(0, 0);
+        const bool bShown = PC->ProjectWorldLocationToScreen(Tip, Px);
+        UE_LOG(LogTemp, Display, TEXT("BENCH read t=%.2f state=%d motion=%d amount=%.1f dist=%.0f shown=%d px=%.1f,%.1f tip=%.1f keel=%.1f"),
+            In, (int32)FishingState, (int32)BiteMotion, BiteAmount, FVector::Dist(Cam, Tip), bShown ? 1 : 0, Px.X, Px.Y,
+            Tip.Z - LakeFish::SurfaceZ, RodVisual->FloatKeel().Z - LakeFish::SurfaceZ);
+    };
+    GetWorldTimerManager().SetTimer(Bench->Timer, FTimerDelegate::CreateWeakLambda(this, [this, Bench, bDirect, bShots, bSide, Depth, bRead, ReadHold, ReadWind, StrikeDelay, LogRigPath, LogRead]
     {
         FBench& B = *Bench;
         const float Now = ServerNow();
-        auto Go = [this, &B, Now](int32 Stage) { B.Stage = Stage; B.StageStart = Now; BenchWalk = FVector::ZeroVector; };
+        auto Go = [this, &B, Now](int32 Stage) { B.Stage = Stage; B.StageStart = Now; B.NextRead = 0; BenchWalk = FVector::ZeroVector; };
         const float In = Now - B.StageStart;
         auto Hold = [this, &B](bool bDown)
         {
@@ -167,7 +199,7 @@ void ALakeCharacter::RunFishingBench()
             if (ALakeWeather* Weather = ALakeWeather::Get(GetWorld()))
             {
                 FLakeWeatherState Calm;
-                Calm.Cloud = 0.2f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = 0.03f; Calm.WindYaw = 40;
+                Calm.Cloud = 0.2f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = ReadWind; Calm.WindYaw = 40;
                 Weather->SetWeather(Calm, 1);
                 Weather->SetHours(9.0f);
             }
@@ -207,7 +239,7 @@ void ALakeCharacter::RunFishingBench()
         {
             LogRigPath(B, Now);
             // (-BenchShots: the cast as the player sees it, at the middle of the hold.)
-            const float HoldFor = Case.bCastOnly ? Case.Hold : 1.2f;
+            const float HoldFor = Case.bCastOnly ? Case.Hold : ReadHold;
             if (bShots && In >= HoldFor * 0.5f && B.Shots == 0 && Case.bCastOnly)
             {
                 ++B.Shots;
@@ -245,6 +277,7 @@ void ALakeCharacter::RunFishingBench()
             return;
         case 4:   // the rig settles, then the fish comes
         {
+            if (bRead) LogRead(B, In);   // the float at rest: waves, drift, the eye's baseline
             if (In < 2.5f) return;
             const FVector Bait = BaitLocation();
             ALakeFish* Fish = GetWorld()->SpawnActor<ALakeFish>(Bait, FRotator(0, GetActorRotation().Yaw + 90, 0));
@@ -269,6 +302,7 @@ void ALakeCharacter::RunFishingBench()
         }
         case 5:   // the bite: what the float does, and the strike
         {
+            if (bRead) LogRead(B, In);
             if (BiteMotion != B.LastMotion)
             {
                 B.LastMotion = BiteMotion;
@@ -288,7 +322,7 @@ void ALakeCharacter::RunFishingBench()
             {
                 if (B.BiteSeen < 0) { B.BiteSeen = Now; B.bStruck = false; }
                 // A human sees the float go and strikes about a third of a second later.
-                if (!B.bStruck && Now - B.BiteSeen > 0.35f)
+                if (!B.bStruck && Now - B.BiteSeen > StrikeDelay)
                 {
                     B.bStruck = true; ++B.Attempts;
                     ServerCancel_Implementation();

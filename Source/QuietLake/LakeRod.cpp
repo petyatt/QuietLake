@@ -373,6 +373,20 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
         }
         HookTarget.Z = FMath::Clamp(HookTarget.Z, ALakeEnvironment::GroundHeight(HookTarget.X, HookTarget.Y) + 0.5f, LakeFish::SurfaceZ - 3);
     }
+    // The take: the fish sucks the bait in and the float nods, then the fish leads the bait away
+    // slowly. Seven metres off that slow lead is one or two screen pixels (measured), so the first
+    // moment of the bite gets a short, plain-to-see dip: 12 cm down and back in a third of a second,
+    // over the fish's own mouth moving as it took the bait.
+    if (In.FishingState != LastRodState)
+    {
+        if (In.FishingState == EFishingState::Bite && In.LineFish) BiteDipStart = Time;
+        LastRodState = In.FishingState;
+    }
+    if (In.LineFish && In.FishingState == EFishingState::Bite && BiteDipStart >= 0)
+    {
+        const float DipT = Time - BiteDipStart;
+        if (DipT >= 0 && DipT < 0.35f) HookTarget.Z -= 12.0f * FMath::Sin(PI * DipT / 0.35f);
+    }
     // The fish cannot take the hook farther than the whole line reaches from the rod tip.
     // The cast is a pendulum: the fingers let the shot go and the rig, on its taut line, swings forward
     // under the rod tip and up beyond it; the rod raised under it carries it higher. Let go, the rod is
