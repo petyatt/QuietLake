@@ -78,7 +78,10 @@ void ALakeLife::BeginPlay()
     {
         FoodField.Init();
         // A game (not a test world): Live Fish stocks the pond (and the fry with it).
-        if (GetWorld()->GetAuthGameMode<ALakeGameMode>()) StockPond();
+        if (GetWorld()->GetAuthGameMode<ALakeGameMode>())
+        {
+            StockPond();
+        }
     }
 #if !UE_BUILD_SHIPPING
     if (HasAuthority() && FParse::Param(FCommandLine::Get(), TEXT("LifePreview"))) RunPreview();
@@ -114,7 +117,17 @@ void ALakeLife::Tick(float DeltaSeconds)
         static const bool bClearWater = FParse::Param(FCommandLine::Get(), TEXT("FishPreview"))
             || FParse::Param(FCommandLine::Get(), TEXT("BottomPreview")) || FParse::Param(FCommandLine::Get(), TEXT("ClearWater"));
         const FVector Eye = ViewLocation();
-        Underwater->BlendWeight = !bClearWater && LakeMap::IsWater(Eye.X, Eye.Y) && Eye.Z < LakeFish::SurfaceZ - 1 ? 1.0f : 0.0f;
+        const float Depth = LakeFish::SurfaceZ - Eye.Z;
+        const float Shore = LakeMap::ShoreDistance(Eye.X, Eye.Y);
+        const float Immersion = bClearWater ? 0.f : FMath::SmoothStep(1.f, 22.f, Depth) * FMath::SmoothStep(20.f, 60.f, Shore);
+        Underwater->BlendWeight = Immersion > 0.f ? 1.f : 0.f;
+        if (Immersion > 0.f)
+        {
+            const ALakeWeather* Weather = ALakeWeather::Get(GetWorld());
+            const float Sun = Weather ? Weather->FishConditions().SunElevation : 25.f;
+            UnderwaterMaterial->SetScalarParameterValue(TEXT("Daylight"), FMath::Lerp(.012f, .5f, FMath::SmoothStep(-9.f, 25.f, Sun)));
+            UnderwaterMaterial->SetScalarParameterValue(TEXT("Immersion"), Immersion);
+        }
     }
     if (GetWorld()->GetTimeSeconds() >= NextShownLog)
     {
@@ -532,7 +545,13 @@ int32 ALakeLife::StockCount(EFishSpecies Species) const
     return FMath::Max(0, Override ? *Override : S.Stock.Count);
 }
 
-void ALakeLife::StockPond()
+float ALakeLife::CoverAt(const FVector& Position) const
+{
+    return LakeMap::ZonesAt(Position.X, Position.Y).Cover;
+}
+
+
+void ALakeLife::StockPond(int32 Seed)
 {
     const double Begin = FPlatformTime::Seconds();
     // -Stock=roach:40,perch:12 stocks those counts instead of the passports' (trying a stage out).
@@ -547,7 +566,7 @@ void ALakeLife::StockPond()
             if (Item.Split(TEXT(":"), &Id, &Count)) StockOverride.Add(Id.TrimStartAndEnd().ToLower(), FCString::Atoi(*Count));
         }
     }
-    StockRandom.Initialize(20261027);
+    StockRandom.Initialize(Seed);
     BuildStockPlaces();
     // How many of each species, from the passports (stock.count, in schools of stock.schoolSize).
     const int32 Kinds = LakeFish::NumSpecies();
@@ -735,6 +754,7 @@ void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor,
         float Weight = LikeWeight > 0 ? LakeFish::DrawWeight(Species, StockRandom, LikeWeight) : -1.0f;
         if (const ALakeFish* Mate = School >= 0 ? SchoolLeader(School) : nullptr)
             Weight = FMath::Clamp(Mate->WeightKg * StockRandom.FRandRange(0.8f, 1.2f), LakeFish::Info(Species).MinWeight, LakeFish::Info(Species).MaxWeight);
+        if (Weight < 0) Weight = LakeFish::DrawWeight(Species, StockRandom);
         if (School >= 0)
             if (const ALakeFish* Lead = SchoolLeader(School); Lead && !IsNearPlayer(Lead->GetActorLocation(), Unseen))
             {
@@ -749,7 +769,7 @@ void ALakeLife::RestockLater(EFishSpecies Species, int32 School, FVector Anchor,
         {
             if (StockPlaces.IsEmpty()) BuildStockPlaces();
             FVector2D Elsewhere;
-            if (DrawStockPlace(Species, {}, {}, 0, Unseen, Elsewhere)) { At = Elsewhere; bMoved = true; }
+            if (DrawStockPlace(Species, {}, {}, 0, Unseen, Elsewhere, LakeFish::DeeperM(Species, Weight))) { At = Elsewhere; bMoved = true; }
         }
         // A fish put elsewhere out of a school makes its home there.
         SpawnStocked(Species, At, bMoved && School < 0 ? FVector::ZeroVector : Anchor, School, Drift, Weight);
@@ -1510,6 +1530,7 @@ void ALakeLife::AttackFry(int32 Index, ALakeFish* Hunter)
     const LakeMap::FZones Zones = LakeMap::ZonesAt(F.Location.X, F.Location.Y);
     const float Cover = FMath::Max(LakeMap::LilyAmount(F.Location.X, F.Location.Y), 0.6f * Zones.ReedEdge);
     const float Catch = (1 - 0.6f * Cover) * (1 - 0.4f * F.Alert);
+    const int32 Before = F.Count;
     if (F.Count > 6 && Random.FRand() < Catch) { const int32 Lost = Random.RandRange(1, 3); F.Count -= (uint8)Lost; Counters.FryEaten += Lost; }
     const FVector Surface(F.Location.X, F.Location.Y, LakeFish::SurfaceZ);
     const EFishSpecies Species = Hunter ? Hunter->Species : EFishSpecies::Perch;
@@ -1600,7 +1621,8 @@ void ALakeLife::SetupVisuals()
             Underwater->bUnbound = true;
             Underwater->Priority = 10;
             Underwater->BlendWeight = 0;
-            Underwater->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1, Murk));
+            UnderwaterMaterial = UMaterialInstanceDynamic::Create(Murk, Underwater);
+            Underwater->Settings.WeightedBlendables.Array.Add(FWeightedBlendable(1, UnderwaterMaterial));
         }
     }
 }

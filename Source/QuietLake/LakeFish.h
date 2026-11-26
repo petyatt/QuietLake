@@ -5,6 +5,8 @@
 #include "LakeFish.generated.h"
 
 class ALakeCharacter;
+class FLakeFoodField;
+struct FGroundbaitSpot;
 
 /**
  * A species of fish: its number in the species files (Content/LiveFish/Species/*.json, "order").
@@ -731,7 +733,7 @@ public:
     /** A predator struck at the fry next to it, or a hunting school mate dashes: a short burst towards Target. */
     void Dash(FVector Target, float Seconds);
     /** Eat: a mouthful of fry or a whole fish (0..1 of a full meal). */
-    void Eat(float Meal);
+    void Eat(float Meal, EBait Familiar = EBait::Count);
     /**
      * Something disturbed the water at From (a rig landing, steps on the bank, a fish thrashing):
      * Strength 0..1 at the fish. Weak: it turns and swims calmly away for a few seconds; strong
@@ -782,15 +784,23 @@ public:
     FRandomStream& TestRandom() { return Random; }
     FFishAtBait& TestAtBait() { return AtBait; }
     class UStaticMeshComponent* TestBody() const { return Body; }
+    bool TestTargetsFry() const { return PreyFry >= 0; }
     void TestDecide() { Decide(); }
     void TestSetGoal(EFishGoal NewGoal, float Seconds) { SetGoal(NewGoal, Seconds); }
     void TestSenseThreats(float DeltaSeconds) { SenseThreats(DeltaSeconds); }
     bool TestAtSurfaceMoment() const { return AtSurfaceMoment(); }
     float TestCeilingZ() const { return CeilingZ(); }
     void TestMove(FVector DesiredVelocity, float MaxSpeed, float DeltaSeconds) { Move(DesiredVelocity, MaxSpeed, DeltaSeconds); }
+    void TestUpdateBait() { NextThink = SimTime; UpdateBait(0); }
+    void TestChooseRoamTarget(bool bLocal = false) { ChooseRoamTarget(bLocal); }
+    float TestNextThink() const { return NextThink; }
 #endif
 
 private:
+    float NoticeBait(const FVector& Bait) const;
+    bool TakeApproach(ALakeCharacter* Angler, int32 Rig);
+    FVector FeedingDestination(const FGroundbaitSpot& Ground, const FLakeFoodField& Field);
+    FVector AvoidNeighbours() const;
     void ChooseRoamTarget(bool bLocal = false);
     void PickRoamTarget(bool bLocal);
     /** Pick what to do next from hunger, tiredness, the daily rhythm and the weather. */
@@ -859,7 +869,7 @@ private:
     float Stamina = 1, MaxStamina = 1, BurstTime = 0, Phase = 0;
     TWeakObjectPtr<ALakeCharacter> TargetAngler;
     int32 TargetRig = -1;             // which of the angler's rods (ERodKind); -1: the one in his hands
-    TMap<TWeakObjectPtr<ALakeCharacter>, float> IgnoreBaitUntil;
+    TMap<TWeakObjectPtr<ALakeCharacter>, TMap<int32, float>> IgnoreBaitUntil;
     float SimTime = 0;
     float Activity = 1;               // see LakeFish::Activity
     float NextMoodCheck = 0;
@@ -923,6 +933,9 @@ private:
     float BurstSeenAt = -100;   // when this machine last saw it bursting
     void NextBiteStep(class ALakeCharacter* Angler);
     /** How much it likes the angler's bait where it hangs, 0..1. */
+    float LastGroundMeal = -1000;
+    FVector RecentBaitFood = FVector::ZeroVector; // worm, maggot, bread analogues
+    float LocalBaitAppeal(EBait Bait, FVector At) const;
     float BaitLike(const class ALakeCharacter* Angler) const;
     friend class ALakeCharacter; // live rig preview seeds approach only
     friend class ALakeLife;   // the -FishPreview scenes set fish up directly

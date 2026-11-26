@@ -1,8 +1,15 @@
-﻿# «Тихое озеро» (QuietLake) — памятка для Claude
+# «Тихое озеро» (QuietLake) — памятка для Claude
 
 Сетевая игра про рыбалку с поплавочной удочкой на UE 5.8. Почти всё мира создаётся из C++ при запуске
 (рельеф, растения, предметы, рыбы), ассеты генерируются скриптами из `Tools/`.
 Как играть и что проверено — [README.md](README.md); как устроен мир и механики — [WORLD.md](WORLD.md).
+
+## Документация
+
+- [README.md](README.md) — короткое руководство: запуск, управление, сборка, последние проверки.
+- [WORLD.md](WORLD.md) — мир и механики, единственный источник истины.
+- [docs/CHECKS.md](docs/CHECKS.md) — журнал проверок (128 записей); новые проверки — туда, в README только последние.
+- [CLAUDE.md](CLAUDE.md) — операции для агента (этот файл).
 
 ## Правила работы
 
@@ -14,7 +21,7 @@
   (они в `.gitignore`; восстанавливаются через Fab в редакторе, `Tools/CopyMannequin.ps1` и `Tools/CreateFisherMetaHuman.py`;
   Megaplant в ветке `experiment/landscape-water` больше не используется).
 - Fab: только бесплатные лицензии; не входить в аккаунты и не вводить пароли за пользователя.
-- После изменения механики обновлять [WORLD.md](WORLD.md), а после проверки — раздел «Проверено …» в [README.md](README.md).
+- После изменения механики обновлять [WORLD.md](WORLD.md), а после проверки — запись в [docs/CHECKS.md](docs/CHECKS.md) (в README держать только последние три-четыре).
 
 ## Художественный характер
 
@@ -35,11 +42,23 @@
 MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Build/BatchFiles/Build.bat" QuietLakeEditor Win64 Development "-Project=C:/Fish/QuietLake.uproject" -WaitMutex
 ```
 
-Автотесты (`Source/QuietLake/LakeFishingTest.cpp`: ServerRules, FishBehaviour, WeatherMood, PondLife, BitePatterns, Casting, WindDrift, RodControl, FishMotion, Ripples, Stocking, SpeciesFiles, Interactions, Food, Groundbait, Learning, Water, MixedSchools, BanksAndDepth, RodCase, ThreeRods, StartLoadout, CastHold, Waves);
+Мир целиком — один сценарий (сборка → уровень → вода → биомы → проверки; логи в `Saved/Logs/WorldBuild_<дата-время>/`, шаг без ожидаемых строк в логе валит сборку):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1
+powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1 -CheckOnly    # только проверки
+powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1 -SkipBuild -NoBiomes   # быстрая итерация
+```
+
+После правки рельефа, воды или биомов запускать именно его: он сам проверит `QUIET_LAKE_LEVEL`, `QUIET_LAKE_BIOMES`, воду и выравнивание (`QUIET_LAKE_ALIGN`, порог среднего 10 см).
+
+Автотесты — 37 в шести файлах.
+`LakeFishingTest.cpp` (13), `LakeFishTest.cpp` (11), `LakeWorldTest.cpp` (6), `LakeSwimmerTest.cpp` (2), `LakeHeavyLandingTest.cpp` (2), `LakeFishLandingTest.cpp` (3).
+Общие фикстуры и детерминированный `SpawnFish` — `Source/QuietLake/LakeTestCommon.h`: seed считается из вида, веса, места и школы, а не из `GetUniqueID`, поэтому результат не зависит от порядка тестов.
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 
 ```bash
-"/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" C:/Fish/QuietLake.uproject -ExecCmds="Automation RunTests QuietLake.Fishing;Quit" -unattended -nopause -nosplash -NullRHI
+"/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" C:/Fish/QuietLake.uproject -ExecCmds="Automation RunTests QuietLake;Quit" -unattended -nopause -nosplash -NullRHI
 ```
 
 Сетевой тест (сервер и два клиента) — через инструмент PowerShell, без `-ExecutionPolicy Bypass`:
@@ -142,7 +161,9 @@ MSYS_NO_PATHCONV=1 "/f/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" C:/Fish/Qu
   и смягчает все движения.
 - Вываживание: леска не тянется, сила на рыбу — от кончика несогнутого удилища (`LoadOnFish`, `LineLoad`), пружинят бланк и руки,
   и только поперёк удилища (`LineSpring`). `UpdateRodHands`: ЛКМ поднимает удилище от наведения до `RodTopElevation`, пока поворачивающая
-  его нагрузка с учётом изгиба (`HandLoad`) меньше `HandPullForce`; сильная рыба утягивает удилище вниз, `RodLift` может уйти ниже нуля.
+  его нагрузка с учётом изгиба (`HandLoad`) меньше предела рук (`HandLiftLimit`: ровная тяга `HandPullForce`, у рыбы над водой — рывок до `HandHeaveForce`
+  на запасе `HeaveReserve`, ~3 с); сильная рыба утягивает удилище вниз, `RodLift` может уйти ниже нуля. Уставшую рыбу, которую не вытащить рывком,
+  ведут к мели (`bLeadAshore`, подсказка 10) и берут рукой — в воде на мели или на берегу (`UpdateLanding`).
   Сценария подъёма нет: `Landing` начинается, когда всё тело рыбы вышло из воды (`BodyInWater`), и рыба висит на той же пружине
   (`UpdateLiftedFish`, в симуляции удилища — `bFishOut`); с мели у ног её берут рукой (`TakeInHand`). Прочность лески, крючка и удилища —
   `FLakeTackle` (`TackleOf`): бой проигрывается по слабому звену. Рыба на крючке — `UpdateFightMotion` решает (первый рывок,

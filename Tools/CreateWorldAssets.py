@@ -256,29 +256,26 @@ return c;""", [('P', position), ('V', vertex)])
     unreal.EditorAssetLibrary.save_asset(path)
 
 # Under the water (post process, switched on by ALakeLife only while the camera is below the
-# surface): the lake swallows the view within a metre or two, fading into olive-brown murk whose
-# brightness follows what the camera sees (day, dusk, night). Extinction per centimetre.
+# surface). Attenuation is per pixel; the haze colour follows ambient daylight in the lake.
 UNDERWATER = """
-float3 avg = 0;
-for (int i = 0; i < 5; i++)
-    for (int j = 0; j < 3; j++)
-        avg += SceneTextureLookup(ViewportUVToBufferUV(float2((i + 0.5) / 5.0, (j + 0.5) / 3.0)), 14, false).rgb;
-avg /= 15.0;
-float lum = dot(avg, float3(0.3, 0.59, 0.11));
-float3 murk = float3(0.16, 0.28, 0.22) * lum;
-float3 t = exp(-float3(0.012, 0.009, 0.018) * D);
-return C * t + murk * (1.0 - t);
+float3 murk = float3(0.16, 0.28, 0.22) * Daylight;
+float3 t = exp(-float3(0.004, 0.003, 0.006) * max(D, 0));
+return lerp(C.rgb, lerp(murk, C.rgb, t), Immersion);
 """
 if not only or 'M_Underwater' in only:
     path = '/Game/Materials/M_Underwater'
-    if unreal.EditorAssetLibrary.does_asset_exist(path) and not unreal.EditorAssetLibrary.delete_asset(path):
-        raise RuntimeError('Cannot delete old material: ' + path)
-    mat = assets.create_asset('M_Underwater', '/Game/Materials', unreal.Material, unreal.MaterialFactoryNew())
+    mat = unreal.EditorAssetLibrary.load_asset(path) if unreal.EditorAssetLibrary.does_asset_exist(path) else None
+    if mat:
+        lib.delete_all_material_expressions(mat)
+    else:
+        mat = assets.create_asset('M_Underwater', '/Game/Materials', unreal.Material, unreal.MaterialFactoryNew())
     mat.set_editor_property('material_domain', unreal.MaterialDomain.MD_POST_PROCESS)
     mat.set_editor_property('blendable_location', unreal.BlendableLocation.BL_SCENE_COLOR_BEFORE_DOF)
     scene = expression(mat, unreal.MaterialExpressionSceneTexture, scene_texture_id=unreal.SceneTextureId.PPI_POST_PROCESS_INPUT0)
     depth = expression(mat, unreal.MaterialExpressionSceneDepth)
-    murk = custom(mat, UNDERWATER, [('C', scene), ('D', depth)])
+    daylight = expression(mat, unreal.MaterialExpressionScalarParameter, parameter_name='Daylight', default_value=0.5)
+    immersion = expression(mat, unreal.MaterialExpressionScalarParameter, parameter_name='Immersion', default_value=0.0)
+    murk = custom(mat, UNDERWATER, [('C', scene), ('D', depth), ('Daylight', daylight), ('Immersion', immersion)])
     lib.connect_material_property(murk, '', unreal.MaterialProperty.MP_EMISSIVE_COLOR)
     lib.recompile_material(mat)
     unreal.EditorAssetLibrary.save_asset(path)

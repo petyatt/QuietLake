@@ -60,10 +60,21 @@ def has_look(mat):
     return node is not None and isinstance(node, unreal.MaterialExpressionCustom) and node.get_editor_property('description') == MARK
 
 
+def colour_code(mat):
+    if mat.get_name() not in ('M_Meshy_Pike', 'M_Meshy_Perch', 'M_Meshy_Crucian'):
+        return COLOUR
+    return """
+float depthM = max(-25.0 - P.z, 0.0) * 0.01;
+float3 scales = C * lerp(0.84, 0.58, saturate(N.z));
+float3 transmission = exp(-depthM * float3(0.36, 0.22, 0.44));
+return lerp(C, scales * transmission, %s);
+""" % UNDER
+
+
 def refresh(mat):
     """Puts the current code into a material that has the look already. True if it had it."""
     found = False
-    for prop, code in ((unreal.MaterialProperty.MP_BASE_COLOR, COLOUR), (unreal.MaterialProperty.MP_ROUGHNESS, ROUGH),
+    for prop, code in ((unreal.MaterialProperty.MP_BASE_COLOR, colour_code(mat)), (unreal.MaterialProperty.MP_ROUGHNESS, ROUGH),
                        (unreal.MaterialProperty.MP_SPECULAR, SPEC)):
         node = lib.get_material_property_input_node(mat, prop)
         if node is not None and isinstance(node, unreal.MaterialExpressionCustom) and node.get_editor_property('description') == MARK:
@@ -77,7 +88,7 @@ def apply(mat, colour, colour_out, rough, rough_out):
     specular). colour / rough: the nodes feeding them, with their output names ('RGB', 'R')."""
     position = _node(mat, unreal.MaterialExpressionWorldPosition)
     normal = _node(mat, unreal.MaterialExpressionVertexNormalWS)
-    c = _custom(mat, COLOUR, [('C', colour, colour_out), ('N', normal, ''), ('P', position, '')], unreal.CustomMaterialOutputType.CMOT_FLOAT3)
+    c = _custom(mat, colour_code(mat), [('C', colour, colour_out), ('N', normal, ''), ('P', position, '')], unreal.CustomMaterialOutputType.CMOT_FLOAT3)
     lib.connect_material_property(c, '', unreal.MaterialProperty.MP_BASE_COLOR)
     r = _custom(mat, ROUGH, [('R', rough, rough_out), ('P', position, '')], unreal.CustomMaterialOutputType.CMOT_FLOAT1)
     lib.connect_material_property(r, '', unreal.MaterialProperty.MP_ROUGHNESS)

@@ -188,4 +188,6 @@ namespace LakeMap
     QUIETLAKE_API bool InPlayArea(float X, float Y);
     /** Bounding box of the water. */
     QUIETLAKE_API FBox2D LakeBounds();
+    QUIETLAKE_API bool BedPatchesIntersect(const FBox2D& Bounds);
+    QUIETLAKE_API float SiltShelfAmount(const FVector2D& Position);
 }

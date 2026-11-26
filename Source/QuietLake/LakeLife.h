@@ -78,7 +78,8 @@ public:
      * spots), then the rest of each species spread over the lake as well as its water suits it.
      * How many of each: StockCount. Fry shoals come with the fish (none in an empty pond).
      */
-    void StockPond();
+    void StockPond(int32 Seed = 20261027);
+    float CoverAt(const FVector& Position) const;
     /** How many of a species the pond is stocked with: StockOverride if it names the species, otherwise its passport (stock.count). */
     int32 StockCount(EFishSpecies Species) const;
     /** Counts by species id replacing the passports' stock.count: tests, and -Stock=roach:40,perch:12 on the command line. */
@@ -290,6 +291,7 @@ private:
     UPROPERTY() TObjectPtr<class USoundBase> BubbleSound;
     UPROPERTY() TObjectPtr<class USoundBase> ScatterSound;
     UPROPERTY() TObjectPtr<class APostProcessVolume> Underwater;   // murk while the camera is under the water
+    UPROPERTY() TObjectPtr<class UMaterialInstanceDynamic> UnderwaterMaterial;
     struct FJump { float Start = -100, Duration = 0.7f, Height = 40, Length = 100; FVector From; FVector Dir; float Size = 1, FishLength = 20; bool bLanded = true; };
     TArray<FJump> Jumps;
     struct FSwarmView { FVector Location = FVector::ZeroVector, Heading = FVector(1, 0, 0); float Seen = -1, NextDimple = 0; TArray<FVector> Offsets; };

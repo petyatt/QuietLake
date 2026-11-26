@@ -10,6 +10,7 @@ struct FRodInput
     FTransform Hold;              // rod butt; X = along the rod towards the tip
     EFishingState FishingState = EFishingState::Idle;
     EBait Bait = EBait::Worm;
+    bool bBaitPresent = true;
     FVector FloatTarget = FVector::ZeroVector;   // where the bobber sits / lands (server)
     float HookDepth = 100;        // leader length under the bobber
     bool bRigFlying = false;      // let go and not yet down on the water (the server says when it lands)

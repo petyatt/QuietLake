@@ -30,11 +30,11 @@
     "minTries": 0, "maxTries": 3, "takeChance": 0.6,
     "pauseMin": 0.2, "pauseMax": 0.6,
     "tries": [
-      { "motion": "Peck", "seconds": 0.12, "secondsMax": 0.22, "amount": 0.6, "amountMax": 1.2, "bTake": false }
+      { "motion": "Peck", "seconds": 0.12, "secondsMax": 0.22, "amount": 3.5, "amountMax": 6.0, "bTake": false }
     ],
     "take": [
-      { "motion": "Drift", "seconds": 0.5, "secondsMax": 1.0, "amount": 4, "amountMax": 8, "felt": 0.3 },
-      { "motion": "Sink", "seconds": 0.4, "secondsMax": 0.8, "amount": 15, "amountMax": 25 }
+      { "motion": "Drift", "seconds": 0.5, "secondsMax": 1.0, "amount": 10, "amountMax": 18, "felt": 0.3 },
+      { "motion": "Sink", "seconds": 0.4, "secondsMax": 0.8, "amount": 25, "amountMax": 40 }
     ],
     "sensitive": 0.4,
     "comeback": 0.9, "maxVisits": 4, "returnMin": 2, "returnMax": 6,

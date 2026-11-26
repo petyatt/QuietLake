@@ -7,6 +7,7 @@
 #include "LakeGame.h"
 #include "LakeFish.h"
 #include "LakeMap.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "LakeRod.h"
 #include "LakeWeather.h"
 #include "Camera/CameraActor.h"
@@ -134,7 +135,7 @@ void ALakeCharacter::RunFishingBench()
     {
         FBench& B = *Bench;
         const float Now = ServerNow();
-        auto Go = [&B, Now](int32 Stage) { B.Stage = Stage; B.StageStart = Now; };
+        auto Go = [this, &B, Now](int32 Stage) { B.Stage = Stage; B.StageStart = Now; BenchWalk = FVector::ZeroVector; };
         const float In = Now - B.StageStart;
         auto Hold = [this, &B](bool bDown)
         {
@@ -173,7 +174,10 @@ void ALakeCharacter::RunFishingBench()
             {
                 FVector2D Facing;
                 const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
-                SetActorLocation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), false, nullptr, ETeleportType::TeleportPhysics);
+                // (Facing the water again: the last case may have walked it off up the bank.)
+                SetActorLocationAndRotation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), FRotator(0, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0), false, nullptr, ETeleportType::TeleportPhysics);
+                GetCharacterMovement()->StopMovementImmediately();
+                BenchWalk = FVector::ZeroVector;
                 if (APlayerController* PC = Cast<APlayerController>(GetController()))
                     PC->SetControlRotation(FRotator(-10, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
             }
@@ -252,7 +256,7 @@ void ALakeCharacter::RunFishingBench()
                 Fish->SetActorLocation(Bait - Fish->GetActorQuat().RotateVector(Fish->MouthOffset()));
                 Fish->Hook(this);
                 HookedFish = Fish; LineFish = Fish; FishingState = EFishingState::Fight;
-                Tension = 0; FightTime = 0; FightHint = -1; SlackTime = 0; bReeling = false; RodLift = 0;
+                Tension = 0; FightTime = 0; FightHint = -1; SlackTime = 0; HeaveReserve = 1; bLeadAshore = false; HeaveTime = 0; bReeling = false; RodLift = 0;
             }
             else
             {
@@ -321,13 +325,17 @@ void ALakeCharacter::RunFishingBench()
                 bool bWant = true;
                 const float Notch = Tackle().HookSafe / Tackle().Weakest();
                 if (Case.bSlackBreak && FishingState == EFishingState::Fight && T > 4 && T < 7) bWant = false;
+                // As the hint says: a fish lying in the shallows or on the bank is walked to and taken, not lifted.
+                if (FightHint == 9 || (FishingState == EFishingState::Fight && bLeadAshore)) bWant = false;
                 (void)Notch;
                 if (bWant != B.bWantHeld) { B.bWantHeld = bWant; B.ActAt = Now + 0.25f; }
                 if (B.ActAt >= 0 && Now >= B.ActAt) { Hold(B.bWantHeld); B.ActAt = -1; }
                 // As the hints say: a fish too heavy to lift is led to the bank by stepping back; one in
                 // the shallows is stepped over to.
-                if (FishingState == EFishingState::Fight && FightHint == 10) AddMovementInput(-GetActorForwardVector(), 0.5f);
-                else if (FishingState == EFishingState::Fight && FightHint == 9) AddMovementInput((Fish->GetActorLocation() - GetActorLocation()).GetSafeNormal2D(), 0.5f);
+                // (Every frame from Tick: input added here in the timer would last a single frame.)
+                if (FishingState == EFishingState::Fight && bLeadAshore) BenchWalk = (GetActorLocation() - Fish->GetActorLocation()).GetSafeNormal2D() * 0.5f;
+                else if ((FishingState == EFishingState::Fight || FishingState == EFishingState::Landing) && FightHint == 9) BenchWalk = (Fish->GetActorLocation() - GetActorLocation()).GetSafeNormal2D() * 0.5f;
+                else BenchWalk = FVector::ZeroVector;
                 const FVector Mouth = Fish->MouthLocation();
                 const float Out = FVector::Dist2D(Mouth, GetActorLocation());
                 const float Down = LakeFish::SurfaceZ - Mouth.Z;
@@ -350,7 +358,7 @@ void ALakeCharacter::RunFishingBench()
                 if (Now >= B.NextLog)
                 {
                     B.NextLog = Now + 0.25f;
-                    UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f rodload %4.0f inwater %.2f hands %4.0f hook-hand %3.0f line-shoulder %3.0f face %.2f hint %d go %.2f"),
+                    UE_LOG(LogTemp, Display, TEXT("BENCH   t=%5.2f st=%d lmb=%d T=%.3f F=%4.0f gf lift=%.2f elev=%4.1f fish: out %3.0f down %3.0f speed %3.0f stamina %.2f phase %d awake %d slack %.1f tip-mouth %3.0f bend %3.0f land %.2f hookz %3.0f grip %.2f rodload %4.0f inwater %.2f hands %4.0f hook-hand %3.0f line-shoulder %3.0f face %.2f hint %d go %.2f heave %.2f bank %.0f me %.0f,%.0f v %.0f"),
                         T, (int32)FishingState, B.bHeld ? 1 : 0, Tension, LoadOnFish(Fish).Size(), RodLift, RodElevation, Out, Down,
                         Fish->SpeedNow(), Fish->StaminaFraction(), (int32)Fish->GetFight().FightPhase, Fish->IsFightAwake() ? 1 : 0, SlackTime,
                         RodVisual ? (float)FVector::Dist(RodVisual->Tip(), Mouth) : -1.0f, RodVisual ? RodVisual->TipBend() : -1.0f,
@@ -359,7 +367,7 @@ void ALakeCharacter::RunFishingBench()
                         RodVisual ? FMath::PointDistToSegment(LeftShoulder(), RodVisual->Tip(), RodVisual->HookLocation()) : -1.0f,
                         // (Facing the pull: 1 head towards the rod tip, -1 tail towards it.)
                         (float)FVector::DotProduct(Fish->GetActorForwardVector(), ((RodVisual ? RodVisual->Tip() : RodTip()) - Mouth).GetSafeNormal()), FightHint,
-                        (float)FVector::DotProduct(Fish->GetActorForwardVector(), Fish->Velocity().GetSafeNormal()));
+                        (float)FVector::DotProduct(Fish->GetActorForwardVector(), Fish->Velocity().GetSafeNormal()), HeaveReserve, LakeMap::ShoreDistance(Mouth.X, Mouth.Y), GetActorLocation().X, GetActorLocation().Y, GetVelocity().Size2D());
                 }
                 if (bShots && B.Shots < 2 && ((B.Shots == 0 && T > 2.5f) || (B.Shots == 1 && T > 8)))
                     FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_%d_%d.png"), B.Index, B.Shots++), true, false);
@@ -448,6 +456,15 @@ void ALakeCharacter::RunFishingBench()
                 {
                     Cam->Destroy();
                     if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetViewTarget(this);
+                }
+                // Back to the same spot facing the water: leading a fish ashore walks the angler off.
+                {
+                    FVector2D Facing;
+                    const FVector2D Spot = LakeMap::StartSpot(&Facing) + Facing * 60;
+                    const float Yaw = FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X));
+                    SetActorLocationAndRotation(FVector(Spot, ALakeEnvironment::GroundHeight(Spot.X, Spot.Y) + 95), FRotator(0, Yaw, 0), false, nullptr, ETeleportType::TeleportPhysics);
+                    GetCharacterMovement()->StopMovementImmediately();
+                    if (APlayerController* PC = Cast<APlayerController>(GetController())) PC->SetControlRotation(FRotator(-10, Yaw, 0));
                 }
                 Go(1);
             }

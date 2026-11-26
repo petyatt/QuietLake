@@ -698,7 +698,7 @@ void ALakeRod::Layout(const FRodInput& In)
     const FVector Eye = BobberEye->GetComponentLocation();
     Hook->SetWorldLocationAndRotation(HookPos, FRotationMatrix::MakeFromZX(ShotPos - HookPos, In.Hold.GetUnitAxis(EAxis::X)).Rotator());
     Sinker->SetWorldLocation(ShotPos);
-    for (int32 I = 0; I < Baits.Num(); ++I) Baits[I]->SetVisibility(I == (int32)In.Bait);
+    for (int32 I = 0; I < Baits.Num(); ++I) Baits[I]->SetVisibility(In.bBaitPresent && I == (int32)In.Bait);
 
 
     Stand->SetVisibility(In.bOnStand);

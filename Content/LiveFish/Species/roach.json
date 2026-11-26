@@ -25,21 +25,21 @@
   "gait": { "hoverTurn": 50, "turnRadius": 0.5, "turnAccel": 480, "response": 0.25, "wanderDeg": 18, "wanderHz": 0.10, "kick": 1.0, "kickPeriod": 1.0, "spacing": 1.2 },
 
   "senseRadius": 450,
-  "baits": { "worm": 0.35, "maggot": 1.0, "bread": 0.85 },
+  "baits": { "worm": 0.94, "maggot": 1.0, "bread": 0.85 },
   "bite": {
-    "minTries": 1, "maxTries": 6, "takeChance": 0.35,
+    "minTries": 1, "maxTries": 6, "takeChance": 0.45,
     "pauseMin": 0.3, "pauseMax": 1.2,
     "tries": [
-      { "motion": "Tremble", "seconds": 0.4, "secondsMax": 0.8, "amount": 0.4, "amountMax": 0.7, "bTake": false, "weight": 0.3 },
-      { "motion": "Peck", "seconds": 0.18, "secondsMax": 0.3, "amount": 0.8, "amountMax": 2.0, "bTake": false, "weight": 0.7 }
+      { "motion": "Tremble", "seconds": 0.4, "secondsMax": 0.8, "amount": 3, "amountMax": 5, "bTake": false, "weight": 0.3 },
+      { "motion": "Peck", "seconds": 0.18, "secondsMax": 0.3, "amount": 4, "amountMax": 7, "bTake": false, "weight": 0.7 }
     ],
     "take": [
       { "motion": "Sink", "seconds": 1.4, "secondsMax": 2.2, "amount": 20, "amountMax": 35, "bPaced": true, "felt": 0.25 },
-      { "motion": "Drift", "seconds": 1.0, "secondsMax": 2.0, "amount": 4, "amountMax": 8, "bPaced": true }
+      { "motion": "Drift", "seconds": 1.0, "secondsMax": 2.0, "amount": 10, "amountMax": 16, "bPaced": true }
     ],
     "takeFromBottom": [
-      { "motion": "Lift", "seconds": 0.8, "secondsMax": 1.4, "amount": 1.0, "amountMax": 2.0, "hook": 0.7 },
-      { "motion": "Drift", "seconds": 1.6, "secondsMax": 2.8, "amount": 5, "amountMax": 9, "bPaced": true }
+      { "motion": "Lift", "seconds": 0.8, "secondsMax": 1.4, "amount": 8, "amountMax": 14, "hook": 0.7 },
+      { "motion": "Drift", "seconds": 1.6, "secondsMax": 2.8, "amount": 12, "amountMax": 18, "bPaced": true }
     ],
     "fromBottomChance": 0.25,
     "sensitive": 0.5,
