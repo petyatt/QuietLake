@@ -116,6 +116,9 @@ namespace
     constexpr float BodyCapacity = 4.5f, AntennaCapacity = 0.27f;// water displaced when under
     // Water displaced to the widest part of the body (2.35 g) = float + shot (9% lighter in water) + half the hook.
     constexpr float ShotMass = 1.2f, HookMass = 0.15f;
+    // How hard the water holds a wet fish leaving it, dyn per (cm/s) of rise (see UpdateBobber):
+    // enough to keep a hooked fish from being flung out of the water by the rod's spring.
+    constexpr float FishExitDrag = 6000.0f;
     constexpr float ShotAboveHook = 10.0f;
     // Loaded, the float's keel eye sits this deep (the waterline at the model's origin): the leader
     // is that much shorter than the set depth, so the bait hangs exactly where the angler set it.
@@ -518,8 +521,19 @@ void ALakeRod::UpdateBobber(const FRodInput& In, float DeltaSeconds)
             const float Sin2 = (float)FVector::CrossProduct(bServerTip ? In.SpringAxis : In.Hold.GetUnitAxis(EAxis::X), (HookPos - From).GetSafeNormal()).SizeSquared();
             const FVector Pull = TetherForce(From, HookPos, (HookPos - HookPrev) / H - StraightTipVel, LineLength, Grams / 1000,
                 1.0f / (Sin2 / Across + (1 - Sin2) / Along));
-            Integrate(HookPos, HookPrev, FMath::Pow(FMath::Lerp(0.45f, 0.02f, Support), H),
-                FVector(0, 0, -Gravity * (1 - 0.98f * Support)) + Pull * (Gravity / Grams));
+            FVector Acceleration = FVector(0, 0, -Gravity * (1 - 0.98f * Support)) + Pull * (Gravity / Grams);
+            // A wet fish leaving the water is heavy and the surface holds it: within a couple of body
+            // lengths above the water the rise is damped, so the rod draws it out in one smooth,
+            // laboured heave instead of the spring flinging it up like a cork (measured: the fish flew
+            // out at 2.5-3 m/s, the line peaking at two and a half times its weight).
+            const float Above = HookPos.Z - LakeFish::SurfaceZ;
+            if (Above < 200.0f)
+            {
+                const float Rise = (HookPos.Z - HookPrev.Z) / H;
+                const float Fade = 1 - FMath::Clamp(Above / 200.0f, 0.0f, 1.0f);
+                Acceleration.Z -= Rise * FishExitDrag * Fade / Grams;
+            }
+            Integrate(HookPos, HookPrev, FMath::Pow(FMath::Lerp(0.45f, 0.02f, Support), H), Acceleration);
         }
         else
         {

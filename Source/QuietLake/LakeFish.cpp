@@ -1847,8 +1847,11 @@ float ALakeFish::NoticeBait(const FVector& Bait) const
 {
     const FVector P = MouthLocation(), To = Bait - P;
     const float Dist = To.Size();
-    // A single morsel is a local sight, unlike the spreading smell of a groundbait patch.
-    // These distances tune gameplay; SenseRadius still describes the wider habitat survey.
+    // A single morsel is seen a few metres off, dimmer at night and in thick weeds: the radius is
+    // the fish's habitat survey, capped so that a hook bait never summons fish from across the lake.
+    // (While the ecosystem prototype ran, the bait was noticed only a nose away - 70-160 cm - and a
+    // learned policy did the looking; with the prototype gone, the angler's float a few metres off
+    // was never found and the pond gave no bites for minutes.)
     const float Light = bSeen ? FMath::Lerp(0.55f, 1.0f, FMath::Clamp((Seen.SunElevation + 6) / 25, 0.0f, 1.0f)) : 1.0f;
     float Weed = 0;
     for (int32 I = 1; I <= 3; ++I)
@@ -1857,12 +1860,13 @@ float ALakeFish::NoticeBait(const FVector& Bait) const
         if (!LakeMap::IsWater(Q.X, Q.Y) || Q.Z < BottomZ(Q.X, Q.Y) || Q.Z > LakeFish::SurfaceZ) return 0;
         Weed = FMath::Max(Weed, LakeWater::WeedAt(Q.X, Q.Y));
     }
-    const float Radius = FMath::Clamp(LakeFish::Info(Species).SenseRadius * 0.2f, 70.0f, 160.0f) * Light * (1 - 0.55f * Weed);
-    if (Dist >= Radius || FMath::Abs(To.Z) > 55) return 0;
+    const float Radius = FMath::Clamp(LakeFish::Info(Species).SenseRadius * Light * (1 - 0.45f * Weed), 150.0f, 350.0f);
+    if (Dist >= Radius || FMath::Abs(To.Z) > 150) return 0;
     const float Facing = Dist > 1 ? FVector::DotProduct(GetActorForwardVector(), To / Dist) : 1;
     if (Dist > 25 && Facing < -0.2f) return 0;
-    const float Near = 1 - Dist / Radius;
-    return Near * Near * (Dist < 25 ? 1 : 0.4f + 0.6f * FMath::Max(0.0f, Facing));
+    // The interest falls off with distance the way it did before the local bait search: a bait a
+    // couple of metres away still draws a feeding fish, one at the edge of the survey rarely.
+    return FMath::Sqrt(FMath::Clamp(1 - Dist / Radius, 0.0f, 1.0f));
 }
 
 bool ALakeFish::TakeApproach(ALakeCharacter* Angler, int32 Rig)

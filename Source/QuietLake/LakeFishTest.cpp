@@ -54,6 +54,50 @@ bool FLakeFishBehaviourTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeBaitFoundTest, "QuietLake.Fishing.BaitFound", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FLakeBaitFoundTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = UWorld::CreateWorld(EWorldType::Game, false);
+    ALakeLife* Life = World->SpawnActor<ALakeLife>();
+    constexpr float Dt = 0.05f;
+    // The angler at the camp, the rig a cast out into open water.
+    FVector2D Facing;
+    const FVector2D Start = LakeMap::StartSpot(&Facing);
+    ALakeCharacter* Fisher = World->SpawnActor<ALakeCharacter>(
+        FVector(Start.X, Start.Y, ALakeEnvironment::GroundHeight(Start.X, Start.Y) + 95),
+        FRotator(0, FMath::RadiansToDegrees(FMath::Atan2(Facing.Y, Facing.X)), 0));
+    APlayerController* Controller = World->SpawnActor<APlayerController>();
+    Controller->Possess(Fisher);
+    Controller->SetControlRotation(Fisher->GetActorRotation());
+    Fisher->Bait = EBait::Worm;
+    Fisher->FloatDepth = 110;
+    FLakeFishingFixture::ImmersedRig(Fisher);
+    const FVector Bait = Fisher->BaitLocation();
+
+    // A hungry roach 2.5 m off the bait: too far to nose at it, well inside the water it surveys.
+    // A cast does not land on a fish's nose, so the bite must come from the fish noticing the bait.
+    const FVector2D Spot = FVector2D(Bait) + Facing * 250;
+    const FVector From(Spot, FMath::Lerp(LakeFish::SurfaceZ - 10, ALakeFish::BottomZ(Spot.X, Spot.Y) + 10, 0.6f));
+    ALakeFish* Roach = SpawnFish(World, EFishSpecies::Roach, 0.15f, From);
+    Roach->TestHunger() = 1;
+    Roach->TestSetGoal(EFishGoal::Feed, 1000);
+    float Nearest = FVector::Dist(Roach->GetActorLocation(), Bait);
+    int32 FirstBiteAt = -1;
+    for (int32 I = 0; I < 1600 && FirstBiteAt < 0; ++I)
+    {
+        Life->Step(Dt);
+        Roach->Simulate(Dt);
+        Nearest = FMath::Min(Nearest, FVector::Dist(Roach->GetActorLocation(), Fisher->BaitLocation()));
+        if (Roach->IsNibbling() || Roach->IsHoldingBait()) FirstBiteAt = I;
+    }
+    AddInfo(FString::Printf(TEXT("Roach 2.5 m from the bait: closest %.0f cm, first bite %s"), Nearest,
+        FirstBiteAt < 0 ? TEXT("never within 80 s") : *FString::Printf(TEXT("after %.1f s"), FirstBiteAt * Dt)));
+    TestTrue(TEXT("A fish a couple of metres off notices the bait, comes up to it and starts trying it"), FirstBiteAt >= 0);
+    if (IsValid(Roach)) Roach->Destroy();
+    World->DestroyWorld(false);
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FLakeBitePatternsTest, "QuietLake.Fishing.BitePatterns", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
 {

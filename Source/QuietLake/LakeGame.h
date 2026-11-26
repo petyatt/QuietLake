@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/GameModeBase.h"
@@ -176,6 +176,14 @@ public:
     {
         // (Also while the cast flies: the rod goes down with it, so the line reaches the place picked.)
         const bool bInWater = !bRetrieving && (FishingState == EFishingState::Waiting || FishingState == EFishingState::Bite || FishingState == EFishingState::Fight);
+        if (FishingState == EFishingState::Landing)
+        {
+            // The fight leaves the rod low over the water; its base is raised to the casting rest only
+            // as the hands lift the catch, so the pose never jumps a dozen degrees at the moment the
+            // fish leaves the water (that jump whipped the tip and flung the fish out like a cork).
+            const float Raised = FMath::SmoothStep(0.45f, 0.95f, RodLiftShown);
+            return FMath::Lerp(FMath::Min(CastRestElevation(), SwingBase), SwingBase, Raised);
+        }
         return bInWater ? CastRestElevation() : SwingBase;
     }
     float CastRestElevation() const;

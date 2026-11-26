@@ -7,8 +7,12 @@
 // -BenchRead logs the float as the angler's eye sees it ten times a second (BENCH read lines: the
 // antenna tip in screen pixels, the distance, its height above the water); -BenchHold=<s> sets the
 // cast hold of fish cases (further out), -BenchWind=<0..1> the wind the bite is read in.
+// -BenchHour=<h> sets the hour of the day (9 by default; the game opens at 5.5). A "wild:<s>" case
+// puts no fish by the bait: it casts like a player and waits up to -BenchWait=<s> for a wild fish,
+// logging every two seconds how many fish are near the bait and whether any investigates or nibbles.
 #include "LakeGame.h"
 #include "LakeFish.h"
+#include "EngineUtils.h"
 #include "LakeMap.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "LakeRod.h"
@@ -27,6 +31,7 @@ namespace
     struct FBenchCase
     {
         bool bCastOnly = false;
+        bool bWild = false;              // "wild:<s>": no fish is put by the bait, a wild one must come to it
         EFishSpecies Species = EFishSpecies::Roach;
         float Weight = 0.15f;
         bool bEases = true;
@@ -51,6 +56,8 @@ namespace
         int32 Frames = 0;
         float ReleaseOut = 0, ReleaseHeight = 0, ReleasedAt = 0, NextPath = 0, NextCastShot = 0;
         float NextRead = 0;
+        float NextWild = 0;
+        float NextTrace = 0;
         int32 CastShots = 0;
         bool bByItself = false;
         float RateFrom = 0;
@@ -78,6 +85,12 @@ void ALakeCharacter::RunFishingBench()
             Case.bCastOnly = true;
             Case.Hold = FCString::Atof(*Parts[1]);
         }
+        else if (Parts[0].Equals(TEXT("wild"), ESearchCase::IgnoreCase))
+        {
+            // No fish is put by the bait: the wild ones must find it themselves, as in the game.
+            Case.bWild = true;
+            Case.Hold = FCString::Atof(*Parts[1]);
+        }
         else
         {
             bool bFound = false;
@@ -101,11 +114,18 @@ void ALakeCharacter::RunFishingBench()
     const bool bSide = FParse::Param(FCommandLine::Get(), TEXT("BenchSide"));
     // -BenchRead: the bite as it is seen from the angler's real cast distance (BENCH read lines).
     const bool bRead = FParse::Param(FCommandLine::Get(), TEXT("BenchRead"));
+    // -BenchTrace: the fish at the surface thirty times a second (BENCH trace lines: how it leaves the water).
+    const bool bTrace = FParse::Param(FCommandLine::Get(), TEXT("BenchTrace"));
     // -BenchHold=<s>: LMB held for the cast of a fish case (1.2 s by default: about 6 m out);
     // -BenchWind=<0..1>: the wind the reading is taken in (calm by default).
     float ReadHold = 1.2f, ReadWind = 0.03f;
     FParse::Value(FCommandLine::Get(), TEXT("BenchHold="), ReadHold);
     FParse::Value(FCommandLine::Get(), TEXT("BenchWind="), ReadWind);
+    // -BenchHour=<h>: the hour of the day the bench fishes at (9 by default, the game opens at 5.5);
+    // -BenchWait=<s>: how long a "wild" case waits for a fish to come (180 s by default).
+    float ReadHour = 9.0f, ReadWait = 180.0f;
+    FParse::Value(FCommandLine::Get(), TEXT("BenchHour="), ReadHour);
+    FParse::Value(FCommandLine::Get(), TEXT("BenchWait="), ReadWait);
     // -BenchStrike=<s>: how long after the bite began the scripted hand strikes (a human's reflex
     // is about 0.35 s; longer shows what a player who waits sees of the take before striking).
     float StrikeDelay = 0.35f;
@@ -163,11 +183,11 @@ void ALakeCharacter::RunFishingBench()
             In, (int32)FishingState, (int32)BiteMotion, BiteAmount, FVector::Dist(Cam, Tip), bShown ? 1 : 0, Px.X, Px.Y,
             Tip.Z - LakeFish::SurfaceZ, RodVisual->FloatKeel().Z - LakeFish::SurfaceZ);
     };
-    GetWorldTimerManager().SetTimer(Bench->Timer, FTimerDelegate::CreateWeakLambda(this, [this, Bench, bDirect, bShots, bSide, Depth, bRead, ReadHold, ReadWind, StrikeDelay, LogRigPath, LogRead]
+    GetWorldTimerManager().SetTimer(Bench->Timer, FTimerDelegate::CreateWeakLambda(this, [this, Bench, bDirect, bShots, bSide, Depth, bRead, bTrace, ReadHold, ReadWind, ReadHour, ReadWait, StrikeDelay, LogRigPath, LogRead]
     {
         FBench& B = *Bench;
         const float Now = ServerNow();
-        auto Go = [this, &B, Now](int32 Stage) { B.Stage = Stage; B.StageStart = Now; B.NextRead = 0; BenchWalk = FVector::ZeroVector; };
+        auto Go = [this, &B, Now](int32 Stage) { B.Stage = Stage; B.StageStart = Now; B.NextRead = 0; B.NextWild = 0; BenchWalk = FVector::ZeroVector; };
         const float In = Now - B.StageStart;
         auto Hold = [this, &B](bool bDown)
         {
@@ -190,7 +210,8 @@ void ALakeCharacter::RunFishingBench()
             return;
         }
         const FBenchCase& Case = B.Cases[B.Index];
-        const FString Label = Case.bCastOnly ? FString::Printf(TEXT("cast held %.2f s"), Case.Hold)
+        const FString Label = Case.bWild ? FString::Printf(TEXT("wild fish, cast held %.2f s"), Case.Hold)
+            : Case.bCastOnly ? FString::Printf(TEXT("cast held %.2f s"), Case.Hold)
             : FString::Printf(TEXT("%s %.2f kg %s"), *LakeFish::Info(Case.Species).Id, Case.Weight, Case.bSlackBreak ? TEXT("ease 4-7 s") : Case.Rod == ERodKind::Light ? TEXT("light rod") : Case.Rod == ERodKind::Heavy ? TEXT("heavy rod") : TEXT(""));
         switch (B.Stage)
         {
@@ -201,7 +222,7 @@ void ALakeCharacter::RunFishingBench()
                 FLakeWeatherState Calm;
                 Calm.Cloud = 0.2f; Calm.Fog = 0; Calm.Rain = 0; Calm.Wind = ReadWind; Calm.WindYaw = 40;
                 Weather->SetWeather(Calm, 1);
-                Weather->SetHours(9.0f);
+                Weather->SetHours(ReadHour);
             }
             {
                 FVector2D Facing;
@@ -239,7 +260,7 @@ void ALakeCharacter::RunFishingBench()
         {
             LogRigPath(B, Now);
             // (-BenchShots: the cast as the player sees it, at the middle of the hold.)
-            const float HoldFor = Case.bCastOnly ? Case.Hold : ReadHold;
+            const float HoldFor = Case.bCastOnly || Case.bWild ? Case.Hold : ReadHold;
             if (bShots && In >= HoldFor * 0.5f && B.Shots == 0 && Case.bCastOnly)
             {
                 ++B.Shots;
@@ -267,7 +288,15 @@ void ALakeCharacter::RunFishingBench()
                     B.ReleasedAt, B.bByItself ? TEXT(" (came down by itself)") : TEXT(""), B.ReleaseOut, B.ReleaseHeight, CastFlight, FVector::DotProduct(Float - GetActorLocation(), GetActorForwardVector()),
                     FVector::DotProduct(Float - GetActorLocation(), GetActorRightVector()),
                     FVector::DotProduct(Hook - Float, GetActorForwardVector()), LakeMap::Depth(Float.X, Float.Y), *Status);
-                Go(Case.bCastOnly ? 8 : 4);
+                // A wild case waits for a fish that comes by itself: no fish is put at the bait.
+                if (Case.bWild)
+                {
+                    const FVector Bait = BaitLocation();
+                    UE_LOG(LogTemp, Display, TEXT("BENCH wild cast: bait %.0f cm out at %.0f cm depth, water %.0f cm, bait in water %d | %s"),
+                        FVector::DotProduct(Bait - GetActorLocation(), GetActorForwardVector()), LakeFish::SurfaceZ - Bait.Z,
+                        LakeMap::Depth(Bait.X, Bait.Y), HasBaitInWater() ? 1 : 0, *Status);
+                }
+                Go(Case.bCastOnly ? 8 : Case.bWild ? 5 : 4);
             }
             else if (In > 8)
             {
@@ -303,6 +332,27 @@ void ALakeCharacter::RunFishingBench()
         case 5:   // the bite: what the float does, and the strike
         {
             if (bRead) LogRead(B, In);
+            // -BenchWild: the fish around the bait and what they do, every other second.
+            if (Case.bWild && Now >= B.NextWild)
+            {
+                B.NextWild = Now + 2.0f;
+                const FVector Bait = BaitLocation();
+                int32 N1 = 0, N2 = 0, N4 = 0, Investigate = 0, Nibble = 0, Holding = 0;
+                float Nearest = 1e9f;
+                for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
+                {
+                    const float D = FVector::Dist(It->GetActorLocation(), Bait);
+                    Nearest = FMath::Min(Nearest, D);
+                    if (D < 100) ++N1;
+                    if (D < 200) ++N2;
+                    if (D < 400) ++N4;
+                    if (D < 400 && It->State == ALakeFish::EState::Investigate) ++Investigate;
+                    else if (D < 400 && It->IsNibbling()) ++Nibble;
+                    else if (D < 400 && It->IsHoldingBait()) ++Holding;
+                }
+                UE_LOG(LogTemp, Display, TEXT("BENCH wild t=%.0f state=%d baitinwater=%d near1=%d near2=%d near4=%d investigate=%d nibble=%d holding=%d nearest=%.0f"),
+                    In, (int32)FishingState, HasBaitInWater() ? 1 : 0, N1, N2, N4, Investigate, Nibble, Holding, Nearest);
+            }
             if (BiteMotion != B.LastMotion)
             {
                 B.LastMotion = BiteMotion;
@@ -333,7 +383,8 @@ void ALakeCharacter::RunFishingBench()
             {
                 if (B.BiteSeen >= 0) { UE_LOG(LogTemp, Display, TEXT("BENCH   missed (strike %d) | %s"), B.Attempts, *Status); Hold(false); }
                 B.BiteSeen = -1;
-                if (FishingState == EFishingState::Idle || In > 70 || B.Attempts >= 4)
+                const float Limit = Case.bWild ? ReadWait : 70.0f;
+                if (FishingState == EFishingState::Idle || In > Limit || B.Attempts >= 4)
                 {
                     UE_LOG(LogTemp, Display, TEXT("BENCH result %s: NOT HOOKED after %.0f s, %d strikes | %s"), *Label, In, B.Attempts, *Status);
                     if (ALakeFish* Fish = B.Fish.Get()) Fish->Destroy();
@@ -402,6 +453,18 @@ void ALakeCharacter::RunFishingBench()
                         // (Facing the pull: 1 head towards the rod tip, -1 tail towards it.)
                         (float)FVector::DotProduct(Fish->GetActorForwardVector(), ((RodVisual ? RodVisual->Tip() : RodTip()) - Mouth).GetSafeNormal()), FightHint,
                         (float)FVector::DotProduct(Fish->GetActorForwardVector(), Fish->Velocity().GetSafeNormal()), HeaveReserve, LakeMap::ShoreDistance(Mouth.X, Mouth.Y), GetActorLocation().X, GetActorLocation().Y, GetVelocity().Size2D());
+                }
+                // -BenchTrace: the fish near the surface thirty times a second, to see how it leaves the water.
+                if (bTrace && Now >= B.NextTrace)
+                {
+                    B.NextTrace = Now + 1.0f / 30.0f;
+                    const float Above = Mouth.Z - LakeFish::SurfaceZ;
+                    if (RodVisual && FMath::Abs(Above) < 220)
+                        UE_LOG(LogTemp, Display, TEXT("BENCH trace t=%.2f st=%d above=%4.0f inwater=%.2f fishvz=%4.0f hookz=%4.0f hookvz=%4.0f line=%4.0f hands=%4.0f lift=%.2f elev=%4.1f sup=%.2f heave=%.2f"),
+                            T, (int32)FishingState, Above, Fish->BodyInWater(), Fish->GetFight().Swim.Velocity().Z,
+                            RodVisual->HookLocation().Z - LakeFish::SurfaceZ, RodVisual->HookVelocity().Z,
+                            LineLoadGf, HandLoadGf, RodLift, RodElevation,
+                            Fish->GetFight().ImmersionAt(RodVisual->HookLocation(), Fish->GetActorQuat()).Fraction, HeaveReserve);
                 }
                 if (bShots && B.Shots < 2 && ((B.Shots == 0 && T > 2.5f) || (B.Shots == 1 && T > 8)))
                     FScreenshotRequest::RequestScreenshot(FPaths::ProjectSavedDir() / FString::Printf(TEXT("Bench_%d_%d.png"), B.Index, B.Shots++), true, false);

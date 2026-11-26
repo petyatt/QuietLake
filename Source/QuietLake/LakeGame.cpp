@@ -1,4 +1,4 @@
-﻿#include "LakeGame.h"
+#include "LakeGame.h"
 #include "LakeMap.h"
 #include "LakeWeather.h"
 #include "Camera/CameraActor.h"
@@ -1474,7 +1474,19 @@ void ALakeCharacter::UpdateRodHands(float DeltaSeconds, float Force)
     else HeaveReserve = FMath::Min(1.0f, HeaveReserve + DeltaSeconds / HeaveRecoverSeconds);
     const float Over = Force / (bLift ? HandLiftLimit() : HandHoldForce) - 1;
     if (Over > 0) RodLift -= (bLift ? 0.45f : 3.0f) * Over * DeltaSeconds;
-    else if (bLift) RodLift += RodLiftSpeed / FMath::Max(20.0f, RodTopElevation - Aim) / RodHeft() * FMath::Min(1.0f, -Over) * DeltaSeconds;
+    else if (bLift)
+    {
+        float Speed = RodLiftSpeed / FMath::Max(20.0f, RodTopElevation - Aim) / RodHeft() * FMath::Min(1.0f, -Over);
+        // Lifting the catch out: while it is still at the water the hands raise the rod slowly, so
+        // the blank's spring draws it out with the tip instead of flinging it up like a cork; once
+        // it is clear of the water the rod goes up as usual.
+        if (FishingState == EFishingState::Landing && RodVisual && LineFish)
+        {
+            const float Above = float(RodVisual->HookLocation().Z - LakeFish::SurfaceZ);
+            Speed *= FMath::Lerp(0.35f, 1.0f, FMath::SmoothStep(40.0f, 90.0f, Above));
+        }
+        RodLift += Speed * DeltaSeconds;
+    }
     else if (RodLift > 0) RodLift = FMath::Max(0.0f, RodLift - 0.5f * DeltaSeconds);
     else RodLift = FMath::Min(0.0f, RodLift + 0.6f * FMath::Min(1.0f, -Over * 2.0f) * DeltaSeconds);
     RodLift = FMath::Clamp(RodLift, Lowest, FishingState == EFishingState::Landing && !bFishInHand ? RodDrawMax : 1.0f);
