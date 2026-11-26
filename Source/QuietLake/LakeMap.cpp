@@ -449,6 +449,36 @@ namespace
     const FLevel GLevels[] = { { E(70, -8, 16, 11, 25), 1.8f, 1.0f } };    // the hump where the island stood
     const FEllipse GWeeds[] = { E(108, 4, 26, 8, 8, 3), E(70, -8, 15, 10, 25, 6) };
 
+    // Inner and shoulder depths (m). The outer third joins the existing bed.
+    struct FBedPatch { FEllipse Area; float Inner, Shoulder; };
+    const FBedPatch BedPatches[] = {
+        { E(-236, 0, 47, 31, 18), 5.f, 2.9f },
+        { E(106, -12, 34, 23, -18), 4.f, 2.0f },
+        { E(-116, 96, 27, 19, 12), 4.5f, 2.1f },
+        { E(-68, 45, 32, 14, -20), 2.8f, 1.65f }, // silty shelf off the meadow
+        { E(108, 20, 25, 15, 8), .85f, 1.15f },    // sheltered end of the reed flat
+    };
+    float PatchRadius(const FBedPatch& Patch, const FVector2D& P)
+    {
+        const FVector2D Local = (P - Patch.Area.C).GetRotated(-Patch.Area.Yaw);
+        return (Local / Patch.Area.Axes).Size();
+    }
+    float PatchedBedHeight(const FVector2D& P, float Base)
+    {
+        if (Base >= SurfaceZ) return Base;
+        for (const FBedPatch& Patch : BedPatches)
+        {
+            if ((P - Patch.Area.C).SizeSquared() >= Patch.Area.Axes.GetMax() * Patch.Area.Axes.GetMax()) continue;
+            const float R = PatchRadius(Patch, P);
+            if (R >= 1) continue;
+            const float ShoreBlend = Patch.Inner < 1.f ? S(0, 2, ShoreDistance(P.X,P.Y) / Mt) : S(1, 7, ShoreDistance(P.X,P.Y) / Mt);
+            const float W = (1 - S(.68f, 1.f, R)) * ShoreBlend;
+            const float DepthM = FMath::Lerp(Patch.Inner, Patch.Shoulder, S(.12f,.70f,R));
+            Base = FMath::Lerp(Base, SurfaceZ - Mt * DepthM, W);
+        }
+        return Base;
+    }
+
     /** Along the bank and across it (positive inland) relative to a spot. */
     FVector2D SpotFrame(const FSpot& Spot, const FVector2D& P)
     {
@@ -649,6 +679,14 @@ namespace
                 {
                     for (int32 X = 0; X < NX; ++X) H[Y * NX + X] = GroundExact(Min.X + X * Cell, Min.Y + Y * Cell);
                 });
+            ParallelFor(NY, [this](int32 Y)
+            {
+                for (int32 X = 0; X < NX; ++X)
+                {
+                    float& Height = H[Y * NX + X];
+                    Height = PatchedBedHeight(Min + FVector2D(X * Cell,Y * Cell), Height);
+                }
+            });
             UE_LOG(LogTemp, Display, TEXT("QUIET_LAKE_GROUND %s"), bBaked ? TEXT("baked landscape") : TEXT("designed"));
         }
         bool Sample(float X, float Y, float& Out) const
@@ -711,6 +749,16 @@ FShorePoint LakeMap::NearestShore(const FVector2D& P)
 }
 const TArray<FShorePoint>& LakeMap::Shoreline() { return Field().Shore; }
 FBox2D LakeMap::LakeBounds() { return Field().Water; }
+bool LakeMap::BedPatchesIntersect(const FBox2D& Bounds)
+{
+    for (const FBedPatch& Patch : BedPatches)
+        if (Bounds.ComputeSquaredDistanceToPoint(Patch.Area.C) <= FMath::Square(Patch.Area.Axes.GetMax() + Cell)) return true;
+    return false;
+}
+float LakeMap::SiltShelfAmount(const FVector2D& P)
+{
+    return (1 - S(.55f,1.f,PatchRadius(BedPatches[3],P))) * S(1,7,ShoreDistance(P.X,P.Y) / Mt);
+}
 float LakeMap::Ground(float X, float Y)
 {
     float H;
@@ -989,6 +1037,15 @@ const TArray<FSnag>& LakeMap::Snags()
             Snag.Radius = T[4];
             Snag.bSunken = true;
             Out.Add(Snag);
+        }
+        {
+            const FVector2D Root = At(-104, 100), Tip = At(-99, 102);
+            FSnag Log;
+            Log.Root = FVector(Root, Ground(Root.X, Root.Y) + 24);
+            Log.Tip = FVector(Tip, Ground(Tip.X, Tip.Y) + 16);
+            Log.Radius = 20;
+            Log.bSunken = true;
+            Out.Add(Log);
         }
         return Out;
     }();

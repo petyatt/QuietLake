@@ -26,6 +26,7 @@ namespace
         Out[2] = FMath::Clamp(0.3f + 0.55f * FMath::Max(Backwater, Lily) * (1 - S(1.8f, 2.6f, D)) + 0.35f * S(2.5f, 4.0f, D) - 0.25f * Z.DropOff, 0.08f, 1.0f)
             * S(0.25f, 0.5f, D);
         // Soft weed: the lily beds, the reed edge, the weedy backwater.
+        Out[2] = FMath::Max(Out[2], .9f * LakeMap::SiltShelfAmount(FVector2D(X,Y)));
         Out[3] = FMath::Clamp(FMath::Max3(Lily, 0.7f * Z.ReedEdge, 0.5f * Backwater * (1 - S(1.5f, 2.5f, D))), 0.03f, 1.0f);
     }
 }

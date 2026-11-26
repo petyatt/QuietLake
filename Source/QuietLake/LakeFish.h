@@ -590,7 +590,7 @@ namespace LakeFish
      * Activity as LakeFish::Activity, bWary: bright calm water.
      */
     QUIETLAKE_API FBiteStep NextBiteStep(EFishSpecies Species, FBiteState& State, float Size01, float Activity, bool bBaitOnBottom, bool bWary,
-                                         float Like, float Disturb, FRandomStream& Random, const float* ContactValue = nullptr);
+                                         float Like, float Disturb, FRandomStream& Random);
     /** A whole bite left undisturbed on a favourite bait, until the fish lets go (for tests and previews). */
     QUIETLAKE_API TArray<FBiteStep> MakeBite(EFishSpecies Species, float Size01, float Activity, bool bBaitOnBottom, bool bWary, FRandomStream& Random);
     /** What the angler sees, for the status line. */
@@ -722,11 +722,6 @@ public:
     FVector GetHomeAnchor() const { return HomeAnchor; }
     float GetHomeDrift() const { return HomeDrift; }
     void SetHomeDrift(float Drift) { HomeDrift = Drift; }
-    // Stable within the fixed prototype cohort. Zero denotes a regular lake fish.
-    int32 PrototypeId = 0;
-    const TCHAR* PrototypePolicyStatus() const;
-    int32 PolicyAction = -1;
-    int32 PrototypeTarget() const { return Prey.IsValid() ? Prey->PrototypeId : 0; }
     float GetHunger() const { return Hunger; }
     float GetEnergy() const { return Energy; }
     /** Free to live its life: not testing, holding or hooked on anyone's bait, not fleeing. */
@@ -789,18 +784,6 @@ public:
     FRandomStream& TestRandom() { return Random; }
     FFishAtBait& TestAtBait() { return AtBait; }
     class UStaticMeshComponent* TestBody() const { return Body; }
-    int32 TestLastSensedPredatorId = 0;
-    double TestPatchScore = -DBL_MAX, TestNaturalScore = -DBL_MAX, TestWinningScore = -DBL_MAX;
-    EFishFood TestNaturalKind = EFishFood::None;
-    float TestGroundScent = 0, TestGroundValue = 0;
-    float TestObservedBait = -1; // Negative when the policy did not sample a rig this frame.
-    TWeakObjectPtr<ALakeCharacter> TestSeenAngler;
-    double TestPatchBonus = 0;
-    float TestBaitValue = -1;
-    bool TestTraceCandidates = false;
-    bool TestExplainBait = false;
-    FString TestBaitInputs;
-    double TestHookScore = -DBL_MAX;
     bool TestTargetsFry() const { return PreyFry >= 0; }
     void TestDecide() { Decide(); }
     void TestSetGoal(EFishGoal NewGoal, float Seconds) { SetGoal(NewGoal, Seconds); }
@@ -830,20 +813,6 @@ private:
     void UpdateStrike(FVector& Desired, float& MaxSpeed);
     /** A pursuit hunter (a big perch) looks for a small fish right in front of it to dash at. */
     void LookForPrey();
-    void UpdateLearnedHunt(FVector& Desired, float& MaxSpeed);
-    void ObservePrototypeThreat(FVector From, float Strength);
-    void DecideThreatResponse();
-    FVector PerceivedDanger = FVector::ZeroVector, EscapePoint = FVector::ZeroVector;
-    bool bFreezeUnderThreat = false;
-    float DangerSignal = 0, NextEscapeDecision = 0, EscapeSpeed = 0;
-    float NextPolicyDecision = 0;
-    float HandlePreyUntil = 0;
-    bool UsesPrototypePolicy() const;
-    void DecidePrototypeGoal();
-    void SwimPrototype(float DeltaSeconds, FVector& Desired, float& MaxSpeed);
-    TWeakObjectPtr<ALakeCharacter> PolicyBaitOwner;
-    int32 PolicyRig = -1;
-    int32 PolicyMate = 0;
     /** Notices a fish close by that could eat it: fear, and which one (Threat). */
     void SenseThreats(float DeltaSeconds);
     /** The fish this one follows: the school leader, or itself. */

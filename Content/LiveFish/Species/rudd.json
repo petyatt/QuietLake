@@ -27,15 +27,15 @@
   "senseRadius": 420,
   "baits": { "worm": 0.3, "maggot": 0.9, "bread": 1.0 },
   "bite": {
-    "minTries": 1, "maxTries": 5, "takeChance": 0.4,
+    "minTries": 1, "maxTries": 5, "takeChance": 0.5,
     "pauseMin": 0.3, "pauseMax": 1.0,
     "tries": [
-      { "motion": "Peck", "seconds": 0.15, "secondsMax": 0.3, "amount": 0.8, "amountMax": 1.8, "bTake": false, "weight": 0.8 },
-      { "motion": "Tremble", "seconds": 0.3, "secondsMax": 0.6, "amount": 0.4, "amountMax": 0.7, "bTake": false, "weight": 0.2 }
+      { "motion": "Peck", "seconds": 0.15, "secondsMax": 0.3, "amount": 4, "amountMax": 6, "bTake": false, "weight": 0.8 },
+      { "motion": "Tremble", "seconds": 0.3, "secondsMax": 0.6, "amount": 3, "amountMax": 5, "bTake": false, "weight": 0.2 }
     ],
     "take": [
-      { "motion": "Drift", "seconds": 1.0, "secondsMax": 1.8, "amount": 6, "amountMax": 12, "bPaced": true, "felt": 0.2 },
-      { "motion": "Sink", "seconds": 0.8, "secondsMax": 1.5, "amount": 15, "amountMax": 30, "bPaced": true }
+      { "motion": "Drift", "seconds": 1.0, "secondsMax": 1.8, "amount": 12, "amountMax": 18, "bPaced": true, "felt": 0.2 },
+      { "motion": "Sink", "seconds": 0.8, "secondsMax": 1.5, "amount": 20, "amountMax": 35, "bPaced": true }
     ],
     "sensitive": 0.6,
     "comeback": 0.8, "maxVisits": 3, "returnMin": 3, "returnMax": 10,

@@ -136,7 +136,12 @@ bool FLakeBitePatternsTest::RunTest(const FString& Parameters)
     EBiteMotion FirstTake = EBiteMotion::None;
     for (int32 Try = 0; Try < 8 && FirstTake == EBiteMotion::None; ++Try)
     {
-        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.6f, Fisher->BaitLocation() + FVector(150, 0, 0), -1, 500 + Try);
+        ALakeFish* Crucian = SpawnFish(World, EFishSpecies::Crucian, 0.6f, Fisher->BaitLocation() - FVector(45, 0, 0), -1, 500 + Try);
+        // Hold discovery constant: this part checks the take as the angler sees it, not whether a
+        // wandering fish finds the bait in two minutes.
+        Crucian->TestHunger() = 1;
+        Crucian->TestState() = ALakeFish::EState::Investigate;
+        Crucian->TestTargetAngler() = Fisher;
         for (int32 Step = 0; Step < 2400 && Fisher->FishingState == EFishingState::Waiting; ++Step)
         {
             Crucian->Simulate(0.05f);

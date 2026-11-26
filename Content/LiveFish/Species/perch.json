@@ -29,15 +29,15 @@
   "senseRadius": 650,
   "baits": { "worm": 1.0, "maggot": 0.55, "bread": 0.08 },
   "bite": {
-    "minTries": 0, "maxTries": 3, "takeChance": 0.6,
-    "pauseMin": 0.4, "pauseMax": 1.5,
-    "tries": [ { "motion": "Peck", "seconds": 0.2, "amount": 1.5, "amountMax": 3.0, "bTake": false } ],
+    "minTries": 0, "maxTries": 3, "takeChance": 0.85,
+    "pauseMin": 0.4, "pauseMax": 0.8,
+    "tries": [ { "motion": "Peck", "seconds": 0.2, "amount": 4.0, "amountMax": 7.0, "bTake": false } ],
     "take": [
       { "motion": "Sink", "seconds": 1.5, "secondsMax": 2.5, "amount": 45, "amountMax": 70, "hook": 0.9, "bPaced": true, "minPace": 0.85 },
       { "motion": "Hold", "seconds": 2.5, "secondsMax": 5.0, "hook": 1.0, "bPaced": true, "minPace": 0.85 }
     ],
     "sensitive": 1.4,
-    "comeback": 0.8, "maxVisits": 3, "returnMin": 2, "returnMax": 8,
+    "comeback": 2.0, "maxVisits": 4, "returnMin": 2, "returnMax": 5,
     "directHold": 6.0
   },
   "feeding": {

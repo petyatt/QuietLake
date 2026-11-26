@@ -9,8 +9,6 @@
 - [README.md](README.md) — короткое руководство: запуск, управление, сборка, последние проверки.
 - [WORLD.md](WORLD.md) — мир и механики, единственный источник истины.
 - [docs/CHECKS.md](docs/CHECKS.md) — журнал проверок (128 записей); новые проверки — туда, в README только последние.
-- [docs/FishEcosystem_Architecture.md](docs/FishEcosystem_Architecture.md) — дизайн экосистемы рыб и обученных политик.
-- [Tools/FishTraining/README.md](Tools/FishTraining/README.md) — обучение и экспорт весов.
 - [CLAUDE.md](CLAUDE.md) — операции для агента (этот файл).
 
 ## Правила работы
@@ -54,8 +52,8 @@ powershell -ExecutionPolicy Bypass -File Tools/WorldBuild.ps1 -SkipBuild -NoBiom
 
 После правки рельефа, воды или биомов запускать именно его: он сам проверит `QUIET_LAKE_LEVEL`, `QUIET_LAKE_BIOMES`, воду и выравнивание (`QUIET_LAKE_ALIGN`, порог среднего 10 см).
 
-Автотесты — 49 в семи файлах (52 запуска: комплексный `RoachDepthTrial` идёт четырьмя вариантами):
-`LakeFishingTest.cpp` (13), `LakeFishTest.cpp` (11), `LakeWorldTest.cpp` (6), `LakeEcosystemTest.cpp` (11 + один комплексный), `LakeSwimmerTest.cpp` (2), `LakeHeavyLandingTest.cpp` (2), `LakeFishLandingTest.cpp` (3).
+Автотесты — 37 в шести файлах.
+`LakeFishingTest.cpp` (13), `LakeFishTest.cpp` (11), `LakeWorldTest.cpp` (6), `LakeSwimmerTest.cpp` (2), `LakeHeavyLandingTest.cpp` (2), `LakeFishLandingTest.cpp` (3).
 Общие фикстуры и детерминированный `SpawnFish` — `Source/QuietLake/LakeTestCommon.h`: seed считается из вида, веса, места и школы, а не из `GetUniqueID`, поэтому результат не зависит от порядка тестов.
 результат — строки `Test Completed` в `Saved/Logs/QuietLake.log`. Запускать дважды: часть тестов случайна.
 

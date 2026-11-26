@@ -367,45 +367,6 @@ void ALakeHUD::DrawLifePanel(float S)
     }
     TArray<TPair<FString, FLinearColor>> Lines;
     Lines.Add({ TEXT("Live Fish  (F3)"), FLinearColor(0.95f, 0.94f, 0.9f) });
-    if (Life && Life->IsEcosystemPrototype())
-    {
-        if (PC && !Life->FryShoals().IsEmpty())
-        {
-            FVector Centre = Life->FryLocation(0);
-            for (int32 I = 1; I < Life->FryShoals().Num(); ++I)
-            {
-                const FVector Candidate = Life->FryLocation(I);
-                if (FVector::DistSquared(ViewPos, Candidate) < FVector::DistSquared(ViewPos, Centre)) Centre = Candidate;
-            }
-            const FVector ToShoal = Centre - ViewPos;
-            const float Metres = ToShoal.Size() / 100.f;
-            const float Angle = FMath::FindDeltaAngleDegrees(ViewRot.Yaw, ToShoal.Rotation().Yaw);
-            FString Bearing = TEXT("прямо");
-            if (FMath::Abs(Angle) > 12.f)
-                Bearing = FString::Printf(TEXT("%s %.0f°"), Angle > 0 ? TEXT("вправо") : TEXT("влево"), FMath::Abs(Angle));
-            const FLinearColor Tint(0.50f, 0.95f, 1.f);
-            Lines.Add({ FString::Printf(TEXT("Стайка мальков: %.1f м, %s"), Metres, *Bearing), Tint });
-            FVector2D Pixel;
-            if (PC->ProjectWorldLocationToScreen(Centre, Pixel, true) &&
-                Pixel.X > 8*S && Pixel.X < Canvas->ClipX - 120*S && Pixel.Y > 20*S && Pixel.Y < Canvas->ClipY - 8*S)
-            {
-                DrawLine(Pixel.X, Pixel.Y, Pixel.X + 10*S, Pixel.Y - 10*S, Tint, S);
-                DrawText(TEXT("Мальки"), Tint, Pixel.X + 12*S, Pixel.Y - 20*S, GEngine->GetMediumFont(), 0.8f*S);
-            }
-        }
-        ALakeFish* Pike = nullptr;
-        for (TActorIterator<ALakeFish> It(GetWorld()); It; ++It)
-        {
-            if (It->Species != EFishSpecies::Pike || !It->PrototypeId) continue;
-            if (!Pike || FVector::DistSquared(ViewPos, It->GetActorLocation()) < FVector::DistSquared(ViewPos, Pike->GetActorLocation())) Pike = *It;
-        }
-        if (Pike)
-        {
-            const float FoodLeft = Life->Food().Left(EFishFood::Benthos, FVector2D(Pike->GetActorLocation()));
-            Lines.Add({ FString::Printf(TEXT("%s | Pike #%d | prey #%d | energy %.0f%% | hunger %.0f%% | benthos %.0f%%"),
-                Pike->PrototypePolicyStatus(), Pike->PrototypeId, Pike->PrototypeTarget(), Pike->GetEnergy()*100, Pike->GetHunger()*100, FoodLeft*100), FLinearColor::White });
-        }
-    }
     auto Of = [&](int32 Sp, EFishGoal G) { return Count[Sp * (int32)EFishGoal::Count + (int32)G]; };
     for (int32 Sp = 0; Sp < Kinds; ++Sp)
     {

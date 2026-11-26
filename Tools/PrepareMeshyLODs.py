@@ -5,6 +5,9 @@ from mathutils import Matrix
 ROOT=Path('C:/Fish')
 SOURCE=Path(os.environ.get('QUIETLAKE_MESHY_SOURCE', 'C:/Fish/Saved/AssetReview/Meshy-20261101'))
 OUT=ROOT/'Tools/GeneratedFish/Meshy'
+DETAIL_OUT=Path(os.environ['QUIETLAKE_FISH_DETAIL_OUT']) if 'QUIETLAKE_FISH_DETAIL_OUT' in os.environ else None
+if DETAIL_OUT:
+    OUT=DETAIL_OUT
 OUT.mkdir(parents=True,exist_ok=True)
 BUDGETS={'Crucian':(12500,3000,600),'Perch':(17500,4000,750),'Pike':(16000,4000,750),
          'Bream':(16000,4000,750),'Rudd':(12500,3000,600),'Bleak':(11000,2500,500),
@@ -28,10 +31,15 @@ for species,budgets in BUDGETS.items():
     length=hi[0]-lo[0]
     obj.data.transform(Matrix.Translation((-lo[0],-(lo[1]+hi[1])/2,-(lo[2]+hi[2])/2)))
     original=obj.data.copy();counts=[]
-    for lod,budget in enumerate(budgets):
+    # The original scans have up to 780k triangles. Spend the extra geometry on the close view.
+    for lod,budget in enumerate((3 * budgets[0],) if DETAIL_OUT else budgets):
         obj.data=original.copy()
-        obj.data.calc_loop_triangles();mod=obj.modifiers.new('GameBudget','DECIMATE');mod.ratio=budget/len(obj.data.loop_triangles)
-        bpy.ops.object.modifier_apply(modifier=mod.name)
+        obj.data.calc_loop_triangles()
+        target = min(budget, len(obj.data.loop_triangles))
+        if target < len(obj.data.loop_triangles):
+            modifier = obj.modifiers.new('GameBudget', 'DECIMATE')
+            modifier.ratio = target / len(obj.data.loop_triangles)
+            bpy.ops.object.modifier_apply(modifier=modifier.name)
         for c in list(obj.data.color_attributes):obj.data.color_attributes.remove(c)
         color=obj.data.color_attributes.new(name='Swim',type='FLOAT_COLOR',domain='CORNER')
         obj.data.color_attributes.active_color_index=0
@@ -40,7 +48,7 @@ for species,budgets in BUDGETS.items():
             color.data[loop.index].color=(u,1,1,1)
         for face in obj.data.polygons:face.use_smooth=True
         obj.data.calc_loop_triangles();count=len(obj.data.loop_triangles);counts.append(count)
-        assert len(obj.data.uv_layers)>=1 and abs(count-budget)<100
+        assert len(obj.data.uv_layers)>=1 and abs(count-target)<100
         bpy.ops.export_scene.fbx(filepath=str(OUT/('SM_Fish_Meshy_%s_LOD%d.fbx'%(species,lod))),use_selection=True,object_types={'MESH'},apply_unit_scale=True,mesh_smooth_type='FACE',colors_type='LINEAR',axis_forward='-Y',axis_up='Z',bake_space_transform=True)
     report[species]={'length_cm':length*100,'triangles':counts}
     print('MESHY_PREPARED',species,report[species],flush=True)

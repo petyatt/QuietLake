@@ -31,7 +31,7 @@
   "bite": {
     "minTries": 0, "maxTries": 2, "takeChance": 0.55,
     "pauseMin": 0.5, "pauseMax": 2.0,
-    "tries": [ { "motion": "Peck", "seconds": 0.3, "amount": 2.0, "amountMax": 4.0, "bTake": false } ],
+    "tries": [ { "motion": "Peck", "seconds": 0.3, "amount": 5.0, "amountMax": 8.0, "bTake": false } ],
     "take": [
       { "motion": "Sink", "seconds": 1.8, "secondsMax": 3.0, "amount": 100, "amountMax": 160, "hook": 0.45 },
       { "motion": "Hold", "seconds": 3.0, "secondsMax": 7.0, "hook": 0.55 },
@@ -39,7 +39,7 @@
     ],
     "runMin": 300, "runMax": 600,
     "sensitive": 1.0,
-    "comeback": 0.3, "maxVisits": 2, "returnMin": 10, "returnMax": 25,
+    "comeback": 0.3, "maxVisits": 2, "returnMin": 6, "returnMax": 15,
     "directHold": 9.0,
     "earlyStrikeText": "Щука выпустила наживку: на первой потяжке подсечка менее надёжна. Повторная потяжка даёт лучший шанс."
   },
